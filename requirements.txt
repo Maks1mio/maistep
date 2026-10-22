@@ -1,2 +1,12 @@
 # Сервер работает на стандартной библиотеке; пакеты ниже нужны только отдельным нодам.
 anthropic>=2.1        # нода LLM: модели Claude (Anthropic и CheapVibeCode)
+
+# Нода «Генерация (Stable Diffusion)» (локально, без ComfyUI). Сначала torch из индекса PyTorch:
+#   .venv\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cu130
+# (CPU-сборка: ... --index-url https://download.pytorch.org/whl/cpu; нужен Python 3.10–3.15)
+diffusers>=0.30       # генерация SD1.5 / SDXL из чекпоинтов библиотеки
+transformers>=4.45
+accelerate>=0.30
+safetensors>=0.4
+peft>=0.11
+pillow>=10.0

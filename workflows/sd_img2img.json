@@ -1,0 +1,197 @@
+{
+  "title": "SD: img2img",
+  "nodes": [
+    {
+      "id": "ckpt",
+      "type": "sd.checkpoint",
+      "x": -420,
+      "y": 160,
+      "props": {
+        "ckpt_name": "aMixIllustrious_aMix.safetensors"
+      }
+    },
+    {
+      "id": "skip",
+      "type": "sd.clip_skip",
+      "x": 380,
+      "y": 40,
+      "props": {
+        "stop_at_clip_layer": -2
+      }
+    },
+    {
+      "id": "pos",
+      "type": "sd.text_encode",
+      "x": 720,
+      "y": 0,
+      "props": {
+        "text": "masterpiece, best quality, amazing quality, 1girl, solo, cafe by the sea at night, paper lanterns, warm light, looking at viewer, smile, scenery"
+      },
+      "title": "Positive"
+    },
+    {
+      "id": "neg",
+      "type": "sd.text_encode",
+      "x": 720,
+      "y": 190,
+      "props": {
+        "text": "lowres, worst quality, bad quality, bad anatomy, bad hands, extra fingers, watermark, text, signature"
+      },
+      "title": "Negative"
+    },
+    {
+      "id": "image",
+      "type": "image.load",
+      "x": 0,
+      "y": 300,
+      "props": {
+        "file": "input/photo_2026-10-23_02-35-09.jpg"
+      }
+    },
+    {
+      "id": "encode",
+      "type": "sd.vae_encode",
+      "x": 720,
+      "y": 400,
+      "props": {}
+    },
+    {
+      "id": "decode",
+      "type": "sd.vae_decode",
+      "x": 1400,
+      "y": 60,
+      "props": {}
+    },
+    {
+      "id": "save",
+      "type": "image.save",
+      "x": 1740,
+      "y": 60,
+      "props": {
+        "prefix": "img2img"
+      }
+    },
+    {
+      "id": "n10",
+      "type": "sd.lora",
+      "x": -20,
+      "y": 20,
+      "props": {
+        "lora_name": "hentai_studio_quality-000013.safetensors",
+        "strength_model": 1,
+        "strength_clip": 1
+      }
+    },
+    {
+      "id": "n11",
+      "type": "sd.magic_ksampler",
+      "x": 1060,
+      "y": -10,
+      "props": {
+        "seed": -1,
+        "steps": 8,
+        "cfg": 2,
+        "sampler_name": "dpmpp_sde",
+        "scheduler": "karras",
+        "denoise": 1
+      },
+      "magic": {
+        "key": "{\"ckpt\":\"aMixIllustrious_aMix.safetensors\",\"loras\":[[\"hentai_studio_quality-000013.safetensors\",1]]}",
+        "rec": {
+          "steps": 8,
+          "cfg": 2,
+          "sampler_name": "dpmpp_sde",
+          "scheduler": "karras"
+        },
+        "profile": "Illustrious"
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": "skip",
+      "out": "clip",
+      "to": "pos",
+      "in": "clip"
+    },
+    {
+      "from": "skip",
+      "out": "clip",
+      "to": "neg",
+      "in": "clip"
+    },
+    {
+      "from": "image",
+      "out": "image",
+      "to": "encode",
+      "in": "pixels"
+    },
+    {
+      "from": "ckpt",
+      "out": "vae",
+      "to": "encode",
+      "in": "vae"
+    },
+    {
+      "from": "ckpt",
+      "out": "vae",
+      "to": "decode",
+      "in": "vae"
+    },
+    {
+      "from": "decode",
+      "out": "image",
+      "to": "save",
+      "in": "image"
+    },
+    {
+      "from": "ckpt",
+      "out": "clip",
+      "to": "n10",
+      "in": "clip"
+    },
+    {
+      "from": "n10",
+      "out": "clip",
+      "to": "skip",
+      "in": "clip"
+    },
+    {
+      "from": "ckpt",
+      "out": "model",
+      "to": "n10",
+      "in": "model"
+    },
+    {
+      "from": "n10",
+      "out": "model",
+      "to": "n11",
+      "in": "model"
+    },
+    {
+      "from": "pos",
+      "out": "conditioning",
+      "to": "n11",
+      "in": "positive"
+    },
+    {
+      "from": "neg",
+      "out": "conditioning",
+      "to": "n11",
+      "in": "negative"
+    },
+    {
+      "from": "encode",
+      "out": "latent",
+      "to": "n11",
+      "in": "latent_image"
+    },
+    {
+      "from": "n11",
+      "out": "latent",
+      "to": "decode",
+      "in": "samples"
+    }
+  ],
+  "about": "Перерисовка картинки: Load Image → VAE Encode → KSampler (denoise 0.55: меньше — ближе к исходнику). Загрузите картинку в ноду Load Image (Inspector → кнопка загрузки) или бросьте файл на граф."
+}

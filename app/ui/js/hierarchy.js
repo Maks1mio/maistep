@@ -6,6 +6,9 @@ import { S, on, emit, doc, select, addDoc, removeDoc, save } from './store.js';
 import { codeTreeItems } from './codeedit.js';
 import { resultsTreeItems } from './results.js';
 import { libraryTreeItems } from './library.js';
+import { civitaiTreeItems } from './civitai.js';
+import { componentsTreeItems } from './components.js';
+import { naizerTreeItems } from './naizer.js';
 import { TEMPLATES } from './templates.js';
 
 const VALID_ID = /^[A-Za-z0-9_-]+$/;
@@ -88,6 +91,9 @@ export function draw() {
   if (S.ctx === 'code') for (const row of codeTreeItems()) t.append(item(row));
   else if (S.ctx === 'results') for (const row of resultsTreeItems()) t.append(row.grp ? h('div.grp', {}, row.grp) : item(row));
   else if (S.ctx === 'library') for (const row of libraryTreeItems()) t.append(row.grp ? h('div.grp', {}, row.grp) : item(row));
+  else if (S.ctx === 'civitai') for (const row of civitaiTreeItems()) t.append(row.grp ? h('div.grp', {}, row.grp) : item(row));
+  else if (S.ctx === 'components') for (const row of componentsTreeItems()) t.append(row.grp ? h('div.grp', {}, row.grp) : item(row));
+  else if (S.ctx === 'naizer') for (const row of naizerTreeItems()) t.append(row.grp ? h('div.grp', {}, row.grp) : item(row));
   else wfTree(t);
 }
 

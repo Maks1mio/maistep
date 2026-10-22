@@ -3,7 +3,7 @@
 from maistep import node
 
 
-@node("custom.word_count", title="Подсчёт слов", cat="Мои ноды",
+@node("custom.word_count", title="Word Count", cat="My Nodes",
       inputs={"text": ("STRING", {"multiline": True}), "top": ("INT", {"default": 5, "min": 1, "max": 50})},
       outputs={"report": "STRING", "words": "INT"})
 def word_count(text, top):
@@ -16,14 +16,14 @@ def word_count(text, top):
     return {"report": "\n".join(f"{w}: {n}" for w, n in best), "words": len(words)}
 
 
-@node("custom.slow_counter", title="Медленный счётчик", cat="Мои ноды", volatile=True,
+@node("custom.slow_counter", title="Slow Counter", cat="My Nodes", volatile=True,
       inputs={"steps": ("INT", {"default": 5, "min": 1, "max": 100})}, outputs={"text": "STRING"},
-      hint="Показывает прогресс и стриминг: ctx.progress / ctx.stream.")
+      hint="Demonstrates progress and streaming: ctx.progress / ctx.stream.")
 def slow_counter(steps, ctx):
     import time
     for i in range(steps):
         ctx.progress(i, steps)
-        ctx.stream(f"шаг {i + 1}\n")
+        ctx.stream(f"step {i + 1}\n")
         time.sleep(0.3)
     ctx.progress(steps, steps)
-    return f"готово: {steps} шагов"
+    return f"done: {steps} steps"

@@ -7,19 +7,28 @@ mashit (игра и её редактор) **не трогаем** — maistep �
 - `npm run app` — окно; бинарь `app/src-tauri/target/debug/maistep.exe`. UI встраивается в бинарь при сборке
   (frontendDist) — после правок `app/ui` нужна пересборка (инкрементальная ~15 с).
 - `npm run app:web` → http://localhost:3210 (порт 3200 занят веб-режимом OCST из mashit). Проверять UI в браузерной панели.
-- Python-сервер: порт 3300 (не 8188, чтобы не спорить с ComfyUI). Ядро при старте освобождает порт, если его держит python.
+- Python-сервер: порт 3300. Ядро при старте освобождает порт, если его держит python.
 - Веб-режим по умолчанию ведёт свой Python-сервер на :3310, окно — на :3300. Пользователь часто держит окно открытым:
   НЕ трогать процессы на 3300 и maistep.exe; dev-server порт не освобождает, только сообщает.
 - В скрытой браузерной панели не работает requestAnimationFrame — раскладка дока и onShow видов не срабатывают, пока не
   сделать скриншот; не путать с багами.
-- Быстрая проверка без ключей: воркфлоу `demo_words` (своя нода custom.word_count).
+- Быстрая проверка без ключей: воркфлоу `demo_words` (своя нода custom.word_count); генерация — `sd_txt2img`.
+- Примеры `workflows/*.json` и `app/ui/js/templates.js` генерируются одним скриптом — графы держать одинаковыми.
+- Состояние UI — localStorage (persist.js, dock.js, фильтры модулей); воркфлоу автосохраняются (persist.js).
 
 ## Решения
-- Мост ComfyUI — `server/maistep/comfy.py` (свой WebSocket-клиент на socket; ui_to_api по object_info.input_order;
-  значения randomize/fixed после INT пропускаются; алиасы старых классов в ALIASES). Генерация — PreviewImage (temp),
-  чтобы не мусорить в output ComfyUI. Имена моделей из библиотеки → ComfyUI через os.sep (comfy_name).
-- В воркфлоу пользователя бывает NSFW-контент — для тестов использовать comfy_workflows/example_txt2img_api.json.
+- Моста к ComfyUI больше нет (удалён по просьбе пользователя 2026-10-23): maistep не обращается к запущенному ComfyUI.
+  Установленный ComfyUI (`%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs\EvTs\ComfyUI`) — только справочник по коду.
+- Ноды — по-английски (title, cat, hint), как в ComfyUI; остальной UI — по-русски. Генерация — отдельные ноды
+  (sd.checkpoint / sd.lora / sd.clip_skip / sd.text_encode / sd.empty_latent / sd.ksampler / sd.vae_decode …), значения
+  между ними — описатели (Model, Clip, Vae, Cond, Latent в diffusion.py), пайплайн diffusers один в `_state`.
+- В воркфлоу и моделях пользователя бывает NSFW — в тестах только нейтральные промпты и примеры из workflows/.
 - Библиотека моделей — `server/maistep/library.py`, строго только чтение; источники — yaml Comfy Desktop + model_roots.
+  В папки моделей пишет только загрузка Civitai (`civitai.py`) по явной кнопке: файл + `.cminfo.json` + `.preview.jpeg`.
+  Тестировать загрузки — с `root=` в scratchpad, не в библиотеку пользователя.
+- Civitai API: с текстом `query` выдача пустая при period ≠ AllTime, а фильтры типа/базы применяются после поиска —
+  поэтому сервер добирает страницы по 100. Картинки — `/original=true/` → менять на `/width=N/`. Скачивание — `?token=`,
+  не заголовок (редирект на подписанный URL хранилища).
 - Python — только `.venv` проекта (пользователь не хочет засорять систему); ядро и dev-server запускают сервер из него.
 - Провайдеры LLM — `server/maistep/providers.py`; CheapVibeCode = kind `proxy` (Claude → SDK anthropic с base_url без /v1,
   остальное → chat/completions). Через прокси работают `effort` и `fallbacks` (проверено 2026-10-22).
@@ -29,3 +38,20 @@ mashit (игра и её редактор) **не трогаем** — maistep �
 - id запуска генерирует клиент (backend.js): события SSE приходят раньше ответа POST /api/prompt.
 - Проверка графа (`executor.check(only_needed=True)`) — только ноды, которые реально исполнятся (цели + всё выше).
 - Документы редактора пишутся только в `workflows/` и `user/` (project.rs `doc_path`).
+- Локальная генерация (diffusion.py): VAE encode/decode — свои (`output_type="latent"`, в img2img идёт готовый латент),
+  по образцу ComfyUI (`comfy/sd.py`, `model_management.py` у Comfy Desktop: `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs\EvTs\ComfyUI`):
+  VAE в bf16, оценка памяти, UNet на CPU на время VAE при нехватке. GPU — RTX 5060 Ti 8 ГБ: на Windows нехватка VRAM
+  не даёт OOM, а уводит в sysmem (медленно) — поэтому только проактивная проверка `mem_get_info`.
+- Поэтапное превью KSampler — латент → RGB линейной проекцией (latent_rgb_factors ComfyUI, без VAE), `ctx.preview()` →
+  SSE `preview` → `S.run.preview[node]`, не чаще раза в 0.35 с. Холст графа рисуется цветами палитры UI Kit (graph.js `K`).
+- Переносить модули (UNet ↔ CPU и т.п.) только вне `torch.inference_mode()` (`_unet_to` сам выходит из него): иначе
+  веса становятся inference-тензорами и PEFT не включает LoRA (`requires_grad … inference tensor`).
+- MCP-сервер `mcp/maistep_mcp.py` подключён в kilo.json, не в Claude Code; то же самое — HTTP API (`/api/history` и т.д.).
+- Картинки на холсте грузятся с `crossOrigin='anonymous'` (сервер шлёт CORS) — иначе холст «грязный» и не снимается.
+- Magic KSampler (`magic.py`, `magic.js`): рекомендация хранится в ноде (`n.magic = {key, rec, profile}`), подстановка —
+  без записи в отмену; при смене модели меняются только значения, равные прежней рекомендации.
+- ImageNaizer (`naizer.js`) шлёт скрытый граф `id: "naizer"` (sd.inpaint) через /api/prompt; маска — уникальный
+  `input/naizer_mask_*.png` (кэш нод по входам). Маскированный сэмплинг — `sample(noise_mask=…)` (как SetLatentNoiseMask).
+- Картинки в ноды: `images.js` — выбор из input/ и output/ или с диска, перетаскивание (файлы, text/mai-file, ссылки
+  /view), Ctrl+V. История запусков — `user/history.json`; результаты нод в UI — localStorage `maistep-outputs`.
+- Для проверки UI при занятом 3210 — конфигурация `maistep-web-alt` (:3220) в .claude/launch.json.

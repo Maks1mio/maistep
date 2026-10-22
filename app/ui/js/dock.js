@@ -10,7 +10,7 @@ import { icon } from './icons.js';
 const KEY = 'maistep-layouts-1';
 const panels = new Map(); // id → { id, title, icon, el, view, onShow }
 const WS = [
-  ['graph', 'Workflow', 'blueprint'], ['results', 'Results', 'image'], ['library', 'Models', 'diagram'], ['code', 'CodeEditor', 'code'], ['uikit', 'UI Kit', 'layout'],
+  ['graph', 'Workflow', 'blueprint'], ['results', 'Results', 'image'], ['library', 'Models', 'diagram'], ['civitai', 'Civitai', 'search'], ['code', 'CodeEditor', 'code'], ['components', 'Компоненты', 'download'], ['naizer', 'ImageNaizer', 'spark'], ['uikit', 'UI Kit', 'layout'],
 ];
 const area = (...tabs) => ({ tabs, active: tabs[0] });
 const split = (dir, sizes, ...kids) => ({ dir, sizes, kids });
@@ -18,12 +18,18 @@ const split = (dir, sizes, ...kids) => ({ dir, sizes, kids });
 const DEFAULTS = {
   // граф во всю ширину, воркфлоу и ноды слева, свойства ноды и её результат справа
   graph: () => split('h', [0.16, 0.6, 0.24], split('v', [0.6, 0.4], area('hier'), area('project')),
-    split('v', [0.8, 0.2], area('graph'), area('console')), area('inspector')),
+    split('v', [0.8, 0.2], area('graph'), area('console')), area('inspector', 'agent')),
   // очередь и история слева, галерея результатов, выбранный запуск справа
   results: () => split('h', [0.18, 0.56, 0.26], area('hier'), split('v', [0.82, 0.18], area('results'), area('console')), area('inspector')),
   // категории и корни слева, галерея моделей, карточка модели справа
   library: () => split('h', [0.17, 0.57, 0.26], area('hier'), split('v', [0.85, 0.15], area('library'), area('console')), area('inspector')),
+  // фильтры, метки и загрузки слева, галерея Civitai, карточка модели справа
+  civitai: () => split('h', [0.17, 0.57, 0.26], area('hier'), split('v', [0.85, 0.15], area('civitai'), area('console')), area('inspector')),
   code: () => split('h', [0.16, 0.58, 0.26], area('hier'), area('code'), split('v', [0.55, 0.45], area('inspector'), area('console'))),
+  // группы пакетов слева, таблица, карточка пакета и лог pip справа
+  components: () => split('h', [0.16, 0.58, 0.26], area('hier'), split('v', [0.75, 0.25], area('components'), area('console')), area('inspector')),
+  // версии и файлы слева, холст с выделением, настройки правки справа
+  naizer: () => split('h', [0.15, 0.6, 0.25], area('hier'), split('v', [0.85, 0.15], area('naizer'), area('console')), area('inspector')),
   uikit: () => split('h', [0.75, 0.25], area('uikit'), area('inspector')),
 };
 const defaultLayout = ws => (DEFAULTS[ws] || DEFAULTS.graph)();
@@ -35,9 +41,9 @@ const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } c
 const layout = (ws = state.active) => (state.layouts[ws] ||= defaultLayout(ws));
 
 // ---------- регистрация ----------
-export function addView(id, title, onShow) {
+export function addView(id, title, onShow, ic = null) {
   const el = document.getElementById(`v-${id}`);
-  panels.set(id, { id, title, icon: WS.find(w => w[0] === id)?.[2] || 'layout', el, view: true, onShow });
+  panels.set(id, { id, title, icon: WS.find(w => w[0] === id)?.[2] || ic || 'layout', el, view: true, onShow });
 }
 function addPanel(id, title, ic, el) { panels.set(id, { id, title, icon: ic, el, view: false }); }
 
@@ -318,6 +324,8 @@ function switchWs(id) {
 export function startDock() {
   const saved = load();
   state = { active: WS.some(w => w[0] === saved.active) ? saved.active : 'graph', layouts: {} };
+  // старая раскладка «Компонентов» была без Hierarchy и Inspector — берём новую по умолчанию
+  if (saved.layouts?.components && !JSON.stringify(saved.layouts.components).includes('"inspector"')) delete saved.layouts.components;
   for (const [id] of WS) state.layouts[id] = (saved.layouts?.[id] && sanitize(structuredClone(saved.layouts[id]))) || defaultLayout(id);
   layer = h('div.dock-layer', {}, [...panels.values()].map(p => p.el));
   dock.replaceChildren(h('div.dock-tree'), layer);

@@ -11,16 +11,36 @@ import { icon } from './icons.js';
 import { fileUrl, queuePrompt, upload, getModels, modelMeta } from './backend.js';
 import { modelPicker } from './modelpick.js';
 import { libraryPicker } from './library.js';
-import { comfyWorkflowPicker } from './comfybridge.js';
+import { MAGIC, magicState, isMagicChanged, resetMagic } from './magic.js';
+import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage } from './images.js';
 
-const NW = 280, HEAD = 26, ROW = 22, PAD = 8, PREV_MAX = 220;
-export const TYPE_COLOR = { STRING: '#8bc78b', INT: '#7fb4e0', FLOAT: '#7fb4e0', BOOLEAN: '#e0a35f', COMBO: '#c9a0dc', IMAGE: '#64b5f6', JSON: '#f2c46b', '*': '#b5b8c0' };
-const CAT_COLOR = { 'Значения': '#3b6e4a', 'Текст': '#3d5f8a', 'JSON': '#8a6a2e', 'Логика': '#5c4a8a', 'AI': '#8a3d6a', 'Картинки': '#2e6f86', 'Файлы': '#5a5f68', 'Вывод': '#7a4a2e' };
+const NW = 280, HEAD = 30, ROW = 24, PAD = 10, PREV_MAX = 420, R = 8;
+const FONT = 'Inter, "Segoe UI", system-ui, sans-serif', MONO = '"JetBrains Mono", Consolas, monospace';
+// цвета холста — палитра UI Kit (uikit.css, New UI Dark): читаются из CSS-переменных при сборке вида
+const K = { bg: '#1E1F22', dots: '#393B40', node: '#2B2D30', head: '#313337', edge: '#1A1B1D', field: '#1E1F22', fieldBd: '#43454A',
+  fieldHi: '#6F737A', fg: '#DFE1E5', fg2: '#B4B8BF', dim: '#868A91', off: '#5A5D63', accent: '#3574F0', ok: '#57965C', warn: '#D6AE58',
+  err: '#DB5C5C', errBg: '#402929', sel: '#548AF7' };
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+  const map = { bg: '--p-gray-1', dots: '--p-gray-3', node: '--p-gray-2', fieldBd: '--p-gray-4', fieldHi: '--p-gray-7', fg: '--p-gray-12',
+    fg2: '--p-gray-10', dim: '--p-gray-8', off: '--p-gray-6', accent: '--p-blue-6', ok: '--p-green-6', warn: '--p-yellow-6', err: '--p-red-7',
+    errBg: '--p-red-1', sel: '--p-blue-8' };
+  for (const [k, n] of Object.entries(map)) if (v(n)) K[k] = v(n);
+  K.field = K.bg;
+}
+export const TYPE_COLOR = { STRING: '#8bc78b', INT: '#7fb4e0', FLOAT: '#7fb4e0', BOOLEAN: '#e0a35f', COMBO: '#c9a0dc', IMAGE: '#64b5f6', JSON: '#f2c46b', '*': '#b5b8c0',
+  MODEL: '#b39ddb', CLIP: '#ffd500', VAE: '#ff6e6e', CONDITIONING: '#ffa931', LATENT: '#ff9cf9' };
+const CAT_COLOR = { Values: '#3b6e4a', Text: '#3d5f8a', JSON: '#8a6a2e', Logic: '#5c4a8a', AI: '#8a3d6a', Image: '#2e6f86', Files: '#5a5f68', Output: '#7a4a2e',
+  Loaders: '#4b5a8a', Conditioning: '#8a6a2e', Sampling: '#6a3d7a', Latent: '#8a3d5c', 'My Nodes': '#4a6a5a' };
 const catColor = cat => CAT_COLOR[cat] || `hsl(${[...String(cat)].reduce((a, c) => a + c.charCodeAt(0), 0) % 360} 35% 34%)`;
 const tcol = t => TYPE_COLOR[t] || '#b5b8c0';
 
 let cv = null, wrap = null, view = { x: 40, y: 20, z: 1 }, linking = null, hover = null, issues = new Map(), clip = null;
-const views = new Map();
+// пан/зум каждого воркфлоу — помнятся между запусками
+const VIEWS_KEY = 'maistep-graph-views';
+const views = new Map((() => { try { return Object.entries(JSON.parse(localStorage.getItem(VIEWS_KEY)) || {}); } catch { return []; } })());
+const keepViews = debounce(() => { try { localStorage.setItem(VIEWS_KEY, JSON.stringify(Object.fromEntries(views))); } catch {} }, 400);
+const setView = () => { views.set(S.current.workflow, { ...view }); keepViews(); };
 const imgs = new Map(); // url → Image
 
 export const defs = () => S.nodes || {};
@@ -47,8 +67,10 @@ function layout(n, d = cur()) {
   const w = n.w || NW;
   const top = n.y + HEAD + 4;
   const wTop = top + slots * ROW;
-  const pTop = wTop + widgets.length * ROW + (widgets.length ? 4 : 0);
-  const pv = previewOf(n);
+  // Magic KSampler: строка «профиль · Сбросить» под виджетами
+  const mTop = wTop + widgets.length * ROW, mrow = n.type === MAGIC ? ROW : 0;
+  const pTop = mTop + mrow + (widgets.length || mrow ? 4 : 0);
+  const pv = previewOf(n, def, w - 20);
   const ph = pv ? Math.min(PREV_MAX, pv.h) : 0;
   const hgt = n.collapsed ? HEAD : pTop - n.y + ph + (ph ? PAD : 4);
   const inPos = {};
@@ -60,7 +82,7 @@ function layout(n, d = cur()) {
     for (const k in inPos) inPos[k] = { x: n.x, y: n.y + HEAD / 2 };
     for (const k in outPos) outPos[k] = { x: n.x + w, y: n.y + HEAD / 2 };
   }
-  return { def, pins, widgets, outs, slots, w, top, wTop, pTop, pv, ph, h: hgt, inPos, outPos };
+  return { def, pins, widgets, outs, slots, w, top, wTop, mTop, mrow, pTop, pv, ph, h: hgt, inPos, outPos };
 }
 
 // модель LLM ноды (если у ноды есть виджет выбора модели): метаданные из каталога или null
@@ -76,18 +98,34 @@ const providersUsed = d => [...new Set(d.data.nodes.flatMap(n => {
   return e ? [n.props?.[e[1].provider_input] ?? def.inputs[e[1].provider_input]?.default] : [];
 }).filter(Boolean))];
 
-// превью результата: { kind: 'text'|'image'|'error'|'stream', text, images, h }
-function previewOf(n) {
-  const st = S.run?.wf === S.current.workflow && S.run.stream[n.id];
-  if (st) return { kind: 'stream', text: st, h: lineCount(st) * 14 + 10 };
+// превью: { kind: 'text'|'image'|'error'|'stream', text, urls, h, live, step }
+// картинки: поэтапное превью генерации → результат ноды → файл, выбранный во входе с upload: 'image' (Load Image)
+function previewOf(n, def = defs()[n.type], pw = (n.w || NW) - 20) {
+  const run = S.run?.wf === S.current.workflow ? S.run : null;
+  const live = run?.preview?.[n.id];
+  if (live) return imagePv([live.image], pw, { live: true, step: live.step });
+  const st = run?.stream[n.id];
+  if (st) return { kind: 'stream', text: st, h: lineCount(st) * 15 + 12 };
   const o = outputsOf(n.id);
-  if (!o) return null;
-  if (o._error) return { kind: 'error', text: o._error.split('\n').slice(0, 6).join('\n'), h: Math.min(6, lineCount(o._error)) * 14 + 10 };
-  const images = [...(o._ui?.images || []), ...(defs()[n.type]?.output ? Object.values(o).filter(v => v?.image).map(v => v.image) : [])];
-  if (images.length) return { kind: 'image', images: [...new Set(images)], h: 200 };
-  const text = o._ui?.text ?? Object.values(o).find(v => v?.text != null)?.text;
-  if (text != null && (defs()[n.type]?.output || n.preview !== false)) return { kind: 'text', text: String(text), h: lineCount(text) * 14 + 10 };
+  if (o?._error) return { kind: 'error', text: o._error.split('\n').slice(0, 6).join('\n'), h: Math.min(6, lineCount(o._error)) * 15 + 12 };
+  if (o) {
+    const images = [...(o._ui?.images || []), ...(def?.output ? Object.values(o).filter(v => v?.image).map(v => v.image) : [])];
+    if (images.length) return imagePv([...new Set(images)].map(fileUrl), pw);
+    const text = o._ui?.text ?? Object.values(o).find(v => v?.text != null)?.text;
+    if (text != null && (def?.output || n.preview !== false)) return { kind: 'text', text: String(text), h: lineCount(text) * 15 + 12 };
+  }
+  const up = Object.entries(def?.inputs || {}).find(([, i]) => i.upload === 'image');
+  const f = up && (n.props?.[up[0]] ?? up[1].default);
+  if (f) return imagePv([fileUrl(/^(input|output)\//.test(f) ? f : `input/${f}`)], pw, { input: true });
   return null;
+}
+// сетка картинок: высота — по пропорциям первой загруженной (до загрузки — квадрат)
+function imagePv(urls, pw, extra = {}) {
+  const list = urls.slice(0, 8), cols = Math.min(list.length, list.length > 4 ? 4 : list.length);
+  const im = extra.live ? liveImage(list[0]) : image(list[0]);
+  const ar = im?.naturalWidth ? im.naturalHeight / im.naturalWidth : 1;
+  const cw = pw / cols, rows = Math.ceil(list.length / cols);
+  return { kind: 'image', urls, list, cols, rows, h: clamp(Math.round(cw * ar) * rows, 60, PREV_MAX), ...extra };
 }
 const lineCount = t => Math.min(14, String(t).split('\n').reduce((a, l) => a + Math.max(1, Math.ceil(l.length / 40)), 0));
 
@@ -101,8 +139,22 @@ function curve(c, a, b) {
 
 function image(url) {
   let im = imgs.get(url);
-  if (!im) { im = new Image(); im.onload = () => draw(); im.src = url; imgs.set(url, im); }
+  if (!im) {
+    if (imgs.size > 200) imgs.delete(imgs.keys().next().value);
+    im = new Image(); im.decoding = 'async'; im.crossOrigin = 'anonymous'; im.onload = () => redraw(); im.src = url; imgs.set(url, im);
+  }
   return im;
+}
+// кадры поэтапного превью (data URL): держим один готовый кадр, пока декодируется следующий — без мигания
+let liveShown = null, liveNext = null;
+function liveImage(url) {
+  if (liveShown?.src === url) return liveShown;
+  if (liveNext?.src !== url) {
+    const im = new Image();
+    im.onload = () => { if (liveNext === im) { liveShown = im; liveNext = null; redraw(); } };
+    im.src = url; liveNext = im;
+  }
+  return liveShown;
 }
 
 // ---------- отрисовка ----------
@@ -113,16 +165,17 @@ export function draw() {
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; cv.style.width = `${W}px`; cv.style.height = `${H}px`; }
   const c = cv.getContext('2d');
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
-  c.fillStyle = '#18191c'; c.fillRect(0, 0, W, H);
+  c.fillStyle = K.bg; c.fillRect(0, 0, W, H);
   const g = 20 * view.z;
-  c.fillStyle = '#2a2c31';
-  if (g > 6) for (let x = view.x % g; x < W; x += g) for (let y = view.y % g; y < H; y += g) c.fillRect(x, y, 1.2, 1.2);
+  c.fillStyle = K.dots;
+  if (g > 6) for (let x = view.x % g; x < W; x += g) for (let y = view.y % g; y < H; y += g) c.fillRect(x, y, 1.3, 1.3);
   if (!d) return;
   c.save();
   c.translate(view.x, view.y); c.scale(view.z, view.z);
   const L = new Map(d.data.nodes.map(n => [n.id, layout(n, d)]));
   const byId = new Map(d.data.nodes.map(n => [n.id, n]));
   // связи
+  c.lineCap = 'round';
   d.data.links.forEach((l, i) => {
     const a = L.get(l.from), b = L.get(l.to);
     if (!a || !b) return;
@@ -130,118 +183,208 @@ export function draw() {
     if (!p || !q) return;
     const t = a.outs.find(o => o.name === l.out)?.type;
     const muted = byId.get(l.from).mode === 'mute' || byId.get(l.to).mode === 'mute';
-    c.globalAlpha = muted ? 0.35 : 1;
-    c.strokeStyle = i === selLink() ? '#ffd24a' : tcol(t);
-    c.lineWidth = i === selLink() ? 3.5 : 2.2;
+    const hot = i === selLink() || selNode() === l.from || selNode() === l.to;
+    c.globalAlpha = muted ? 0.3 : hot ? 1 : 0.8;
+    c.strokeStyle = i === selLink() ? K.warn : tcol(t);
+    c.lineWidth = i === selLink() ? 3.5 : hot ? 3 : 2.2;
     curve(c, p, q);
     c.globalAlpha = 1;
   });
   if (linking) {
-    c.strokeStyle = tcol(linking.type); c.lineWidth = 2.2; c.setLineDash([6, 4]);
+    c.strokeStyle = tcol(linking.type); c.lineWidth = 2.4; c.setLineDash([6, 4]);
     linking.reverse ? curve(c, linking.to, linking.from) : curve(c, linking.from, linking.to);
     c.setLineDash([]);
   }
-  for (const n of d.data.nodes) drawNode(c, n, L.get(n.id));
+  // ноды вне экрана не рисуем
+  const v0 = toWorld({ x: 0, y: 0 }), v1 = toWorld({ x: W, y: H });
+  for (const n of d.data.nodes) {
+    const nl = L.get(n.id);
+    if (n.x > v1.x || n.y > v1.y || n.x + nl.w < v0.x || n.y + nl.h < v0.y) continue;
+    // одна сломанная нода не должна гасить отрисовку остальных
+    c.save();
+    try { drawNode(c, n, nl); } catch (e) { console.error('draw node', n.id, e); } finally { c.restore(); }
+  }
   c.restore();
-  c.fillStyle = '#6c707a'; c.font = '11px Segoe UI';
+  c.fillStyle = K.dim; c.font = `11px ${FONT}`;
   const run = S.run?.wf === d.id ? ` · выполняется ${S.run.node || '…'}` : '';
   c.fillText(`${d.id} · нод ${d.data.nodes.length} · связей ${d.data.links.length} · ${Math.round(view.z * 100)}%${run}`, 10, H - 10);
   if (!d.data.nodes.length) {
-    c.fillStyle = '#80848e'; c.font = '14px Segoe UI'; c.textAlign = 'center';
+    c.fillStyle = K.dim; c.font = `14px ${FONT}`; c.textAlign = 'center';
     c.fillText('Двойной щелчок — добавить ноду · или перетащите из палитры слева', W / 2, H / 2);
     c.textAlign = 'left';
   }
+}
+
+// значение виджета для показа: модель библиотеки — имя файла без папок и расширения
+function widgetText(n, def, k, inp, v) {
+  if (inp.type === 'BOOLEAN') return v ? 'да' : 'нет';
+  if (v === '' || v == null) return inp.picker || inp.upload ? 'не выбрано' : '—';
+  if (inp.picker === 'library_model' || inp.upload) return String(v).split(/[\\/]/).pop().replace(/\.(safetensors|ckpt|pt|pth|bin|gguf)$/i, '');
+  if (inp.picker === 'llm_model') { const m = llmModel(n, def); return `${m?.vision ? '👁 ' : ''}${v}`; }
+  if (inp.type === 'FLOAT') return String(Math.round(Number(v) * 1000) / 1000);
+  return String(v).replace(/\n/g, ' ⏎ ');
 }
 
 function drawNode(c, n, L) {
   const { def, pins, widgets, outs, w, top, wTop, pTop, pv, ph } = L;
   const sel = n.id === selNode(), bad = issues.has(n.id) || outputsOf(n.id)?._error;
   const running = S.run?.wf === S.current.workflow && S.run.node === n.id;
+  const done = !running && outputsOf(n.id) && !bad;
   const muted = n.mode === 'mute';
+  const cat = def ? catColor(def.cat) : K.err;
   c.globalAlpha = muted ? 0.45 : 1;
-  c.shadowColor = '#000a'; c.shadowBlur = 12;
-  c.fillStyle = '#2a2c31'; rr(c, n.x, n.y, w, L.h, 7); c.fill();
-  c.shadowBlur = 0;
-  c.fillStyle = def ? catColor(def.cat) : '#6a2a2a'; rr(c, n.x, n.y, w, HEAD, n.collapsed ? 7 : [7, 7, 0, 0]); c.fill();
-  c.strokeStyle = running ? '#5fd38a' : bad ? '#ff5a4f' : sel ? '#ffd24a' : '#0c0d0f';
-  c.lineWidth = running || bad || sel ? 2 : 1; rr(c, n.x, n.y, w, L.h, 7); c.stroke();
-  // шапка
-  c.fillStyle = '#fff'; c.font = 'bold 12px Segoe UI';
-  const title = n.title || def?.title || n.type;
-  c.fillText(clipText(c, `${n.collapsed ? '▸ ' : ''}${title}`, w - 70), n.x + 10, n.y + 17);
-  c.fillStyle = '#ffffff99'; c.font = '10px Consolas'; c.textAlign = 'right';
-  const o = outputsOf(n.id), t = o?._time;
-  c.fillText(muted ? 'выкл' : t != null ? `${t}s` : n.id, n.x + w - 8, n.y + 17);
-  c.textAlign = 'left';
+  // корпус
+  c.shadowColor = '#0009'; c.shadowBlur = sel ? 18 : 10; c.shadowOffsetY = 2;
+  c.fillStyle = K.node; rr(c, n.x, n.y, w, L.h, R); c.fill();
+  c.shadowBlur = 0; c.shadowOffsetY = 0;
+  // шапка: чуть светлее корпуса, полоска цвета категории сверху
+  c.save(); rr(c, n.x, n.y, w, L.h, R); c.clip();
+  c.fillStyle = K.head; c.fillRect(n.x, n.y, w, HEAD);
+  c.fillStyle = cat; c.fillRect(n.x, n.y, w, 3);
+  if (!n.collapsed) { c.fillStyle = K.edge; c.fillRect(n.x, n.y + HEAD, w, 1); }
   if (running && S.run.progress?.max) {
-    c.fillStyle = '#5fd38a'; c.fillRect(n.x + 1, n.y + HEAD - 3, (w - 2) * clamp(S.run.progress.value / S.run.progress.max, 0, 1), 3);
+    c.fillStyle = K.ok; c.fillRect(n.x, n.y + HEAD - 2, w * clamp(S.run.progress.value / S.run.progress.max, 0, 1), 2);
   }
+  c.restore();
+  c.strokeStyle = running ? K.ok : bad ? K.err : sel ? K.sel : K.edge;
+  c.lineWidth = running || bad || sel ? 2 : 1; rr(c, n.x, n.y, w, L.h, R); c.stroke();
+  // заголовок + статус справа
+  const title = n.title || def?.title || n.type;
+  let right = muted ? 'выкл' : n.id, rc = K.dim;
+  const o = outputsOf(n.id);
+  if (running) { const p = S.run.progress; right = p?.max ? `${p.value}/${p.max}` : '…'; rc = K.ok; }
+  else if (bad) { right = 'ошибка'; rc = K.err; }
+  else if (o?._time != null) { right = `${o._time}s`; rc = K.fg2; }
+  c.font = `10.5px ${MONO}`; c.textAlign = 'right'; c.fillStyle = rc;
+  const rw = c.measureText(right).width;
+  c.fillText(right, n.x + w - 10, n.y + 19.5);
+  c.textAlign = 'left';
+  let tx = n.x + 10;
+  if (n.collapsed) { c.fillStyle = K.dim; c.font = `10px ${FONT}`; c.fillText('▸', tx, n.y + 19.5); tx += 12; }
+  if (running || done || bad) {
+    c.beginPath(); c.arc(tx + 3, n.y + 16, 3, 0, 7); c.fillStyle = running ? K.ok : bad ? K.err : K.ok; c.globalAlpha = done ? 0.6 : 1; c.fill(); c.globalAlpha = muted ? 0.45 : 1;
+    tx += 11;
+  }
+  c.fillStyle = K.fg; c.font = `600 12.5px ${FONT}`;
+  c.fillText(clipText(c, title, n.x + w - rw - 22 - tx), tx, n.y + 20);
   if (n.collapsed) {
-    for (const k in L.inPos) dot(c, L.inPos[k], tcol(def.inputs[k].type), false);
+    for (const k in L.inPos) dot(c, L.inPos[k], tcol(def?.inputs[k]?.type), isLinkedIn(n.id, k));
     for (const oo of outs) dot(c, L.outPos[oo.name], tcol(oo.type), true);
     c.globalAlpha = 1;
     return;
   }
+  // сильно отдалено — только корпус, пины и картинки: текст всё равно не читается, а рисовать его дорого
+  const lod = view.z < 0.3;
   // слоты
-  c.font = '11px Segoe UI';
+  c.font = `11.5px ${FONT}`;
   pins.forEach((k, i) => {
-    const t = def.inputs[k].type, y = top + i * ROW + ROW / 2;
-    dot(c, L.inPos[k], tcol(t), isLinkedIn(n.id, k), hover?.node === n.id && hover.in === k);
-    c.fillStyle = '#c4c7ce'; c.fillText(clipText(c, k + (def.inputs[k].optional ? '' : ''), w / 2 - 20), n.x + 12, y + 4);
+    const inp = def.inputs[k], y = top + i * ROW + ROW / 2;
+    dot(c, L.inPos[k], tcol(inp.type), isLinkedIn(n.id, k), hover?.node === n.id && hover.in === k);
+    if (lod) return;
+    c.fillStyle = inp.optional ? K.dim : K.fg2; c.fillText(clipText(c, k, w / 2 - 20), n.x + 14, y + 4);
   });
   outs.forEach((oo, i) => {
     const y = top + i * ROW + ROW / 2;
     dot(c, L.outPos[oo.name], tcol(oo.type), true, hover?.node === n.id && hover.out === oo.name);
-    c.fillStyle = '#c4c7ce'; c.textAlign = 'right'; c.fillText(clipText(c, oo.name, w / 2 - 20), n.x + w - 12, y + 4); c.textAlign = 'left';
+    if (lod) return;
+    c.fillStyle = K.fg2; c.textAlign = 'right'; c.fillText(clipText(c, oo.name, w / 2 - 20), n.x + w - 14, y + 4); c.textAlign = 'left';
   });
-  // виджеты
+  // виджеты — поля UI Kit: тёмный фон, рамка, подпись слева, значение справа
   widgets.forEach((k, i) => {
     const inp = def.inputs[k], y = wTop + i * ROW;
-    dot(c, L.inPos[k], tcol(inp.type), false, hover?.node === n.id && hover.in === k, 3.2);
-    c.fillStyle = hover?.node === n.id && hover.widget === k ? '#3a3d45' : '#202226';
-    rr(c, n.x + 10, y + 2, w - 20, ROW - 4, 9); c.fill();
-    c.font = '11px Segoe UI'; c.fillStyle = '#8d919b'; c.fillText(clipText(c, k, w * 0.38), n.x + 20, y + 15);
+    const hot = hover?.node === n.id && hover.widget === k;
+    dot(c, L.inPos[k], tcol(inp.type), false, hover?.node === n.id && hover.in === k, 3);
+    const fx = n.x + 10, fw = w - 20, fy = y + 2, fh = ROW - 4;
+    c.fillStyle = K.field; rr(c, fx, fy, fw, fh, 4); c.fill();
+    if (lod) return;
+    c.strokeStyle = hot ? K.fieldHi : K.fieldBd; c.lineWidth = 1; rr(c, fx + 0.5, fy + 0.5, fw - 1, fh - 1, 4); c.stroke();
     const v = n.props?.[k] ?? inp.default;
-    let vs = inp.type === 'BOOLEAN' ? (v ? '● да' : '○ нет') : v === '' || v == null ? '—' : String(v).replace(/\n/g, ' ⏎ ');
-    c.fillStyle = '#e4e6ea'; c.textAlign = 'right';
-    if (inp.picker === 'library_model') {
-      const cat = inp.cat || (t.n.props?.[inp.cat_input] ?? t.L.def.inputs[inp.cat_input]?.default);
-      return libraryPicker(e, { cat, value: v, onPick: name => setProp(t.node, t.widget, name, false) });
+    const num = ['INT', 'FLOAT'].includes(inp.type), menu = inp.type === 'COMBO' || inp.picker || inp.upload;
+    const ty = y + ROW / 2 + 4;
+    if (num) {
+      c.fillStyle = hot ? K.fg2 : K.off; c.font = `10px ${FONT}`;
+      c.fillText('◀', fx + 5, ty - 0.5); c.textAlign = 'right'; c.fillText('▶', fx + fw - 5, ty - 0.5); c.textAlign = 'left';
     }
-    if (inp.picker === 'llm_model') { const m = llmModel(n, def); if (m) vs = `${m.vision ? '👁 ' : ''}${vs}`; else if (S.models[n.props?.[inp.provider_input]]?.models?.length) c.fillStyle = '#e0a35f'; }
-    c.fillText(clipText(c, vs, w * 0.55), n.x + w - (['INT', 'FLOAT', 'COMBO'].includes(inp.type) || inp.picker ? 26 : 20), y + 15);
-    if (['INT', 'FLOAT'].includes(inp.type)) { c.fillStyle = '#6c707a'; c.textAlign = 'left'; c.fillText('‹', n.x + 13, y + 15); c.textAlign = 'right'; c.fillText('›', n.x + w - 14, y + 15); }
-    if (inp.type === 'COMBO' || inp.picker) { c.fillStyle = '#6c707a'; c.fillText('▾', n.x + w - 14, y + 15); }
+    const lx = fx + (num ? 18 : 8);
+    c.font = `11px ${FONT}`; c.fillStyle = K.dim;
+    const label = clipText(c, k, fw * 0.42);
+    c.fillText(label, lx, ty);
+    const lw = c.measureText(label).width;
+    if (isMagicChanged(n, k)) { c.fillStyle = K.warn; c.beginPath(); c.arc(lx + lw + 5, ty - 3.5, 2.2, 0, 7); c.fill(); }
+    if (inp.type === 'BOOLEAN') {
+      // тумблер
+      const tw = 24, th = 13, tx0 = fx + fw - tw - 7, ty0 = fy + (fh - th) / 2;
+      c.fillStyle = v ? K.accent : K.fieldBd; rr(c, tx0, ty0, tw, th, th / 2); c.fill();
+      c.fillStyle = '#fff'; c.beginPath(); c.arc(v ? tx0 + tw - th / 2 : tx0 + th / 2, ty0 + th / 2, th / 2 - 2, 0, 7); c.fill();
+      return;
+    }
+    let vs = widgetText(n, def, k, inp, v);
+    const empty = (v === '' || v == null) && (inp.picker || inp.upload);
+    c.fillStyle = empty ? K.warn : K.fg; c.textAlign = 'right';
+    if (inp.picker === 'llm_model' && !llmModel(n, def) && S.models[n.props?.[inp.provider_input]]?.models?.length) c.fillStyle = K.warn;
+    const vx = fx + fw - (num ? 18 : menu ? 20 : 8);
+    c.font = `${num ? `11px ${MONO}` : `11.5px ${FONT}`}`;
+    c.fillText(clipText(c, vs, vx - lx - lw - 10), vx, ty);
+    if (menu) { c.fillStyle = K.dim; c.font = `9px ${FONT}`; c.fillText('▼', fx + fw - 7, ty - 1); }
     c.textAlign = 'left';
   });
+  if (L.mrow && !lod) drawMagic(c, n, L);
   // превью
   if (pv && ph) {
     const x = n.x + 10, y = pTop, pw = w - 20;
-    c.fillStyle = pv.kind === 'error' ? '#3a1f22' : '#1d1f23'; rr(c, x, y, pw, ph, 5); c.fill();
-    c.save(); c.beginPath(); c.rect(x, y, pw, ph); c.clip();
+    c.fillStyle = pv.kind === 'error' ? K.errBg : K.field; rr(c, x, y, pw, ph, 6); c.fill();
+    c.save(); rr(c, x, y, pw, ph, 6); c.clip();
     if (pv.kind === 'image') {
-      const list = pv.images.slice(0, 4), cw = pw / list.length;
-      list.forEach((f, i) => {
-        const im = image(fileUrl(f));
-        if (!im.complete || !im.naturalWidth) return;
-        const k = Math.min((cw - 4) / im.naturalWidth, (ph - 4) / im.naturalHeight);
+      const cw = pw / pv.cols, chh = ph / pv.rows;
+      pv.list.forEach((u, i) => {
+        const im = pv.live ? liveImage(u) : image(u);
+        if (!im?.complete || !im.naturalWidth) return;
+        const cx = x + (i % pv.cols) * cw, cy = y + Math.floor(i / pv.cols) * chh;
+        const k = Math.min((cw - 2) / im.naturalWidth, (chh - 2) / im.naturalHeight);
         const iw = im.naturalWidth * k, ih = im.naturalHeight * k;
-        c.drawImage(im, x + i * cw + (cw - iw) / 2, y + (ph - ih) / 2, iw, ih);
+        c.imageSmoothingQuality = 'high';
+        c.drawImage(im, cx + (cw - iw) / 2, cy + (chh - ih) / 2, iw, ih);
       });
-    } else {
-      c.font = '11px Consolas'; c.fillStyle = pv.kind === 'error' ? '#ff8a80' : pv.kind === 'stream' ? '#9fe0b4' : '#c9ccd3';
-      const lines = wrapText(c, pv.text, pw - 12);
-      const shown = pv.kind === 'stream' ? lines.slice(-Math.floor((ph - 8) / 14)) : lines;
-      shown.forEach((ln, i) => { const yy = y + 14 + i * 14; if (yy < y + ph) c.fillText(ln, x + 6, yy); });
+      const tag = pv.live ? `шаг ${pv.step}${S.run?.progress?.max ? `/${S.run.progress.max}` : ''}` : pv.urls.length > pv.list.length ? `+${pv.urls.length - pv.list.length}` : pv.urls.length > 1 ? `${pv.urls.length} шт.` : '';
+      if (tag) badge(c, tag, x + 6, y + 6, pv.live ? K.ok : null);
+    } else if (!lod) {
+      c.font = `11px ${MONO}`; c.fillStyle = pv.kind === 'error' ? '#F0A8A6' : pv.kind === 'stream' ? '#9FE0B4' : K.fg2;
+      const lines = wrapText(c, pv.text, pw - 14);
+      const shown = pv.kind === 'stream' ? lines.slice(-Math.floor((ph - 8) / 15)) : lines;
+      shown.forEach((ln, i) => { const yy = y + 16 + i * 15; if (yy < y + ph) c.fillText(ln, x + 7, yy); });
     }
     c.restore();
   }
   c.globalAlpha = 1;
 }
 
+// строка Magic KSampler: профиль модели слева, «Сбросить» справа (активна, когда значения изменены руками)
+function drawMagic(c, n, L) {
+  const m = magicState(cur(), n), fx = n.x + 10, fw = L.w - 20, y = L.mTop, ty = y + ROW / 2 + 4;
+  c.font = `11px ${FONT}`;
+  c.fillStyle = m.error ? K.err : K.accent;
+  const left = !m.src.ckpt ? '✦ подключите Load Checkpoint' : m.loading ? '✦ подбор параметров…' : m.error ? `✦ ${m.error}` : `✦ Magic · ${m.profile || '…'}`;
+  const bw = 72;
+  c.fillText(clipText(c, left, fw - bw - 8), fx + 2, ty);
+  const on_ = m.changed.length > 0, hot = hover?.node === n.id && hover.magic;
+  c.fillStyle = on_ ? (hot ? K.accent : K.fieldBd) : K.field; rr(c, fx + fw - bw, y + 3, bw, ROW - 6, 4); c.fill();
+  c.fillStyle = on_ ? K.fg : K.off; c.textAlign = 'center';
+  c.fillText(on_ ? `Сбросить (${m.changed.length})` : 'по Magic', fx + fw - bw / 2, ty);
+  c.textAlign = 'left';
+}
+
+function badge(c, text, x, y, color) {
+  c.font = `600 10px ${FONT}`;
+  const bw = c.measureText(text).width + 12;
+  c.fillStyle = '#000000b0'; rr(c, x, y, bw, 17, 8.5); c.fill();
+  if (color) { c.fillStyle = color; c.beginPath(); c.arc(x + 8, y + 8.5, 3, 0, 7); c.fill(); }
+  c.fillStyle = '#fff'; c.fillText(text, x + (color ? 14 : 6), y + 12);
+}
+
 function dot(c, p, color, filled, hot = false, r = 4.5) {
-  c.beginPath(); c.arc(p.x, p.y, hot ? r + 2 : r, 0, 7);
-  if (filled) { c.fillStyle = color; c.fill(); } else { c.fillStyle = '#2a2c31'; c.fill(); c.strokeStyle = color; c.lineWidth = 2; c.stroke(); }
+  if (hot) { c.beginPath(); c.arc(p.x, p.y, r + 5, 0, 7); c.fillStyle = `${color}40`; c.fill(); }
+  c.beginPath(); c.arc(p.x, p.y, hot ? r + 1.5 : r, 0, 7);
+  if (filled) { c.fillStyle = color; c.fill(); } else { c.fillStyle = K.node; c.fill(); c.strokeStyle = color; c.lineWidth = 2; c.stroke(); }
 }
 const isLinkedIn = (id, k) => cur()?.data.links.some(l => l.to === id && l.in === k);
 
@@ -254,10 +397,11 @@ function wrapText(c, text, width) {
       if (c.measureText(line + ch).width > width) { out.push(line); line = ch; } else line += ch;
     }
     out.push(line);
+    if (out.length > 200) break;
   }
   return out;
 }
-function clipText(c, s, w) { s = String(s); if (c.measureText(s).width <= w) return s; while (s.length > 1 && c.measureText(`${s}…`).width > w) s = s.slice(0, -1); return `${s}…`; }
+function clipText(c, s, w) { s = String(s); if (w <= 8) return ''; if (c.measureText(s).width <= w) return s; while (s.length > 1 && c.measureText(`${s}…`).width > w) s = s.slice(0, -1); return `${s}…`; }
 function rr(c, x, y, w, h0, r) { c.beginPath(); c.roundRect(x, y, w, h0, r); }
 
 // ---------- попадания ----------
@@ -275,7 +419,12 @@ function hit(p) {
       const side = p.x < n.x + 26 ? -1 : p.x > n.x + L.w - 26 ? 1 : 0;
       return { node: n.id, n, L, widget: k, side };
     }
+    if (!n.collapsed && L.mrow && p.y >= L.mTop && p.y < L.mTop + L.mrow) return { node: n.id, n, L, magic: true, reset: p.x > n.x + L.w - 82 };
     if (p.x > n.x + L.w - 10 && p.y > n.y + L.h - 10) return { node: n.id, n, L, resize: true };
+    if (!n.collapsed && L.pv?.kind === 'image' && p.y >= L.pTop && p.y < L.pTop + L.ph) {
+      const pv = L.pv, i = Math.floor((p.x - n.x - 10) / ((L.w - 20) / pv.cols)) + pv.cols * Math.floor((p.y - L.pTop) / (L.ph / pv.rows));
+      return { node: n.id, n, L, preview: clamp(i, 0, pv.list.length - 1), body: true };
+    }
     return { node: n.id, n, L, body: true };
   }
   return null;
@@ -387,16 +536,21 @@ function onDown(e) {
     if (inp.type === 'BOOLEAN') return setProp(t.node, t.widget, !v, false);
     if (['INT', 'FLOAT'].includes(inp.type) && t.side) return setProp(t.node, t.widget, stepNum(inp, v, t.side), true);
     if (inp.type === 'COMBO') return comboMenu(e, t.node, t.widget, inp, v);
+    if (inp.upload) return imagePicker(e, { value: v, onPick: f => setProp(t.node, t.widget, f, false) });
     if (inp.picker === 'library_model') {
       const cat = inp.cat || (t.n.props?.[inp.cat_input] ?? t.L.def.inputs[inp.cat_input]?.default);
       return libraryPicker(e, { cat, value: v, onPick: name => setProp(t.node, t.widget, name, false) });
     }
-    if (inp.picker === 'comfy_workflow') return comfyWorkflowPicker(e, { value: v, onPick: id => setProp(t.node, t.widget, id, false) });
     if (inp.picker === 'llm_model') {
       const pid = t.n.props?.[inp.provider_input] ?? t.L.def.inputs[inp.provider_input]?.default;
       return modelPicker(e, { provider: pid, value: v, onPick: id => setProp(t.node, t.widget, id, false) });
     }
     if (['INT', 'FLOAT'].includes(inp.type)) return dragNum(e, t, inp, v);
+    return;
+  }
+  if (t?.magic) {
+    select({ kind: 'node', doc: d.id, id: t.node });
+    if (t.reset) resetMagic(d.id, t.node);
     return;
   }
   if (t?.resize) {
@@ -421,7 +575,7 @@ function onDown(e) {
 function pan(e, sp) {
   const v0 = { ...view };
   cv.style.cursor = 'grabbing';
-  drag(ev => { const q = mouse(ev); view.x = v0.x + q.x - sp.x; view.y = v0.y + q.y - sp.y; draw(); }, () => { cv.style.cursor = ''; views.set(S.current.workflow, { ...view }); });
+  drag(ev => { const q = mouse(ev); view.x = v0.x + q.x - sp.x; view.y = v0.y + q.y - sp.y; draw(); }, () => { cv.style.cursor = ''; setView(); });
 }
 
 const stepNum = (inp, v, dir) => {
@@ -487,10 +641,10 @@ function onMove(e) {
   lastMouse = mouse(e);
   if (linking) return;
   const t = hit(toWorld(lastMouse));
-  const nh = t ? { node: t.node, in: t.in, out: t.out, widget: t.widget } : null;
+  const nh = t ? { node: t.node, in: t.in, out: t.out, widget: t.widget, magic: t.reset } : null;
   if (JSON.stringify(nh) !== JSON.stringify(hover)) {
     hover = nh;
-    cv.style.cursor = t?.in || t?.out ? 'crosshair' : t?.resize ? 'nwse-resize' : t?.widget ? (['INT', 'FLOAT'].includes(t.L.def.inputs[t.widget].type) ? 'ew-resize' : 'pointer') : t ? 'move' : '';
+    cv.style.cursor = t?.in || t?.out ? 'crosshair' : t?.resize ? 'nwse-resize' : t?.widget ? (['INT', 'FLOAT'].includes(t.L.def.inputs[t.widget].type) ? 'ew-resize' : 'pointer') : t?.preview != null ? 'zoom-in' : t?.reset ? 'pointer' : t ? 'move' : '';
     draw();
   }
 }
@@ -499,15 +653,16 @@ function onDbl(e) {
   const p = toWorld(mouse(e)), t = hit(p);
   if (t?.widget) return inlineEdit(t);
   if (t?.head) return toggleCollapse(t.node);
+  if (t?.preview != null) return lightbox(t.L.pv.urls, t.preview);
   if (!t) searchBox(e, p);
 }
 
 function onWheel(e) {
   e.preventDefault();
   const sp = mouse(e), before = toWorld(sp);
-  view.z = clamp(view.z * (e.deltaY < 0 ? 1.1 : 0.9), 0.2, 2.5);
+  view.z = clamp(view.z * Math.exp(-clamp(e.deltaY, -100, 100) * 0.0015), 0.01, 40); // практически без ограничений; тачпад — плавно
   view.x = sp.x - before.x * view.z; view.y = sp.y - before.y * view.z;
-  views.set(S.current.workflow, { ...view });
+  setView();
   draw();
 }
 
@@ -595,6 +750,25 @@ function inlineEdit(t) {
   ed.focus(); ed.select?.();
 }
 
+// просмотр картинок превью во весь экран: ←/→ — листать, Esc / щелчок — закрыть
+export function lightbox(urls, i = 0) {
+  closeFloat();
+  const img = h('img', { draggable: false }), cap = h('div.cap');
+  const show = () => { img.src = urls[i]; cap.textContent = urls.length > 1 ? `${i + 1} / ${urls.length}` : ''; };
+  const close = () => { el.remove(); removeEventListener('keydown', key, true); };
+  const key = ev => {
+    if (ev.key === 'Escape') close();
+    else if (ev.key === 'ArrowRight' && urls.length > 1) { i = (i + 1) % urls.length; show(); }
+    else if (ev.key === 'ArrowLeft' && urls.length > 1) { i = (i - 1 + urls.length) % urls.length; show(); }
+    else return;
+    ev.preventDefault(); ev.stopPropagation();
+  };
+  const el = h('div.glight', { onclick: close }, img, cap);
+  addEventListener('keydown', key, true);
+  document.body.append(el);
+  show();
+}
+
 function comboMenu(e, id, k, inp, v) {
   closeFloat();
   const el = h('div.ui-menu.gfloat-menu', { onpointerdown: ev => ev.stopPropagation() },
@@ -629,18 +803,49 @@ function onContext(e) {
 async function onDrop(e) {
   e.preventDefault();
   const p = toWorld(mouse(e));
-  const t = e.dataTransfer.getData('text/mai-node');
+  const dt = e.dataTransfer, t = dt.getData('text/mai-node');
   if (t) return addNode(t, p);
-  const f = e.dataTransfer.getData('text/mai-file');
-  if (f) return addNode('image.load', p, { file: f });
-  for (const file of e.dataTransfer.files || []) {
+  // не картинки (текст и т.п.) — файл в input/ и нода чтения; читаем до первого await
+  const IMGX = /\.(png|jpe?g|webp|gif|bmp)$/i;
+  const other = [...(dt.files || [])].filter(f => !/^image\//.test(f.type) && !IMGX.test(f.name));
+  const mai = dt.getData('text/mai-file');
+  if (mai && !IMGX.test(mai)) return addNode('io.read_text', p, { file: mai });
+  const pending = imagesFromTransfer(dt);
+  for (const file of other) {
     try {
       const rel = await upload(file);
-      if (/\.(png|jpe?g|webp|gif)$/i.test(rel)) addNode('image.load', p, { file: rel });
-      else if (/\.json$/i.test(rel)) emit('log', { src: 'editor', level: 'info', text: `файл загружен: ${rel} (воркфлоу открывайте из папки workflows/)` });
+      if (/\.json$/i.test(rel)) emit('log', { src: 'editor', level: 'info', text: `файл загружен: ${rel} (воркфлоу открывайте из папки workflows/)` });
       else addNode('io.read_text', p, { file: rel });
     } catch (err) { emit('log', { src: 'editor', level: 'error', text: `загрузка ${file.name}: ${err.message} (сервер запущен?)` }); }
   }
+  placeImages(await pending, p);
+}
+
+// картинки на граф: на ноду со входом-загрузкой (Load Image) под курсором — заменить её файл, иначе — новые Load Image
+function placeImages(files, p) {
+  if (!files.length || !cur()) return;
+  const t = hit(p), upKey = t && Object.entries(t.L.def?.inputs || {}).find(([, i]) => i.upload === 'image')?.[0];
+  files.forEach((f, i) => {
+    if (i === 0 && upKey) setProp(t.node, upKey, f, false);
+    else addNode('image.load', { x: p.x + i * 30, y: p.y + i * 30 }, { file: f });
+  });
+}
+
+// Ctrl+V: картинка из буфера → в выбранную Load Image или новой нодой под курсором; иначе — скопированная нода
+async function onPaste(e) {
+  const el = document.activeElement;
+  if (activeView() !== 'graph' || !cv || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable) return;
+  const at = toWorld(lastMouse);
+  if (clipboardHasImage(e) || /\/view\?file=/.test(e.clipboardData?.getData('text/plain') || '')) {
+    e.preventDefault();
+    const sel = cur()?.data.nodes.find(n => n.id === selNode());
+    const upKey = sel && Object.entries(defs()[sel.type]?.inputs || {}).find(([, i]) => i.upload === 'image')?.[0];
+    const files = await imagesFromClipboard(e);
+    if (files.length && upKey) setProp(sel.id, upKey, files[0], false);
+    else placeImages(files, at);
+    return;
+  }
+  if (clip) { e.preventDefault(); paste(clip, at); }
 }
 
 // ---------- вид ----------
@@ -650,16 +855,18 @@ export function fit() {
   const Ls = d.data.nodes.map(n => [n, layout(n, d)]);
   const x0 = Math.min(...Ls.map(([n]) => n.x)) - 40, y0 = Math.min(...Ls.map(([n]) => n.y)) - 40;
   const x1 = Math.max(...Ls.map(([n, L]) => n.x + L.w)) + 40, y1 = Math.max(...Ls.map(([n, L]) => n.y + L.h)) + 40;
-  view.z = clamp(Math.min(wrap.clientWidth / (x1 - x0), wrap.clientHeight / (y1 - y0)), 0.25, 1.2);
+  view.z = clamp(Math.min(wrap.clientWidth / (x1 - x0), wrap.clientHeight / (y1 - y0)), 0.01, 1.5);
   view.x = (wrap.clientWidth - (x1 - x0) * view.z) / 2 - x0 * view.z;
   view.y = (wrap.clientHeight - (y1 - y0) * view.z) / 2 - y0 * view.z;
-  views.set(S.current.workflow, { ...view });
+  setView();
   draw();
 }
 
 function palette() {
   const groups = {};
-  for (const [t, def] of Object.entries(defs())) (groups[def.cat] ||= []).push([t, def]);
+  const ORDER = ['Loaders', 'Conditioning', 'Sampling', 'Latent', 'Image', 'AI', 'Text', 'Values', 'Logic', 'JSON', 'Files', 'Output'];
+  const rank = c => (ORDER.includes(c) ? ORDER.indexOf(c) : ORDER.length);
+  for (const [t, def] of Object.entries(defs()).sort((a, b) => rank(a[1].cat) - rank(b[1].cat))) (groups[def.cat] ||= []).push([t, def]);
   const filter = h('input.pal-q', { placeholder: 'Фильтр нод…', spellcheck: false });
   const list = h('div');
   const fill = () => {
@@ -682,6 +889,7 @@ function palette() {
 function build() {
   const v = document.getElementById('v-graph');
   if (!cur()) { v.replaceChildren(h('div.msg', {}, h('div', {}, 'Нет воркфлоу'), h('button.primary', { onclick: () => emit('new-workflow') }, 'Создать воркфлоу'))); cv = null; return; }
+  readTheme();
   view = views.get(S.current.workflow) || { x: 40, y: 20, z: 1 };
   cv = h('canvas', { tabIndex: 0 });
   wrap = h('div.graph', {}, cv);
@@ -734,7 +942,6 @@ export function graphKeys(e) {
   if (k === 'm' && !e.ctrlKey && selNode()) { toggleMute(selNode()); return true; }
   if (e.ctrlKey && k === 'd' && selNode()) { duplicate(); return true; }
   if (e.ctrlKey && k === 'c' && selNode()) { clip = structuredClone(cur().data.nodes.find(n => n.id === selNode())); return true; }
-  if (e.ctrlKey && k === 'v' && clip) { paste(clip, toWorld(lastMouse)); return true; }
   if (k === ' ' || k === 'tab') { const r = cv.getBoundingClientRect(); searchBox({ clientX: r.left + lastMouse.x, clientY: r.top + lastMouse.y }, toWorld(lastMouse)); return true; }
   return false;
 }
@@ -749,11 +956,24 @@ export function initGraph() {
   on('select', () => draw());
   for (const ev of ['run-start', 'run-node', 'run-progress', 'run-output', 'run-error', 'run-done']) on(ev, redraw);
   on('run-stream', redraw);
+  on('run-preview', redraw);
   on('models', redraw);
-  on('library-insert', it => { showView('graph'); requestAnimationFrame(() => { if (cur()) addNode('library.model', null, { cat: it.cat, name: it.name }); }); });
+  on('magic', redraw);
+  // чекпоинт / LoRA / VAE — сразу своим загрузчиком, остальное — «Library Model»
+  const LOADER = { checkpoints: ['sd.checkpoint', 'ckpt_name'], loras: ['sd.lora', 'lora_name'], vae: ['sd.vae', 'vae_name'] };
+  on('library-insert', it => {
+    showView('graph');
+    requestAnimationFrame(() => {
+      if (!cur()) return;
+      const [type, key] = LOADER[it.cat] || [];
+      if (type && defs()[type]) addNode(type, null, { [key]: it.name });
+      else addNode('library.model', null, { cat: it.cat, name: it.name });
+    });
+  });
   on('change', e => { const d = cur(); if (S.server.running && d && (!e.kind || e.kind === 'workflow')) for (const pid of providersUsed(d)) if (!S.models[pid]) getModels(pid); });
   on('run-issues', r => { if (r.wf === S.current.workflow) setIssues(r.issues); });
   on('open-workflow', id => { if (!S.docs.workflow.has(id)) return; S.current.workflow = id; emit('current', 'workflow'); showView('graph'); select({ kind: 'workflow', doc: id, id }); });
   addEventListener('view', e => { if (e.detail === 'graph') requestAnimationFrame(draw); });
   addEventListener('pointerdown', e => { if (float && !float.contains(e.target)) closeFloat(); });
+  addEventListener('paste', onPaste);
 }

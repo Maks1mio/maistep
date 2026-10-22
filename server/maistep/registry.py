@@ -52,7 +52,7 @@ def _norm_inputs(inputs):
 _loading = {"source": "builtin"}
 
 
-def node(type_, title=None, cat="Прочее", inputs=None, outputs=None, hint="", output=False, volatile=False):
+def node(type_, title=None, cat="Other", inputs=None, outputs=None, hint="", output=False, volatile=False):
     """Регистрирует ноду. outputs — dict имя → тип; output=True — конечная нода (её результат показывается в UI);
     volatile=True — не кэшировать (случайные числа, время, внешние запросы, которые должны повторяться);
     volatile=функция(входы) — не кэшировать, когда она вернёт True (например, seed = -1)."""
@@ -114,6 +114,10 @@ class Ctx:
     def progress(self, value, max_=None):
         self._run.emit("progress", {"node": self.node_id, "value": value, "max": max_})
         self.check()
+
+    def preview(self, data_url, step=None):
+        """Промежуточная картинка (data:image/jpeg;base64,…) — UI показывает её в ноде, пока она работает."""
+        self._run.emit("preview", {"node": self.node_id, "image": data_url, "step": step})
 
     def stream(self, text):
         """Кусок текста по мере генерации — UI дописывает его в превью ноды."""

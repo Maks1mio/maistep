@@ -17,6 +17,7 @@ export const S = {
   nodes: {},             // каталог нод сервера (/api/nodes)
   run: null,             // текущий запуск: { prompt_id, node, progress, … }
   outputs: {},           // последние результаты по нодам: workflowId → { nodeId: ui }
+  componentsJob: null,  // установка компонентов (server/maistep/components.py)
   assets: [],
 };
 
@@ -88,12 +89,14 @@ export async function removeDoc(kind, id) {
   emit('log', { src: 'editor', level: 'info', text: `${PATHS[kind](id)} удалён` });
 }
 
-export async function save(d) {
+export async function save(d, { quiet = false } = {}) {
+  const snapAt = snap(d);
   await invoke('data_write', { path: PATHS[d.kind](d.id), value: d.data, pretty: true });
-  d.dirty = false;
+  // правка, сделанная во время записи, остаётся несохранённой — её подхватит следующее автосохранение
+  d.dirty = snap(d) !== snapAt;
   d.created = false;
   emit('saved', d);
-  emit('log', { src: 'editor', level: 'ok', text: `сохранено: ${PATHS[d.kind](d.id)}` });
+  if (!quiet) emit('log', { src: 'editor', level: 'ok', text: `сохранено: ${PATHS[d.kind](d.id)}` });
 }
 
 export async function saveAll() {

@@ -1,0 +1,147 @@
+{
+  "title": "SD: txt2img",
+  "about": "Базовая генерация как в ComfyUI: Load Checkpoint → CLIP Set Last Layer → Positive / Negative → Empty Latent → KSampler → VAE Decode → Save Image.",
+  "nodes": [
+    {
+      "id": "ckpt",
+      "type": "sd.checkpoint",
+      "x": 40,
+      "y": 200,
+      "props": {
+        "ckpt_name": "waiIllustriousSDXL_v160.safetensors"
+      }
+    },
+    {
+      "id": "skip",
+      "type": "sd.clip_skip",
+      "x": 380,
+      "y": 40,
+      "props": {
+        "stop_at_clip_layer": -2
+      }
+    },
+    {
+      "id": "pos",
+      "type": "sd.text_encode",
+      "x": 720,
+      "y": 0,
+      "props": {
+        "text": "masterpiece, best quality, amazing quality, 1girl, solo, cafe by the sea at night, paper lanterns, warm light, looking at viewer, smile, scenery"
+      },
+      "title": "Positive"
+    },
+    {
+      "id": "neg",
+      "type": "sd.text_encode",
+      "x": 720,
+      "y": 190,
+      "props": {
+        "text": "lowres, worst quality, bad quality, bad anatomy, bad hands, extra fingers, watermark, text, signature"
+      },
+      "title": "Negative"
+    },
+    {
+      "id": "latent",
+      "type": "sd.empty_latent",
+      "x": 720,
+      "y": 400,
+      "props": {
+        "width": 832,
+        "height": 1216,
+        "batch_size": 1
+      }
+    },
+    {
+      "id": "sampler",
+      "type": "sd.ksampler",
+      "x": 1060,
+      "y": 60,
+      "props": {
+        "seed": -1,
+        "steps": 25,
+        "cfg": 6.0,
+        "sampler_name": "euler_ancestral",
+        "scheduler": "normal",
+        "denoise": 1.0
+      }
+    },
+    {
+      "id": "decode",
+      "type": "sd.vae_decode",
+      "x": 1400,
+      "y": 60,
+      "props": {}
+    },
+    {
+      "id": "save",
+      "type": "image.save",
+      "x": 1740,
+      "y": 60,
+      "props": {
+        "prefix": "txt2img"
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": "ckpt",
+      "out": "clip",
+      "to": "skip",
+      "in": "clip"
+    },
+    {
+      "from": "skip",
+      "out": "clip",
+      "to": "pos",
+      "in": "clip"
+    },
+    {
+      "from": "skip",
+      "out": "clip",
+      "to": "neg",
+      "in": "clip"
+    },
+    {
+      "from": "ckpt",
+      "out": "model",
+      "to": "sampler",
+      "in": "model"
+    },
+    {
+      "from": "pos",
+      "out": "conditioning",
+      "to": "sampler",
+      "in": "positive"
+    },
+    {
+      "from": "neg",
+      "out": "conditioning",
+      "to": "sampler",
+      "in": "negative"
+    },
+    {
+      "from": "latent",
+      "out": "latent",
+      "to": "sampler",
+      "in": "latent_image"
+    },
+    {
+      "from": "sampler",
+      "out": "latent",
+      "to": "decode",
+      "in": "samples"
+    },
+    {
+      "from": "ckpt",
+      "out": "vae",
+      "to": "decode",
+      "in": "vae"
+    },
+    {
+      "from": "decode",
+      "out": "image",
+      "to": "save",
+      "in": "image"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-"""Ноды библиотеки моделей ComfyUI (server/maistep/library.py — только чтение)."""
+"""Model library nodes (server/maistep/library.py — read only)."""
 from maistep import node
 from maistep import library as L
 
@@ -9,15 +9,15 @@ except Exception:  # папок нет — нода всё равно досту
 DEFAULT_CAT = "loras" if "loras" in CATS else CATS[0]
 
 
-@node("library.model", title="Модель из библиотеки", cat="Модели",
-      inputs={"cat": (CATS, {"default": DEFAULT_CAT, "hint": "категория (папка ComfyUI)"}),
+@node("library.model", title="Library Model", cat="Loaders",
+      inputs={"cat": (CATS, {"default": DEFAULT_CAT, "hint": "category (models subfolder)"}),
               "name": ("STRING", {"default": "", "picker": "library_model", "cat_input": "cat",
-                                  "hint": "щёлкните — галерея моделей категории"})},
+                                  "hint": "click — model gallery of the category"})},
       outputs={"name": "STRING", "triggers": "STRING", "info": "JSON"},
-      hint="Имя модели в формате ComfyUI, её триггер-слова (из .cminfo.json / обучения) и сведения: база, архитектура, размер.")
+      hint="Model name, its trigger words (from .cminfo.json / training tags) and info: base, architecture, size.")
 def library_model(cat, name):
     if not name:
-        raise ValueError("не выбрана модель")
+        raise ValueError("no model selected")
     d = L.details(f"{cat}/{name}")
     civ = d.get("civitai") or {}
     triggers = civ.get("trained") or d.get("tags", [])[:10]

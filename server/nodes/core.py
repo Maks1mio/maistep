@@ -1,4 +1,4 @@
-"""Базовые ноды: значения, текст, JSON, логика, вывод."""
+"""Basic nodes: values, text, JSON, logic, files, output."""
 import json
 import math
 import random
@@ -9,61 +9,61 @@ from pathlib import Path
 
 from maistep import node
 
-# ---------- значения ----------
+# ---------- values ----------
 
 
-@node("value.text", title="Текст", cat="Значения", inputs={"text": ("STRING", {"multiline": True})}, outputs={"text": "STRING"})
+@node("value.text", title="Text", cat="Values", inputs={"text": ("STRING", {"multiline": True})}, outputs={"text": "STRING"})
 def value_text(text):
     return text
 
 
-@node("value.int", title="Целое", cat="Значения", inputs={"value": ("INT", {"default": 0})}, outputs={"value": "INT"})
+@node("value.int", title="Integer", cat="Values", inputs={"value": ("INT", {"default": 0})}, outputs={"value": "INT"})
 def value_int(value):
     return value
 
 
-@node("value.float", title="Число", cat="Значения", inputs={"value": ("FLOAT", {"default": 0.0, "step": 0.1})}, outputs={"value": "FLOAT"})
+@node("value.float", title="Float", cat="Values", inputs={"value": ("FLOAT", {"default": 0.0, "step": 0.1})}, outputs={"value": "FLOAT"})
 def value_float(value):
     return value
 
 
-@node("value.bool", title="Да / нет", cat="Значения", inputs={"value": ("BOOLEAN", {})}, outputs={"value": "BOOLEAN"})
+@node("value.bool", title="Boolean", cat="Values", inputs={"value": ("BOOLEAN", {})}, outputs={"value": "BOOLEAN"})
 def value_bool(value):
     return value
 
 
-@node("value.random", title="Случайное число", cat="Значения", volatile=True,
+@node("value.random", title="Random Number", cat="Values", volatile=True,
       inputs={"min": ("INT", {"default": 0}), "max": ("INT", {"default": 2**31 - 1})}, outputs={"value": "INT"},
-      hint="Новое значение при каждом запуске (seed для генерации).")
+      hint="A new value on every run (e.g. a seed).")
 def value_random(min, max):
     return random.randint(min, max)
 
 
-@node("value.now", title="Дата и время", cat="Значения", volatile=True,
+@node("value.now", title="Date & Time", cat="Values", volatile=True,
       inputs={"format": ("STRING", {"default": "%Y-%m-%d %H:%M"})}, outputs={"text": "STRING"})
 def value_now(format):
     return time.strftime(format)
 
-# ---------- текст ----------
+# ---------- text ----------
 
 
-@node("text.concat", title="Склеить текст", cat="Текст",
+@node("text.concat", title="Concatenate Text", cat="Text",
       inputs={"a": ("STRING", {"multiline": True}), "b": ("STRING", {"multiline": True}), "sep": ("STRING", {"default": "\\n"})},
       outputs={"text": "STRING"})
 def text_concat(a, b, sep):
     return a + sep.replace("\\n", "\n").replace("\\t", "\t") + b
 
 
-@node("text.template", title="Шаблон", cat="Текст",
-      inputs={"template": ("STRING", {"multiline": True, "default": "Тема: {a}\nСтиль: {b}"}),
+@node("text.template", title="Text Template", cat="Text",
+      inputs={"template": ("STRING", {"multiline": True, "default": "Topic: {a}\nStyle: {b}"}),
               "a": ("*", {"optional": True}), "b": ("*", {"optional": True}), "c": ("*", {"optional": True}), "d": ("*", {"optional": True})},
-      outputs={"text": "STRING"}, hint="Подставляет входы a b c d вместо {a} {b} {c} {d}.")
+      outputs={"text": "STRING"}, hint="Substitutes inputs a b c d for {a} {b} {c} {d}.")
 def text_template(template, a=None, b=None, c=None, d=None):
     vals = {"a": a, "b": b, "c": c, "d": d}
     return re.sub(r"\{([abcd])\}", lambda m: "" if vals[m[1]] is None else (vals[m[1]] if isinstance(vals[m[1]], str) else json.dumps(vals[m[1]], ensure_ascii=False)), template)
 
 
-@node("text.replace", title="Заменить", cat="Текст",
+@node("text.replace", title="Replace Text", cat="Text",
       inputs={"text": ("STRING", {"multiline": True}), "find": ("STRING", {}), "replace": ("STRING", {}), "regex": ("BOOLEAN", {})},
       outputs={"text": "STRING"})
 def text_replace(text, find, replace, regex):
@@ -72,7 +72,7 @@ def text_replace(text, find, replace, regex):
     return re.sub(find, replace, text) if regex else text.replace(find, replace)
 
 
-@node("text.split", title="Разбить на список", cat="Текст",
+@node("text.split", title="Split to List", cat="Text",
       inputs={"text": ("STRING", {"multiline": True}), "sep": ("STRING", {"default": "\\n"}), "skip_empty": ("BOOLEAN", {"default": True})},
       outputs={"list": "JSON", "count": "INT"})
 def text_split(text, sep, skip_empty):
@@ -81,22 +81,22 @@ def text_split(text, sep, skip_empty):
     return {"list": parts, "count": len(parts)}
 
 
-@node("text.join", title="Склеить список", cat="Текст",
+@node("text.join", title="Join List", cat="Text",
       inputs={"list": ("JSON", {}), "sep": ("STRING", {"default": "\\n"})}, outputs={"text": "STRING"})
 def text_join(list, sep):
     return sep.replace("\\n", "\n").join(x if isinstance(x, str) else json.dumps(x, ensure_ascii=False) for x in (list or []))
 
 
-@node("text.extract", title="Вытащить по regex", cat="Текст",
+@node("text.extract", title="Regex Extract", cat="Text",
       inputs={"text": ("STRING", {"multiline": True}), "pattern": ("STRING", {"default": "```(?:\\w+)?\\n([\\s\\S]*?)```"})},
-      outputs={"match": "STRING", "all": "JSON"}, hint="Первая группа (или всё совпадение). По умолчанию — блок кода из ответа LLM.")
+      outputs={"match": "STRING", "all": "JSON"}, hint="First group (or the whole match). Default pattern — a code block from an LLM answer.")
 def text_extract(text, pattern):
     ms = list(re.finditer(pattern, text))
     pick = lambda m: m.group(1) if m.groups() else m.group(0)  # noqa: E731
     return {"match": pick(ms[0]) if ms else "", "all": [pick(m) for m in ms]}
 
 
-@node("text.length", title="Длина текста", cat="Текст", inputs={"text": ("STRING", {"multiline": True})},
+@node("text.length", title="Text Length", cat="Text", inputs={"text": ("STRING", {"multiline": True})},
       outputs={"chars": "INT", "words": "INT", "lines": "INT"})
 def text_length(text):
     return {"chars": len(text), "words": len(text.split()), "lines": len(text.splitlines())}
@@ -104,16 +104,16 @@ def text_length(text):
 # ---------- JSON ----------
 
 
-@node("json.parse", title="Разобрать JSON", cat="JSON", inputs={"text": ("STRING", {"multiline": True})}, outputs={"data": "JSON"},
-      hint="Понимает и JSON внутри ```json …``` из ответа LLM.")
+@node("json.parse", title="Parse JSON", cat="JSON", inputs={"text": ("STRING", {"multiline": True})}, outputs={"data": "JSON"},
+      hint="Also understands JSON inside ```json …``` from an LLM answer.")
 def json_parse(text):
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     return json.loads(m.group(1) if m else text)
 
 
-@node("json.get", title="Поле JSON", cat="JSON",
+@node("json.get", title="Get JSON Field", cat="JSON",
       inputs={"data": ("JSON", {}), "path": ("STRING", {"default": "items.0.name"})}, outputs={"value": "*"},
-      hint="Путь через точку; числа — индексы списков.")
+      hint="Dot path; numbers are list indexes.")
 def json_get(data, path):
     cur = data
     for part in [p for p in path.split(".") if p]:
@@ -121,32 +121,32 @@ def json_get(data, path):
     return cur
 
 
-@node("json.build", title="Собрать JSON", cat="JSON",
+@node("json.build", title="Build JSON", cat="JSON",
       inputs={"a": ("*", {"optional": True}), "b": ("*", {"optional": True}), "c": ("*", {"optional": True}),
               "keys": ("STRING", {"default": "a,b,c"})}, outputs={"data": "JSON"})
 def json_build(keys, a=None, b=None, c=None):
     names = [k.strip() for k in keys.split(",")] + ["a", "b", "c"]
     return {names[i]: v for i, v in enumerate([a, b, c]) if v is not None}
 
-# ---------- логика и вычисления ----------
+# ---------- logic ----------
 
 _SAFE = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")} | {"abs": abs, "min": min, "max": max, "round": round, "len": len, "int": int, "float": float, "str": str}
 
 
-@node("logic.expr", title="Выражение", cat="Логика",
+@node("logic.expr", title="Math Expression", cat="Logic",
       inputs={"expr": ("STRING", {"default": "a * 2 + b"}), "a": ("*", {"optional": True}), "b": ("*", {"optional": True}), "c": ("*", {"optional": True})},
-      outputs={"result": "*"}, hint="Выражение Python над a, b, c и функциями math (sqrt, sin, …).")
+      outputs={"result": "*"}, hint="Python expression over a, b, c and math functions (sqrt, sin, …).")
 def logic_expr(expr, a=None, b=None, c=None):
     return eval(expr, {"__builtins__": {}}, {**_SAFE, "a": a, "b": b, "c": c})
 
 
-@node("logic.switch", title="Если", cat="Логика",
+@node("logic.switch", title="Switch", cat="Logic",
       inputs={"cond": ("BOOLEAN", {}), "then": ("*", {"optional": True}), "else": ("*", {"optional": True})}, outputs={"value": "*"})
 def logic_switch(cond, **kw):
     return kw.get("then") if cond else kw.get("else")
 
 
-@node("logic.compare", title="Сравнить", cat="Логика",
+@node("logic.compare", title="Compare", cat="Logic",
       inputs={"a": ("*", {"optional": True}), "op": (["==", "!=", "<", "<=", ">", ">=", "contains"], {}), "b": ("STRING", {})},
       outputs={"result": "BOOLEAN"})
 def logic_compare(op, b, a=None):
@@ -159,46 +159,46 @@ def logic_compare(op, b, a=None):
     return {"==": a == b, "!=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
 
 
-@node("logic.python", title="Python-код", cat="Логика",
+@node("logic.python", title="Python Code", cat="Logic",
       inputs={"code": ("STRING", {"multiline": True, "default": "result = str(a).upper()"}),
               "a": ("*", {"optional": True}), "b": ("*", {"optional": True}), "c": ("*", {"optional": True})},
-      outputs={"result": "*"}, hint="Выполняет код с переменными a, b, c; результат — переменная result. Код исполняется локально без ограничений.")
+      outputs={"result": "*"}, hint="Runs code with variables a, b, c; the result is the variable result. Runs locally without a sandbox.")
 def logic_python(code, a=None, b=None, c=None, ctx=None):
     env = {"a": a, "b": b, "c": c, "result": None, "ctx": ctx, "json": json, "re": re, "math": math}
     exec(code, env)
     return env["result"]
 
-# ---------- файлы и сеть ----------
+# ---------- files and network ----------
 
 
-@node("io.read_text", title="Прочитать файл", cat="Файлы",
-      inputs={"file": ("STRING", {"default": "input/notes.txt", "hint": "путь от корня проекта (input/…)"})}, outputs={"text": "STRING"})
+@node("io.read_text", title="Read Text File", cat="Files",
+      inputs={"file": ("STRING", {"default": "input/notes.txt", "hint": "path from the project root (input/…)"})}, outputs={"text": "STRING"})
 def io_read_text(file, ctx):
     p = (ctx.root / file).resolve()
     if ctx.root.resolve() not in p.parents:
-        raise ValueError("файл должен быть внутри проекта")
+        raise ValueError("the file must be inside the project")
     return p.read_text("utf-8")
 
 
-@node("io.http", title="HTTP-запрос", cat="Файлы", volatile=True,
+@node("io.http", title="HTTP Request", cat="Files", volatile=True,
       inputs={"url": ("STRING", {"default": "https://example.com"}), "method": (["GET", "POST"], {}),
-              "body": ("STRING", {"multiline": True, "optional": True}), "headers": ("STRING", {"default": "{}", "hint": "JSON-объект заголовков"})},
+              "body": ("STRING", {"multiline": True, "optional": True}), "headers": ("STRING", {"default": "{}", "hint": "headers as a JSON object"})},
       outputs={"text": "STRING", "status": "INT"})
 def io_http(url, method, headers, body=""):
     req = urllib.request.Request(url, data=body.encode() if method == "POST" and body else None, method=method, headers=json.loads(headers or "{}"))
     with urllib.request.urlopen(req, timeout=60) as r:
         return {"text": r.read().decode("utf-8", "replace"), "status": r.status}
 
-# ---------- вывод ----------
+# ---------- output ----------
 
 
-@node("output.show", title="Показать", cat="Вывод", output=True, inputs={"value": ("*", {})}, outputs={},
-      hint="Конечная нода: значение видно на ноде и во вкладке Results.")
+@node("output.show", title="Show", cat="Output", output=True, inputs={"value": ("*", {})}, outputs={},
+      hint="Output node: the value is shown on the node and in Results.")
 def output_show(value):
     return {"ui": {"text": value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2, default=str)}}
 
 
-@node("output.save_text", title="Сохранить текст", cat="Вывод", output=True,
+@node("output.save_text", title="Save Text", cat="Output", output=True,
       inputs={"text": ("STRING", {"multiline": True}), "name": ("STRING", {"default": "result.md"})}, outputs={"file": "STRING"})
 def output_save_text(text, name, ctx):
     stem, ext = Path(name).stem or "result", Path(name).suffix or ".txt"

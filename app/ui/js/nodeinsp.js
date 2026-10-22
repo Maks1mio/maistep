@@ -7,7 +7,8 @@ import { defs, deleteSel, issuesOf, TYPE_COLOR, llmModel } from './graph.js';
 import { fileUrl, queuePrompt, upload } from './backend.js';
 import { modelPicker, badges } from './modelpick.js';
 import { libraryPicker } from './library.js';
-import { comfyWorkflowPicker, bindingsHelper, comfyStatus, statusRow } from './comfybridge.js';
+import { imagePicker } from './images.js';
+import { MAGIC, MAGIC_KEYS, magicState, fetchRec, resetMagic, refreshMagic } from './magic.js';
 
 const chip = t => h('span.tchip', { style: { borderColor: TYPE_COLOR[t] || '#b5b8c0', color: TYPE_COLOR[t] || '#b5b8c0' } }, t);
 
@@ -19,11 +20,6 @@ function widget(d, n, k, inp) {
     const i = text(v, set, { placeholder: 'имя модели' });
     const cat = () => inp.cat || (n.props?.[inp.cat_input] ?? defs()[n.type].inputs[inp.cat_input]?.default);
     const btn = h('button.icon', { 'data-tip': 'Галерея моделей', onclick: () => libraryPicker(btn, { cat: cat(), value: i.value, onPick: name => { i.value = name; set(name); } }) }, icon('image', { size: 14 }));
-    return h('div.row', { style: { flex: 1 } }, i, btn);
-  }
-  if (inp.picker === 'comfy_workflow') {
-    const i = text(v, set, { placeholder: 'ComfyUI:файл.json' });
-    const btn = h('button.icon', { 'data-tip': 'Выбрать воркфлоу', onclick: () => comfyWorkflowPicker(btn, { value: i.value, onPick: id => { i.value = id; set(id); emit('change', { kind: 'workflow', id: d.id, undo: true }); } }) }, icon('open', { size: 14 }));
     return h('div.row', { style: { flex: 1 } }, i, btn);
   }
   if (inp.picker === 'llm_model') {
@@ -44,27 +40,15 @@ function widget(d, n, k, inp) {
   const i = text(v, set, { placeholder: inp.hint || '' });
   if (inp.upload) {
     const f = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' } });
+    const put = rel => { i.value = rel; set(rel); emit('change', { kind: 'workflow', id: d.id }); };
     f.onchange = async () => {
-      try { const rel = await upload(f.files[0]); i.value = rel; set(rel); emit('change', { kind: 'workflow', id: d.id }); }
+      try { put(await upload(f.files[0])); }
       catch (e) { emit('log', { src: 'editor', level: 'error', text: `загрузка: ${e.message}` }); }
     };
-    return h('div.row', { style: { flex: 1 } }, i, f, h('button.icon', { 'data-tip': 'Загрузить файл в input/…', onclick: () => f.click() }, icon('upload', { size: 14 })));
+    const lib = h('button.icon', { 'data-tip': 'Выбрать из библиотеки приложения (input/, output/)', onclick: () => imagePicker(lib, { value: i.value, onPick: put }) }, icon('image', { size: 14 }));
+    return h('div.row', { style: { flex: 1 } }, i, f, lib, h('button.icon', { 'data-tip': 'Загрузить с диска (проводник) в input/…', onclick: () => f.click() }, icon('upload', { size: 14 })));
   }
   return i;
-}
-
-// ноды ComfyUI: статус ComfyUI и (для «Воркфлоу ComfyUI») поля воркфлоу с кнопками привязки a–d
-function comfyExtras(d, n, def) {
-  if (def.cat !== 'ComfyUI') return [];
-  const st = h('div');
-  comfyStatus().then(s => st.replaceChildren(statusRow(s)));
-  const out = [st];
-  if (n.type === 'comfy.workflow') {
-    const get = () => doc('workflow', d.id)?.data.nodes.find(z => z.id === n.id)?.props?.bindings || '';
-    const set = v => { edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); nn.props ||= {}; nn.props.bindings = v; }, { label: 'привязки' }); emit('change', { kind: 'workflow', id: d.id, undo: true }); };
-    out.push(bindingsHelper(n.props?.workflow, get, set));
-  }
-  return out;
 }
 
 // карточка выбранной модели LLM: название, значки, контекст, вывод
@@ -75,6 +59,36 @@ function modelCard(n, def) {
   return [h('div.mcard', {}, h('div.row', {}, h('b', {}, m.name), h('span.grow'), ...badges(m)),
     h('div.hint', {}, [m.company, m.series, m.max_output ? `вывод до ${m.max_output.toLocaleString('ru')} ток.` : '', m.tools ? 'инструменты' : ''].filter(Boolean).join(' · ')),
     !m.vision ? h('div.hint', {}, 'картинки не принимает — вход image скрыт') : null)];
+}
+
+// Magic KSampler: профиль модели, рекомендованные значения и откуда они, LoRA, подсказки к промпту
+function magicCard(d, n) {
+  if (n.type !== MAGIC) return [];
+  const m = magicState(d, n);
+  if (!m.src.ckpt) return [h('div.mcard', {}, h('b', {}, '✦ Magic'), h('div.hint', {}, 'Подключите вход model к Load Checkpoint (можно через Load LoRA) — параметры подберутся под модель.'))];
+  if (!m.full && !m.loading && !m.error) fetchRec(m.src);
+  const r = m.full;
+  const copy = t => h('button.icon', { 'data-tip': 'Копировать', onclick: () => navigator.clipboard?.writeText(t) }, icon('copy', { size: 14 }));
+  const rows = MAGIC_KEYS.map(k => {
+    const ch = m.changed.includes(k);
+    return h('div.f', {}, h('label', {}, k), h('div.v', {}, h('span.mono', {}, String(m.rec?.[k] ?? '—')),
+      h('span.dim', { style: { marginLeft: '8px', fontSize: '11px' } }, r?.source?.[k] || ''),
+      ch ? h('span.mbadge', { style: { marginLeft: 'auto' }, 'data-tip': `сейчас: ${n.props?.[k]}` }, 'изменено') : null));
+  });
+  return [h('div.mcard.magic', {},
+    h('div.row', {}, h('b', {}, `✦ Magic · ${m.profile || r?.profile || '…'}`), h('span.grow'), m.loading ? h('span.dim', {}, 'подбор…') : null),
+    m.error ? h('div.hint', { style: { color: 'var(--err)' } }, m.error) : null,
+    h('div.hint', {}, [r?.ckpt, r?.base].filter(Boolean).join(' · ')),
+    ...rows,
+    r?.clip_skip ? h('div.hint', {}, `clip skip: ${r.clip_skip} (CLIP Set Last Layer) · размер: ${r.size?.join('×')}`) : null,
+    ...(r?.loras || []).map(l => h('div.hint', { style: { color: l.ok ? '' : 'var(--err)' } },
+      `LoRA ${l.name} · ${l.strength}${l.base ? ` · ${l.base}` : ''}${l.note ? ` — ${l.note}` : ''}${l.trained?.length ? ` · триггеры: ${l.trained.slice(0, 6).join(', ')}` : ''}`)),
+    ...(r?.notes || []).map(t => h('div.hint', {}, `• ${t}`)),
+    r?.prompt ? h('div.row', { style: { marginTop: '4px' } }, h('span.dim', { style: { fontSize: '11px', flex: 1 } }, `+ ${r.prompt.positive}`), copy(r.prompt.positive)) : null,
+    r?.prompt ? h('div.row', {}, h('span.dim', { style: { fontSize: '11px', flex: 1 } }, `− ${r.prompt.negative}`), copy(r.prompt.negative)) : null,
+    h('div.row', { style: { marginTop: '6px', flexWrap: 'wrap' } },
+      h('button.primary', { disabled: !m.changed.length, onclick: () => resetMagic(d.id, n.id) }, icon('undo', { size: 14 }), 'Сбросить к рекомендованным'),
+      h('button', { 'data-tip': 'Подобрать заново (свежие примеры с Civitai); заменит все четыре значения', onclick: () => refreshMagic(d.id, n.id) }, icon('refresh', { size: 14 }), 'Подобрать заново')))];
 }
 
 function result(n) {
@@ -111,7 +125,7 @@ function nodeInspector(s) {
     ...issuesOf(n.id).map(m => h('div', { style: { color: 'var(--err)', margin: '4px 0' } }, m)),
     field('Имя', text(n.title || '', setTitle, { placeholder: def.title })),
     ...modelCard(n, def),
-    ...comfyExtras(d, n, def),
+    ...magicCard(d, n),
     h('h4', {}, 'Входы'),
     ...Object.entries(def.inputs).map(([k, inp]) => {
       if (!inp.widget || linked.has(k)) {

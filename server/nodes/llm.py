@@ -20,7 +20,7 @@ def _anthropic(ctx, p, model, system, prompt, image, max_tokens, effort):
     try:
         import anthropic
     except ImportError:
-        raise RuntimeError("нет пакета anthropic — выполните: .venv\\Scripts\\python -m pip install -r requirements.txt")
+        raise RuntimeError("the anthropic package is missing — run: .venv\\Scripts\\python -m pip install -r requirements.txt")
     # ключ None — SDK возьмёт ANTHROPIC_API_KEY / профиль `ant auth login`
     client = anthropic.Anthropic(api_key=p.get("api_key") or None, base_url=P.anthropic_base(p))
     content = []
@@ -42,9 +42,9 @@ def _anthropic(ctx, p, model, system, prompt, image, max_tokens, effort):
         msg = stream.get_final_message()
     if msg.stop_reason == "refusal":
         cat = getattr(getattr(msg, "stop_details", None), "category", None)
-        raise RuntimeError(f"модель отказалась отвечать{f' ({cat})' if cat else ''}")
+        raise RuntimeError(f"the model refused to answer{f' ({cat})' if cat else ''}")
     if msg.stop_reason == "max_tokens":
-        ctx.log("ответ обрезан по max_tokens", "warn")
+        ctx.log("the answer was cut at max_tokens", "warn")
     return "".join(b.text for b in msg.content if b.type == "text")
 
 
@@ -109,11 +109,11 @@ def _ollama(ctx, p, model, system, prompt, image, temperature):
 def ask(ctx, provider, model, system, prompt, image=None, max_tokens=16000, effort="medium", temperature=0.7):
     """Один запрос к модели: протокол выбирается по провайдеру и каталогу моделей."""
     if not model:
-        raise ValueError("не выбрана модель")
+        raise ValueError("no model selected")
     p = P.provider(provider)
     meta = P.model_meta(provider, model) if p.get("kind") in ("proxy", "openai") else None
     if image and meta and not meta.get("vision"):
-        raise ValueError(f"{model} не принимает картинки — выберите модель со значком 👁")
+        raise ValueError(f"{model} does not accept images — pick a model with the 👁 badge")
     if meta and meta.get("max_output") and max_tokens > meta["max_output"]:
         max_tokens = meta["max_output"]
     r = P.route(p, model, meta)
@@ -132,35 +132,35 @@ def _provider_opts():
 
 PROVIDERS = _provider_opts()
 MODEL = ("STRING", {"default": "claude-opus-5-5", "picker": "llm_model", "provider_input": "provider",
-                    "hint": "модель из каталога провайдера (щёлкните по полю — поиск со значками)"})
+                    "hint": "model from the provider catalog (click the field to search)"})
 
 
 @node("llm.chat", title="LLM", cat="AI",
       inputs={
           "prompt": ("STRING", {"multiline": True, "default": ""}),
           "system": ("STRING", {"multiline": True, "default": ""}),
-          "provider": (PROVIDERS, {"hint": "Настройки → Провайдеры LLM"}),
+          "provider": (PROVIDERS, {"hint": "File → LLM providers"}),
           "model": MODEL,
           "max_tokens": ("INT", {"default": 16000, "min": 1, "max": 128000}),
-          "effort": (EFFORTS, {"hint": "только для Claude: глубина рассуждений; auto — не передавать"}),
-          "temperature": ("FLOAT", {"default": 0.7, "min": 0, "max": 2, "step": 0.05, "hint": "только не-Claude модели"}),
-          "seed": ("INT", {"default": 0, "hint": "поменяйте, чтобы получить новый ответ вместо кэша"}),
+          "effort": (EFFORTS, {"hint": "Claude only: reasoning effort; auto — not sent"}),
+          "temperature": ("FLOAT", {"default": 0.7, "min": 0, "max": 2, "step": 0.05, "hint": "non-Claude models only"}),
+          "seed": ("INT", {"default": 0, "hint": "change it to get a new answer instead of the cached one"}),
           "image": ("IMAGE", {"optional": True, "needs": "vision"}),
       },
       outputs={"text": "STRING"},
-      hint="Запрос к языковой модели; ответ стримится на ноду.")
+      hint="Asks a language model; the answer streams onto the node.")
 def llm_chat(prompt, system, provider, model, max_tokens, effort, temperature, seed, ctx, image=None):
     if not prompt.strip():
-        raise ValueError("пустой prompt")
+        raise ValueError("empty prompt")
     return ask(ctx, provider, model, system, prompt, image, max_tokens, effort, temperature)
 
 
-@node("llm.map", title="LLM по списку", cat="AI",
-      inputs={"items": ("JSON", {}), "template": ("STRING", {"multiline": True, "default": "Кратко опиши: {item}"}),
+@node("llm.map", title="LLM Map List", cat="AI",
+      inputs={"items": ("JSON", {}), "template": ("STRING", {"multiline": True, "default": "Briefly describe: {item}"}),
               "system": ("STRING", {"multiline": True, "default": ""}), "provider": (PROVIDERS, {}), "model": MODEL,
               "max_tokens": ("INT", {"default": 4000}), "effort": (EFFORTS, {})},
       outputs={"list": "JSON", "text": "STRING"},
-      hint="Один запрос на каждый элемент списка; {item} — элемент, {i} — номер.")
+      hint="One request per list item; {item} — the item, {i} — its number.")
 def llm_map(items, template, system, provider, model, max_tokens, effort, ctx):
     out = []
     for i, it in enumerate(items or []):

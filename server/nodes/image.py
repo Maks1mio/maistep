@@ -1,4 +1,4 @@
-"""Картинки: загрузка из input/, сохранение в output/, превью. IMAGE = {"file": "input|output/<имя>"}."""
+"""Images: load from input/, save to output/, preview. IMAGE = {"file": "input|output/<name>"}."""
 import base64
 import json
 import shutil
@@ -15,22 +15,22 @@ def image_bytes(img, root):
     return p.read_bytes(), {"jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif"}.get(ext, "image/png")
 
 
-@node("image.load", title="Загрузить картинку", cat="Картинки",
-      inputs={"file": ("STRING", {"default": "", "upload": "image", "hint": "файл в input/ (кнопка «Загрузить…» в Inspector)"})},
+@node("image.load", title="Load Image", cat="Image",
+      inputs={"file": ("STRING", {"default": "", "upload": "image", "hint": "file in input/ (the upload button in the Inspector)"})},
       outputs={"image": "IMAGE"})
 def image_load(file, ctx):
     rel = file if file.startswith(("input/", "output/")) else f"input/{file}"
     if not file or not (ctx.root / rel).is_file():
-        raise FileNotFoundError(f"нет файла {rel}")
+        raise FileNotFoundError(f"no file {rel}")
     return {"file": rel}
 
 
-@node("image.preview", title="Превью картинки", cat="Картинки", output=True, inputs={"image": ("IMAGE", {})}, outputs={})
+@node("image.preview", title="Preview Image", cat="Image", output=True, inputs={"image": ("IMAGE", {})}, outputs={})
 def image_preview(image):
     return {"ui": {"images": [image["file"]]}}
 
 
-@node("image.save", title="Сохранить картинку", cat="Картинки", output=True,
+@node("image.save", title="Save Image", cat="Image", output=True,
       inputs={"image": ("IMAGE", {}), "prefix": ("STRING", {"default": "maistep"})}, outputs={"image": "IMAGE"})
 def image_save(image, prefix, ctx):
     src = ctx.root / image["file"]
@@ -41,11 +41,11 @@ def image_save(image, prefix, ctx):
     return {"image": {"file": rel}, "ui": {"images": [rel]}}
 
 
-@node("image.generate_openai", title="Генерация (OpenAI Images)", cat="Картинки",
+@node("image.generate_openai", title="Generate Image (OpenAI)", cat="Image",
       inputs={"prompt": ("STRING", {"multiline": True}), "model": ("STRING", {"default": "gpt-image-1"}),
-              "size": (["1024x1024", "1536x1024", "1024x1536", "auto"], {}), "seed": ("INT", {"default": 0, "hint": "меняйте, чтобы перегенерировать"})},
+              "size": (["1024x1024", "1536x1024", "1024x1536", "auto"], {}), "seed": ("INT", {"default": 0, "hint": "change it to regenerate"})},
       outputs={"image": "IMAGE"},
-      hint="POST <base_url>/images/generations провайдера openai (Настройки → Провайдеры) или OPENAI_API_KEY.")
+      hint="POST <base_url>/images/generations of the openai provider (File → LLM providers) or OPENAI_API_KEY.")
 def image_generate_openai(prompt, model, size, seed, ctx):
     from maistep import providers
     p = providers.provider("openai")

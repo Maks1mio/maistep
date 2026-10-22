@@ -114,7 +114,7 @@ function libInspector(s) {
     it.has_preview ? h(`div.preview${it.nsfw && st.blur ? '.nsfw' : ''}`, { onclick: e => e.currentTarget.classList.remove('nsfw') }, h('img', { src: previewUrl(it.id) })) : null,
     h('div.row', { style: { margin: '6px 0', flexWrap: 'wrap' } },
       h('button.primary', { onclick: () => emit('library-insert', it) }, icon('add', { size: 14 }), 'Нода в граф'),
-      h('button', { onclick: () => copy(it.name) }, icon('copy', { size: 14 }), 'Имя для ComfyUI'),
+      h('button', { onclick: () => copy(it.name) }, icon('copy', { size: 14 }), 'Имя'),
       h('button', { onclick: () => copy(it.path) }, icon('copy', { size: 14 }), 'Путь')),
     box,
   ];

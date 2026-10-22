@@ -35,5 +35,6 @@ export function initInspector() {
   on('run-stream', () => { if (S.sel?.kind === 'node') soft(); });
   on('run-error', soft);
   on('models', soft);
+  on('magic', () => { if (S.sel?.kind === 'node') soft(); });
 }
 export const refreshInspector = render;

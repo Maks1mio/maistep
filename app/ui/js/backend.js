@@ -1,5 +1,5 @@
 // Связь с Python-сервером исполнения (server/main.py): каталог нод, очередь запусков, события SSE.
-// События сервера пересылаются в шину store: run-start, run-node, run-progress, run-stream, run-output, run-error, run-done,
+// События сервера пересылаются в шину store: run-start, run-node, run-progress, run-preview, run-stream, run-output, run-error, run-done,
 // queue, nodes; запуск текущего воркфлоу — queuePrompt().
 import { S, on, emit, doc } from './store.js';
 
@@ -46,13 +46,17 @@ function connect() {
   ev('status', q => { S.queue = q; emit('queue', q); });
   ev('nodes', () => { fetchNodes(); log('info', 'ноды перезагружены'); });
   ev('start', d => {
-    const wf = runs.get(d.prompt_id) ?? null;
-    S.run = { prompt_id: d.prompt_id, wf, node: null, progress: null, stream: {}, t0: Date.now() };
+    // запуск не из этого окна (AI Agent, другое окно) — воркфлоу приходит в событии
+    const wf = runs.get(d.prompt_id) ?? d.wf ?? null;
+    if (wf) runs.set(d.prompt_id, wf);
+    S.run = { prompt_id: d.prompt_id, wf, node: null, progress: null, stream: {}, preview: {}, t0: Date.now() };
     if (wf) S.outputs[wf] = {};
     emit('run-start', S.run);
   });
   ev('executing', d => { if (!S.run) return; S.run.node = d.node; S.run.progress = null; emit('run-node', d); });
   ev('progress', d => { if (!S.run) return; S.run.progress = d; emit('run-progress', d); });
+  // поэтапное превью генерации (KSampler): data URL, живёт до результата ноды
+  ev('preview', d => { if (!S.run) return; S.run.preview[d.node] = d; emit('run-preview', d); });
   ev('stream', d => {
     if (!S.run) return;
     S.run.stream[d.node] = (S.run.stream[d.node] || '') + d.text;
@@ -62,10 +66,14 @@ function connect() {
     const wf = runs.get(d.prompt_id);
     if (wf) (S.outputs[wf] ||= {})[d.node] = d.output;
     S.outputsStamp = Date.now();
-    if (S.run) delete S.run.stream[d.node];
+    if (S.run) { delete S.run.stream[d.node]; delete S.run.preview[d.node]; }
     emit('run-output', { ...d, wf });
   });
   ev('log', d => log(d.level || 'info', `${d.node ? `[${d.node}] ` : ''}${d.text}`));
+  ev('components', d => { S.componentsJob = d.job || null; emit('components', d); });
+  ev('comp-log', d => emit('component-log', d));
+  ev('civitai', d => emit('civitai', d));
+  ev('agent', d => emit('agent', d));
   ev('error', d => {
     const wf = runs.get(d.prompt_id);
     if (wf && d.node) (S.outputs[wf] ||= {})[d.node] = { _error: d.message };
@@ -129,6 +137,16 @@ export const modelMeta = (pid, id) => S.models[pid]?.models?.find(m => m.id === 
 
 export const getSettings = () => api('/api/settings');
 export const saveSettings = data => api('/api/settings', data);
+
+// ---------- компоненты и обновления ----------
+export function componentsStatus({ refresh = false, deep = false } = {}) {
+  const q = [];
+  if (refresh) q.push('refresh=1');
+  if (deep) q.push('deep=1');
+  return api(`/api/components${q.length ? `?${q.join('&')}` : ''}`);
+}
+export const installComponents = (ids, mode = 'recommended') => api('/api/components/install', { ids, mode });
+export const cancelComponents = () => api('/api/components/cancel', {});
 
 export const interrupt =() => api('/api/interrupt', {}).catch(e => log('error', String(e)));
 export const clearQueue = () => api('/api/queue', { clear: true }).catch(e => log('error', String(e)));

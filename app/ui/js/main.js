@@ -14,10 +14,16 @@ import { initResults } from './results.js';
 import { initLibrary, loadLibrary } from './library.js';
 import { initCodeEditor } from './codeedit.js';
 import { initUIKit } from './uikit.js';
+import { initComponents, showComponents, componentsStartupCheck } from './components.js';
+import { initCivitai, showCivitai } from './civitai.js';
+import { initAgent, showAgent } from './agent.js';
+import { initNaizer, showNaizer } from './naizer.js';
+import { initPersist, restore, autosaveOn, setAutosave } from './persist.js';
 import { initTooltips, messageBox } from './kit.js';
-import { initBackend, queuePrompt, interrupt, clearQueue, reloadNodes } from './backend.js';
+import { initBackend, queuePrompt, interrupt, clearQueue, reloadNodes, api } from './backend.js';
 import { providersDialog } from './providers.js';
-import { comfyStatus, statusRow, launchComfy } from './comfybridge.js';
+import { initMagic } from './magic.js';
+import { initImages } from './images.js';
 
 const $ = id => document.getElementById(id);
 const log = (level, text, src = 'editor') => emit('log', { src, level, text });
@@ -76,12 +82,14 @@ async function reloadProject() {
 const MENU = [
   ['Файл', [
     ['Новый воркфлоу…', 'Ctrl+N', () => { openWorkspace('graph'); newWorkflow(); }],
+    ['Из шаблона «SD: txt2img»…', '', () => { openWorkspace('graph'); newWorkflow('sd_txt2img'); }],
+    ['Из шаблона «SD: Magic KSampler»…', '', () => { openWorkspace('graph'); newWorkflow('sd_magic'); }],
+    ['Из шаблона «SD: img2img»…', '', () => { openWorkspace('graph'); newWorkflow('sd_img2img'); }],
+    ['Из шаблона «Идея → LLM-промпт → SD»…', '', () => { openWorkspace('graph'); newWorkflow('sd_idea_llm'); }],
     ['Из шаблона «Чат»…', '', () => { openWorkspace('graph'); newWorkflow('chat'); }],
-    ['Из шаблона «Картинка → LLM»…', '', () => { openWorkspace('graph'); newWorkflow('vision'); }],
-    ['Из шаблона «Пакетная обработка»…', '', () => { openWorkspace('graph'); newWorkflow('batch'); }],
-    ['Из шаблона «Генерация по идее (ComfyUI)»…', '', () => { openWorkspace('graph'); newWorkflow('comfy'); }],
     '-',
     ['Сохранить всё', 'Ctrl+S', () => saveAll()],
+    [() => `${autosaveOn() ? '✓ ' : ''}Автосохранение`, '', () => setAutosave(!autosaveOn())],
     ['Перезагрузить проект с диска', '', () => reloadProject()],
     '-',
     ['Провайдеры LLM…', '', providersDialog],
@@ -89,7 +97,8 @@ const MENU = [
   ['Правка', [['Отменить', 'Ctrl+Z', undo], ['Повторить', 'Ctrl+Y', redo]]],
   ['Вид', [
     ['Workflow', '1', () => openWorkspace('graph')], ['Results', '2', () => openWorkspace('results')],
-    ['Models', '3', () => openWorkspace('library')], ['CodeEditor', '4', () => openWorkspace('code')], ['UI Kit', '5', () => openWorkspace('uikit')], '-',
+    ['Models', '3', () => openWorkspace('library')], ['Civitai', '4', () => openWorkspace('civitai')], ['CodeEditor', '5', () => openWorkspace('code')],
+    ['Компоненты и обновления', '6', () => openWorkspace('components')], ['ImageNaizer', '7', () => openWorkspace('naizer')], ['UI Kit', '8', () => openWorkspace('uikit')], '-',
     ['Вписать граф', 'F', fit],
     ['Сбросить раскладку рабочей области', '', () => resetLayout()],
   ]],
@@ -100,8 +109,9 @@ const MENU = [
   ]],
   ['Сервер', [
     ['Запустить', 'F5', startServer], ['Остановить', 'Shift+F5', stopServer], ['Перезапустить', 'Ctrl+F5', restartServer], '-',
-    ['Перезагрузить ноды', '', reloadNodes], ['Пересканировать модели', '', () => loadLibrary(true)], '-',
-    ['Запустить Comfy Desktop', '', launchComfy], ['Открыть ComfyUI в браузере', '', () => openExternal('http://127.0.0.1:8188/')], ['Открыть API в браузере', '', () => openExternal(`http://localhost:${S.server.port}/api/nodes`)],
+    ['Перезагрузить ноды', '', reloadNodes], ['Пересканировать модели', '', () => loadLibrary(true)], ['Освободить память (выгрузить модели)', '', freeMemory], '-',
+    ['Компоненты и обновления…', '', () => openWorkspace('components')],
+    ['Открыть API в браузере', '', () => openExternal(`http://localhost:${S.server.port}/api/nodes`)],
   ]],
   ['Справка', [
     ['О программе', '', () => messageBox({ img: 'icons/maistep.svg', title: 'maistep', text: 'Версия 0.1 · Tauri v2 + Python\nНодовый редактор AI-пайплайнов: графы из нод (LLM, текст, картинки, логика), очередь запусков на Python-сервере, стриминг ответов прямо на ноды, свои ноды на Python в custom_nodes/.\nОболочка — OCST (Open Client Studio).', ok: 'Закрыть', cancel: null })],
@@ -112,7 +122,7 @@ function buildMenu() {
   const bar = $('menubar');
   const close = () => bar.querySelectorAll('.m.open').forEach(m => m.classList.remove('open'));
   bar.replaceChildren(...MENU.map(([title, items]) => {
-    const m = h('div.m', {}, title, h('div.drop', {}, items.map(it => it === '-' ? h('hr') : h('div', { onclick: e => { e.stopPropagation(); close(); it[2](); } }, h('span', {}, it[0]), h('kbd', {}, it[1])))));
+    const m = h('div.m', {}, title, h('div.drop', {}, items.map(it => it === '-' ? h('hr') : h('div', { onclick: e => { e.stopPropagation(); close(); it[2](); } }, h('span', {}, typeof it[0] === 'function' ? it[0]() : it[0]), h('kbd', {}, it[1])))));
     m.addEventListener('click', e => { e.stopPropagation(); const was = m.classList.contains('open'); close(); if (!was) m.classList.add('open'); });
     m.addEventListener('mouseenter', () => { if (bar.querySelector('.m.open') && !m.classList.contains('open')) { close(); m.classList.add('open'); } });
     return m;
@@ -148,11 +158,14 @@ function serverPopup() {
     on_ ? popItem('restart', 'Перезапустить', 'Ctrl+F5', restartServer) : popItem('play', 'Запустить', 'F5', startServer),
     popItem('stop', 'Остановить', 'Shift+F5', stopServer, !on_),
     h('hr'),
-    (() => { const r = h('div', { style: { padding: '2px 10px 6px' } }); comfyStatus(true).then(s => r.replaceChildren(statusRow(s))); return r; })(),
-    h('hr'),
     popItem('refresh', 'Перезагрузить ноды (custom_nodes)', '', reloadNodes, !on_),
+    popItem('delete', 'Освободить память (выгрузить модели)', '', freeMemory, !on_),
     popItem('settings', 'Провайдеры LLM…', '', providersDialog, !on_),
     popItem('externalLink', 'Открыть API в браузере', '', () => openExternal(`http://localhost:${S.server.port}/`), !on_));
+}
+
+async function freeMemory() {
+  try { await api('/api/free', {}); log('ok', 'модели выгружены, кэш нод сброшен'); } catch (e) { log('error', `освобождение памяти: ${e.message}`); }
 }
 
 const projectName = () => S.project?.root?.split(/[\\/]/).filter(Boolean).pop() || 'проект';
@@ -187,7 +200,7 @@ function keys(e) {
   if (e.ctrlKey && !typing && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
   if (e.key === 'F5') { e.preventDefault(); if (e.ctrlKey) restartServer(); else if (e.shiftKey) stopServer(); else startServer(); return; }
   if (e.key === 'F7') { e.preventDefault(); checkGraph(); return; }
-  if (!typing && !e.ctrlKey && !e.altKey && /^[1-5]$/.test(e.key)) { openWorkspace(['graph', 'results', 'library', 'code', 'uikit'][+e.key - 1]); return; }
+  if (!typing && !e.ctrlKey && !e.altKey && /^[1-8]$/.test(e.key)) { openWorkspace(['graph', 'results', 'library', 'civitai', 'code', 'components', 'naizer', 'uikit'][+e.key - 1]); return; }
   if (!typing && graphKeys(e)) { e.preventDefault(); return; }
   if (e.key === 'Escape' && !typing) select(null);
 }
@@ -203,16 +216,27 @@ async function boot() {
   initNodeInspector();
   initProject();
   initGraph();
+  initMagic();
+  initImages();
   initResults();
   initLibrary();
   initCodeEditor();
+  initComponents();
+  initCivitai();
+  initAgent();
+  initNaizer();
+  initPersist();
   addView('graph', 'Workflow', () => setCtxQuiet('workflow'));
   addView('results', 'Results', () => setCtxQuiet('results'));
   addView('library', 'Models', () => setCtxQuiet('library'));
+  addView('civitai', 'Civitai', () => { setCtxQuiet('civitai'); showCivitai(); });
   addView('code', 'CodeEditor', () => setCtxQuiet('code'));
+  addView('components', 'Компоненты', () => { setCtxQuiet('components'); showComponents(); });
+  addView('naizer', 'ImageNaizer', () => { setCtxQuiet('naizer'); showNaizer(); });
   initUIKit(); // addView('uikit') — последней вкладкой
+  addView('agent', 'AI Agent', showAgent, 'ai'); // панель, не рабочая область: ставится в любую область через ⋮
   startDock();
-  S.ctx = { graph: 'workflow', results: 'results', library: 'library', code: 'code' }[workspace()] || S.ctx; // до первого кадра — Hierarchy сразу в контексте области
+  S.ctx = { graph: 'workflow', results: 'results', library: 'library', civitai: 'civitai', code: 'code', components: 'components', naizer: 'naizer' }[workspace()] || S.ctx; // до первого кадра — Hierarchy сразу в контексте области
 
   $('tb-save').onclick = () => saveAll();
   $('tb-undo').onclick = undo;
@@ -220,6 +244,7 @@ async function boot() {
   $('tb-run').onclick = () => queuePrompt();
   $('tb-interrupt').onclick = interrupt;
   $('tb-results').onclick = () => openWorkspace('results');
+  $('tb-components').onclick = () => openWorkspace('components');
   $('tb-check').onclick = checkGraph;
   $('tb-server').onclick = e => { e.stopPropagation(); serverPopup(); };
   $('tb-project').onclick = e => { e.stopPropagation(); projectPopup(); };
@@ -230,9 +255,10 @@ async function boot() {
   if (!S.server.running) S.server.port = port();
   serverUi(S.server);
   addEventListener('keydown', keys);
-  addEventListener('beforeunload', e => { if (dirtyDocs().length) { e.preventDefault(); e.returnValue = ''; } });
+  addEventListener('beforeunload', e => { if (dirtyDocs().length && !autosaveOn()) { e.preventDefault(); e.returnValue = ''; } });
 
   on('status', status);
+  on('autosave', buildMenu);
   on('change', updateDirty);
   on('saved', updateDirty);
   on('project', updateDirty);
@@ -246,6 +272,7 @@ async function boot() {
 
   try {
     await loadProject();
+    restore();
     status(`Проект: ${S.project.root}`);
     log('ok', `проект загружен: ${S.project.root} — воркфлоу ${S.docs.workflow.size}`);
   } catch (e) {
@@ -258,6 +285,7 @@ async function boot() {
   const st = await invoke('server_status');
   if (st.running) serverUi(st);
   else await startServer(); // каталог нод и запуски — через Python-сервер
+  setTimeout(componentsStartupCheck, 2500);
 }
 
 // ---------- правки workflows/ извне (git, другой редактор, ИИ-ассистент) ----------

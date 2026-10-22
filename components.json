@@ -1,0 +1,107 @@
+{
+  "channel": "stable",
+  "app": {
+    "name": "maistep",
+    "stable": "0.1.0",
+    "releases": "https://github.com/Maks1mio/maistep/releases",
+    "repo": "Maks1mio/maistep"
+  },
+  "python": {
+    "requires": ">=3.10",
+    "components": [
+      {
+        "id": "torch",
+        "title": "PyTorch (CUDA)",
+        "package": "torch",
+        "group": "Генерация",
+        "recommended": "2.14.1",
+        "index_url": "https://download.pytorch.org/whl/cu130",
+        "required": true,
+        "pypi": false,
+        "size": "~3,5 ГБ",
+        "note": "CUDA-сборка с индекса PyTorch. Для CPU: --index-url https://download.pytorch.org/whl/cpu"
+      },
+      {
+        "id": "diffusers",
+        "title": "Diffusers",
+        "package": "diffusers",
+        "group": "Генерация",
+        "recommended": "0.41.0",
+        "required": true,
+        "size": "~1 МБ",
+        "note": "Пайплайны Stable Diffusion / SDXL"
+      },
+      {
+        "id": "transformers",
+        "title": "Transformers",
+        "package": "transformers",
+        "group": "Генерация",
+        "recommended": "5.20.2",
+        "required": true,
+        "size": "~10 МБ",
+        "note": "Текстовые энкодеры CLIP"
+      },
+      {
+        "id": "accelerate",
+        "title": "Accelerate",
+        "package": "accelerate",
+        "group": "Генерация",
+        "recommended": "1.15.0",
+        "required": true,
+        "size": "~300 КБ",
+        "note": "Раскладка модели по GPU/CPU, offload"
+      },
+      {
+        "id": "peft",
+        "title": "PEFT",
+        "package": "peft",
+        "group": "Генерация",
+        "recommended": "0.21.2",
+        "required": true,
+        "size": "~500 КБ",
+        "note": "Загрузка LoRA"
+      },
+      {
+        "id": "safetensors",
+        "title": "Safetensors",
+        "package": "safetensors",
+        "group": "Генерация",
+        "recommended": "0.8.0",
+        "required": true,
+        "size": "~1 МБ",
+        "note": "Чтение чекпоинтов и LoRA"
+      },
+      {
+        "id": "huggingface-hub",
+        "title": "Hugging Face Hub",
+        "package": "huggingface-hub",
+        "group": "Генерация",
+        "recommended": "1.33.0",
+        "required": true,
+        "pypi": false,
+        "size": "~2 МБ",
+        "note": "Служебная библиотека diffusers"
+      },
+      {
+        "id": "pillow",
+        "title": "Pillow",
+        "package": "pillow",
+        "group": "Генерация",
+        "recommended": "13.0.0",
+        "required": true,
+        "size": "~3 МБ",
+        "note": "Запись PNG и img2img"
+      },
+      {
+        "id": "anthropic",
+        "title": "Anthropic SDK",
+        "package": "anthropic",
+        "group": "LLM",
+        "recommended": "2.1.0",
+        "required": false,
+        "size": "~1 МБ",
+        "note": "Нода LLM: Claude и CheapVibeCode через официальный SDK"
+      }
+    ]
+  }
+}

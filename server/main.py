@@ -15,14 +15,24 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   GET  /api/models?provider=id&refresh=1  каталог моделей провайдера (кэш 6 ч)
   POST /api/upload?name=x.png  тело — файл → input/x.png
   GET  /api/files?dir=input    файлы input/ или output/
-  GET  /api/library?refresh=1   библиотека моделей ComfyUI (только чтение): корни, категории, модели
+  GET  /api/library?refresh=1   библиотека моделей (только чтение): корни, категории, модели
   GET  /api/library/model?id=cat/name   карточка модели (заголовок safetensors, .cminfo.json, …)
   GET  /api/library/preview?id=cat/name превью модели (только файлы-превью из индекса)
-  GET  /api/comfy/status        ComfyUI: жив ли, версия, GPU, очередь;  POST /api/comfy/launch — запустить Comfy Desktop
-  GET  /api/comfy/workflows     сохранённые воркфлоу ComfyUI и comfy_workflows/ maistep
-  GET  /api/comfy/inspect?id=   поля воркфлоу для привязок (после перевода в формат API)
+  GET  /api/components?refresh=1&deep=1  компоненты: установлено/рекомендуется/последняя стабильная, установка
+  POST /api/components/install { ids?, mode: recommended|missing|latest }  установка в .venv (SSE comp-log)
+  GET  /api/civitai/search?q=&types=&bases=&sort=&period=&nsfw=1&limit=&cursor=  поиск Civitai
+  GET  /api/civitai/model?id= | resolve?q=ссылка | jobs | tags | settings | meta
+  POST /api/civitai/download { items: [{ model, version, file? }], root? } | cancel | retry | clear | reveal { id }
+  POST /api/civitai/tags { models, add, remove } | settings { api_key, root, connections, concurrent, … }
+  GET  /api/magic?ckpt=имя&loras=[[имя, сила], …]&refresh=1  Magic KSampler: параметры под чекпоинт и LoRA
+  POST /api/free               выгрузить модели генерации из памяти и сбросить кэш нод
+  POST /api/components/cancel  прервать установку
+  GET  /api/agent/chats | chat?id=   диалоги AI Agent (user/chats/)
+  POST /api/agent/chat { id?, title, provider, model, effort, wf, hidden } | delete { id } | stop { id }
+  POST /api/agent/send { id, text, images: [input/…], workflows: { id: граф } }  ход агента (SSE agent)
   GET  /view?file=output/a.png файл из input/ или output/
-  GET  /events                 SSE: status, start, executing, progress, stream, executed, error, done, log, nodes
+  GET  /events                 SSE: status, start, executing, progress, preview, stream, executed, error, done, log, nodes,
+                               components, comp-log, agent
 """
 import argparse
 import json
@@ -42,12 +52,13 @@ from urllib.parse import parse_qs, unquote, urlparse
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "server"))
 
-from maistep import registry, executor, providers, library, comfy  # noqa: E402
+from maistep import registry, executor, providers, library, components, civitai, agent, magic  # noqa: E402
 from maistep.registry import Cancelled  # noqa: E402
 
-for d in ("input", "output", "user", "workflows", "custom_nodes", "comfy_workflows"):
+for d in ("input", "output", "user", "workflows", "custom_nodes"):
     (ROOT / d).mkdir(exist_ok=True)
 SETTINGS = ROOT / "user" / "settings.json"
+HISTORY = ROOT / "user" / "history.json"  # история запусков переживает перезапуск сервера
 
 
 def log(level, text):
@@ -82,6 +93,8 @@ class Hub:
 
 
 HUB = Hub()
+components.configure(lambda event, data: HUB.emit(event, data))
+civitai.configure(lambda event, data: HUB.emit(event, data))
 
 
 def load_settings():
@@ -109,10 +122,27 @@ class Run:
 
 class Queue:
     def __init__(self):
-        self.pending, self.running, self.history = [], None, []
+        self.pending, self.running, self.history = [], None, self.load()
         self.cond = threading.Condition()
-        self.counter = 0
+        self.counter = max((h.get("number") or 0 for h in self.history), default=0)
         threading.Thread(target=self.worker, daemon=True).start()
+
+    @staticmethod
+    def load():
+        try:
+            h = json.loads(HISTORY.read_text("utf-8"))
+            return h if isinstance(h, list) else []
+        except (OSError, ValueError):
+            return []
+
+    def save(self):
+        """Пишется после каждого запуска (через временный файл — обрыв записи не портит историю)."""
+        try:
+            tmp = HISTORY.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.history, ensure_ascii=False, default=str), "utf-8")
+            os.replace(tmp, HISTORY)
+        except OSError as e:
+            log("error", f"история запусков не сохранена: {e}")
 
     def status(self):
         return {"running": self.running and {"prompt_id": self.running.id, "title": self.running.title, "number": self.running.number},
@@ -134,7 +164,7 @@ class Queue:
                     self.cond.wait()
                 r = self.running = self.pending.pop(0)
             HUB.emit("status", self.status())
-            r.emit("start", {"title": r.title})
+            r.emit("start", {"title": r.title, "wf": r.workflow.get("id")})
             t0, ok, err, results = time.time(), False, None, {}
             try:
                 results = executor.run(r.workflow, r, ROOT)
@@ -157,10 +187,14 @@ class Queue:
                 self.history.insert(0, item)
                 del self.history[200:]
                 self.running = None
+                self.save()
             r.emit("done", {"ok": ok, "time": dt, "error": err})
             HUB.emit("status", self.status())
 
-    def interrupt(self):
+    def interrupt(self, pid=None):
+        """Прервать текущий запуск; с pid — только этот (идёт — прервать, ждёт — убрать из очереди)."""
+        if pid and not (self.running and self.running.id == pid):
+            return self.clear({pid})
         if self.running:
             self.running.cancel.set()
 
@@ -180,6 +214,47 @@ def safe_file(rel):
         return None
     p = ROOT / rel
     return p if p.is_file() else None
+
+
+def civitai_get(op, qs):
+    if op == "search":
+        lst = lambda k: [x for x in (qs.get(k) or "").split(",") if x]  # noqa: E731
+        return civitai.search(qs.get("q", ""), lst("types"), lst("bases"), qs.get("sort", "Highest Rated"),
+                              qs.get("period", "AllTime"), qs.get("nsfw") == "1", int(qs.get("limit", 20)),
+                              qs.get("cursor") or None, qs.get("username", ""))
+    if op == "model":
+        return civitai.model(qs.get("id"))
+    if op == "resolve":
+        return civitai.resolve(qs.get("q", ""))
+    if op == "jobs":
+        return {"jobs": civitai.jobs()}
+    if op == "tags":
+        return civitai.tags()
+    if op == "settings":
+        return civitai.public_settings()
+    if op == "meta":
+        return civitai.meta()
+    raise ValueError(f"нет такого пути civitai/{op}")
+
+
+def civitai_post(op, d):
+    if op == "download":
+        items = d.get("items") or [d]
+        return {"jobs": [civitai.enqueue(i["model"], i["version"], i.get("file"), d.get("root") or i.get("root"),
+                                         i.get("filename")) for i in items]}
+    if op == "cancel":
+        return civitai.cancel(d.get("id"))
+    if op == "retry":
+        return civitai.retry(d.get("id"))
+    if op == "clear":
+        return {"jobs": civitai.clear(d.get("ids"))}
+    if op == "reveal":
+        return civitai.reveal(d.get("id"))
+    if op == "tags":
+        return civitai.set_tags(d.get("models") or [], d.get("add") or [], d.get("remove") or [])
+    if op == "settings":
+        return civitai.save_settings(d)
+    raise ValueError(f"нет такого пути civitai/{op}")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -254,14 +329,28 @@ class Handler(BaseHTTPRequestHandler):
             data = Path(pp).read_bytes()
             self._head(200, mimetypes.guess_type(pp)[0] or "image/jpeg", len(data), {"cache-control": "max-age=3600"})
             return self.wfile.write(data)
-        if u.path == "/api/comfy/status":
-            return self.json(comfy.status())
-        if u.path == "/api/comfy/workflows":
-            return self.json(comfy.workflows())
-        if u.path == "/api/comfy/inspect":
+        if u.path == "/api/magic":
             try:
-                p, notes = comfy.ui_to_api(comfy.load_workflow(qs.get("id", "")))
-                return self.json({"widgets": comfy.widgets(p), "notes": notes, "nodes": len(p)})
+                loras = json.loads(qs.get("loras") or "[]")
+                return self.json(magic.recommend(qs.get("ckpt", ""), [(n, float(w)) for n, w in loras], qs.get("refresh") == "1"))
+            except Exception as e:
+                return self.json({"error": f"{type(e).__name__}: {e}"}, 400)
+        if u.path == "/api/components":
+            try:
+                return self.json(components.status(qs.get("refresh") == "1", qs.get("deep") == "1"))
+            except Exception as e:
+                return self.json({"error": f"{type(e).__name__}: {e}"}, 500)
+        if u.path == "/api/agent/chats":
+            return self.json(agent.chats())
+        if u.path == "/api/agent/chat":
+            try:
+                c = agent.load(qs.get("id"))
+                return self.json({**agent.meta(c), "messages": c["messages"]})
+            except (KeyError, ValueError):
+                return self.json({"error": "нет такого диалога"}, 404)
+        if u.path.startswith("/api/civitai/"):
+            try:
+                return self.json(civitai_get(u.path[len("/api/civitai/"):], qs))
             except Exception as e:
                 return self.json({"error": str(e)}, 400)
         if u.path == "/view":
@@ -304,12 +393,38 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/interrupt":
             Q.interrupt()
             return self.json({"ok": True})
-        if u.path == "/api/comfy/launch":
+        if u.path.startswith("/api/civitai/"):
             try:
-                comfy.launch_desktop()
-                return self.json({"ok": True})
+                return self.json(civitai_post(u.path[len("/api/civitai/"):], data))
             except Exception as e:
                 return self.json({"error": str(e)}, 400)
+        if u.path.startswith("/api/agent/"):
+            op = u.path[len("/api/agent/"):]
+            try:
+                if op == "chat":
+                    return self.json(agent.upsert(data))
+                if op == "delete":
+                    return self.json(agent.delete(data.get("id")))
+                if op == "stop":
+                    return self.json(agent.stop(data.get("id")))
+                if op == "send":
+                    return self.json(agent.send(data.get("id"), data.get("text", ""), data.get("images") or [], data.get("workflows") or {}))
+            except KeyError:
+                return self.json({"error": "нет такого диалога"}, 404)
+            except Exception as e:
+                return self.json({"error": f"{type(e).__name__}: {e}"}, 400)
+            return self.json({"error": f"нет такого пути {u.path}"}, 404)
+        if u.path == "/api/free":
+            from maistep import diffusion
+            diffusion.unload()
+            executor.CACHE.clear()
+            return self.json({"ok": True})
+        if u.path == "/api/components/install":
+            r = components.install(data.get("ids") or [], data.get("mode") or "recommended")
+            return self.json(r, 409 if r.get("error") else 200)
+        if u.path == "/api/components/cancel":
+            r = components.cancel()
+            return self.json(r, 409 if r.get("error") else 200)
         if u.path == "/api/reload":
             registry.load_all(ROOT, log)
             executor.CACHE.clear()
@@ -350,6 +465,8 @@ def main():
     a = ap.parse_args()
     registry.load_all(ROOT, log)
     Q = Queue()
+    agent.configure(lambda event, data: HUB.emit(event, data), lambda wf, pid: Q.put(wf, pid),
+                    lambda: list(Q.history), Q.interrupt)
     # на Windows SO_REUSEADDR позволяет второму процессу тихо занять тот же порт — пусть лучше упадёт с ошибкой
     ThreadingHTTPServer.allow_reuse_address = os.name != "nt"
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
