@@ -1,0 +1,13 @@
+{
+  "name": "maistep",
+  "version": "0.1.0",
+  "description": "maistep — нодовый редактор AI-пайплайнов (в духе ComfyUI): Tauri-оболочка OCST + Python-сервер исполнения",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "app": "cargo run --manifest-path app/src-tauri/Cargo.toml",
+    "app:release": "cargo run --release --manifest-path app/src-tauri/Cargo.toml",
+    "app:web": "node app/dev-server.mjs",
+    "server": "python server/main.py"
+  }
+}

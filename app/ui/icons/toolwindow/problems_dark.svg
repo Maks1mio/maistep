@@ -1,0 +1,9 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<circle cx="8" cy="8" r="6.5" stroke="#CED0D6"/>
+<use xlink:href="#stroke0_404_2332" fill="#CED0D6"/>
+<use xlink:href="#stroke0_404_2332" fill="#CED0D6"/>
+<path d="M8 4.59998L8 8.39998" stroke-width="1.2" stroke-linecap="round" stroke="#CED0D6"/>
+<defs>
+<path id="stroke0_404_2332" d="M8.70078 10.7C8.70078 11.0866 8.38738 11.4 8.00078 11.4C7.61418 11.4 7.30078 11.0866 7.30078 10.7C7.30078 10.3134 7.61418 10 8.00078 10C8.38738 10 8.70078 10.3134 8.70078 10.7Z"/>
+</defs>
+</svg>

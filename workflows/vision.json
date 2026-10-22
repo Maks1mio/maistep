@@ -1,0 +1,57 @@
+{
+  "title": "Описание картинки",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "image.load",
+      "x": 40,
+      "y": 60,
+      "props": {
+        "file": ""
+      }
+    },
+    {
+      "id": "n2",
+      "type": "llm.chat",
+      "x": 380,
+      "y": 40,
+      "props": {
+        "prompt": "Опиши, что на картинке, в 3 предложениях."
+      }
+    },
+    {
+      "id": "n3",
+      "type": "output.show",
+      "x": 740,
+      "y": 60,
+      "props": {}
+    },
+    {
+      "id": "n4",
+      "type": "image.preview",
+      "x": 380,
+      "y": 420,
+      "props": {}
+    }
+  ],
+  "links": [
+    {
+      "from": "n1",
+      "out": "image",
+      "to": "n2",
+      "in": "image"
+    },
+    {
+      "from": "n2",
+      "out": "text",
+      "to": "n3",
+      "in": "value"
+    },
+    {
+      "from": "n1",
+      "out": "image",
+      "to": "n4",
+      "in": "image"
+    }
+  ]
+}

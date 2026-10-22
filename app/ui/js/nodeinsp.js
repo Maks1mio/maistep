@@ -1,0 +1,169 @@
+// Inspector графа: нода (значения виджетов, входы/выходы, последний результат), связь, воркфлоу.
+import { h, field, text, num, check, select as sel } from './util.js';
+import { S, doc, edit, select, emit } from './store.js';
+import { registerInspector } from './inspector.js';
+import { icon } from './icons.js';
+import { defs, deleteSel, issuesOf, TYPE_COLOR, llmModel } from './graph.js';
+import { fileUrl, queuePrompt, upload } from './backend.js';
+import { modelPicker, badges } from './modelpick.js';
+import { libraryPicker } from './library.js';
+import { comfyWorkflowPicker, bindingsHelper, comfyStatus, statusRow } from './comfybridge.js';
+
+const chip = t => h('span.tchip', { style: { borderColor: TYPE_COLOR[t] || '#b5b8c0', color: TYPE_COLOR[t] || '#b5b8c0' } }, t);
+
+function widget(d, n, k, inp) {
+  const v = n.props?.[k] ?? inp.default;
+  const set = val => edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); nn.props ||= {}; nn.props[k] = val; }, { label: `${n.id}.${k}`, merge: `${n.id}.${k}` });
+  if (inp.type === 'COMBO') return sel(v, inp.options || [], set);
+  if (inp.picker === 'library_model') {
+    const i = text(v, set, { placeholder: 'имя модели' });
+    const cat = () => inp.cat || (n.props?.[inp.cat_input] ?? defs()[n.type].inputs[inp.cat_input]?.default);
+    const btn = h('button.icon', { 'data-tip': 'Галерея моделей', onclick: () => libraryPicker(btn, { cat: cat(), value: i.value, onPick: name => { i.value = name; set(name); } }) }, icon('image', { size: 14 }));
+    return h('div.row', { style: { flex: 1 } }, i, btn);
+  }
+  if (inp.picker === 'comfy_workflow') {
+    const i = text(v, set, { placeholder: 'ComfyUI:файл.json' });
+    const btn = h('button.icon', { 'data-tip': 'Выбрать воркфлоу', onclick: () => comfyWorkflowPicker(btn, { value: i.value, onPick: id => { i.value = id; set(id); emit('change', { kind: 'workflow', id: d.id, undo: true }); } }) }, icon('open', { size: 14 }));
+    return h('div.row', { style: { flex: 1 } }, i, btn);
+  }
+  if (inp.picker === 'llm_model') {
+    const i = text(v, set, { placeholder: 'id модели' });
+    const pid = () => n.props?.[inp.provider_input] ?? defs()[n.type].inputs[inp.provider_input]?.default;
+    const btn = h('button.icon', { 'data-tip': 'Выбрать из каталога', onclick: () => modelPicker(btn, { provider: pid(), value: i.value, onPick: id => { i.value = id; set(id); } }) }, icon('search', { size: 14 }));
+    i.addEventListener('focus', () => modelPicker(i, { provider: pid(), value: i.value, onPick: id => { i.value = id; set(id); } }));
+    return h('div.row', { style: { flex: 1 } }, i, btn);
+  }
+  if (inp.type === 'BOOLEAN') return check(v, set);
+  if (inp.type === 'INT' || inp.type === 'FLOAT') return num(v, set, { int: inp.type === 'INT', min: inp.min, max: inp.max, step: inp.step });
+  if (inp.multiline) {
+    const t = h('textarea', { rows: 6, spellcheck: false, placeholder: inp.hint || '' });
+    t.value = v ?? '';
+    t.addEventListener('input', () => set(t.value));
+    return t;
+  }
+  const i = text(v, set, { placeholder: inp.hint || '' });
+  if (inp.upload) {
+    const f = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' } });
+    f.onchange = async () => {
+      try { const rel = await upload(f.files[0]); i.value = rel; set(rel); emit('change', { kind: 'workflow', id: d.id }); }
+      catch (e) { emit('log', { src: 'editor', level: 'error', text: `загрузка: ${e.message}` }); }
+    };
+    return h('div.row', { style: { flex: 1 } }, i, f, h('button.icon', { 'data-tip': 'Загрузить файл в input/…', onclick: () => f.click() }, icon('upload', { size: 14 })));
+  }
+  return i;
+}
+
+// ноды ComfyUI: статус ComfyUI и (для «Воркфлоу ComfyUI») поля воркфлоу с кнопками привязки a–d
+function comfyExtras(d, n, def) {
+  if (def.cat !== 'ComfyUI') return [];
+  const st = h('div');
+  comfyStatus().then(s => st.replaceChildren(statusRow(s)));
+  const out = [st];
+  if (n.type === 'comfy.workflow') {
+    const get = () => doc('workflow', d.id)?.data.nodes.find(z => z.id === n.id)?.props?.bindings || '';
+    const set = v => { edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); nn.props ||= {}; nn.props.bindings = v; }, { label: 'привязки' }); emit('change', { kind: 'workflow', id: d.id, undo: true }); };
+    out.push(bindingsHelper(n.props?.workflow, get, set));
+  }
+  return out;
+}
+
+// карточка выбранной модели LLM: название, значки, контекст, вывод
+function modelCard(n, def) {
+  if (!Object.values(def.inputs).some(i => i.picker === 'llm_model')) return [];
+  const m = llmModel(n, def);
+  if (!m) return [h('div.hint', { style: { color: '#e0a35f' } }, 'модели нет в каталоге провайдера (или каталог ещё не загружен)')];
+  return [h('div.mcard', {}, h('div.row', {}, h('b', {}, m.name), h('span.grow'), ...badges(m)),
+    h('div.hint', {}, [m.company, m.series, m.max_output ? `вывод до ${m.max_output.toLocaleString('ru')} ток.` : '', m.tools ? 'инструменты' : ''].filter(Boolean).join(' · ')),
+    !m.vision ? h('div.hint', {}, 'картинки не принимает — вход image скрыт') : null)];
+}
+
+function result(n) {
+  const o = S.outputs[S.current.workflow]?.[n.id] || null;
+  const st = S.run?.wf === S.current.workflow ? S.run.stream[n.id] : null;
+  if (st) return [h('h4', {}, 'Генерация…'), h('pre.out', {}, st)];
+  if (!o) return [h('h4', {}, 'Результат'), h('div.dim', {}, 'ещё не запускалась')];
+  if (o._error) return [h('h4', {}, 'Ошибка'), h('pre.out.err', {}, o._error)];
+  const parts = [h('h4', {}, `Результат${o._time != null ? ` · ${o._time} с` : ''}`)];
+  const images = [...(o._ui?.images || []), ...Object.values(o).filter(v => v?.image).map(v => v.image)];
+  for (const f of [...new Set(images)]) parts.push(h('div.preview', {}, h('img', { src: fileUrl(f), alt: f })), h('div.hint.mono', {}, f));
+  const texts = [];
+  if (o._ui?.text != null) texts.push(['', o._ui.text]);
+  for (const [k, v] of Object.entries(o)) if (!k.startsWith('_') && v?.text != null) texts.push([k, v.text]);
+  for (const [k, t] of texts.slice(0, 4)) {
+    parts.push(h('div.row', { style: { justifyContent: 'space-between' } }, h('span.dim', {}, k || 'текст'),
+      h('button.icon', { 'data-tip': 'Копировать', onclick: () => navigator.clipboard?.writeText(t) }, icon('copy', { size: 14 }))), h('pre.out', {}, t));
+  }
+  for (const f of o._ui?.files || []) parts.push(h('div.hint.mono', {}, `файл: ${f}`));
+  return parts;
+}
+
+function nodeInspector(s) {
+  const d = doc('workflow', s.doc), n = d?.data.nodes.find(x => x.id === s.id);
+  if (!n) return [h('div.dim', {}, 'нода не найдена')];
+  const def = defs()[n.type];
+  if (!def) return [h('h3', {}, n.type), h('div', { style: { color: 'var(--err)' } }, 'Неизвестный тип ноды — нет на сервере (запущен? загружен модуль?)'), h('button', { onclick: deleteSel }, 'Удалить ноду')];
+  const linked = new Set(d.data.links.filter(l => l.to === n.id).map(l => l.in));
+  const setTitle = v => edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); if (v) nn.title = v; else delete nn.title; }, { label: 'имя ноды', merge: `${n.id}.title` });
+  return [
+    h('h3', {}, icon('node', { size: 16 }), n.title || def.title, n.mode === 'mute' ? h('span.dim', {}, ' (выкл)') : null),
+    h('div.hint.mono', {}, `${n.id} · ${n.type}${def.source && def.source !== 'builtin' ? ` · ${def.source}` : ''}`),
+    def.hint ? h('div.hint', {}, def.hint) : null,
+    ...issuesOf(n.id).map(m => h('div', { style: { color: 'var(--err)', margin: '4px 0' } }, m)),
+    field('Имя', text(n.title || '', setTitle, { placeholder: def.title })),
+    ...modelCard(n, def),
+    ...comfyExtras(d, n, def),
+    h('h4', {}, 'Входы'),
+    ...Object.entries(def.inputs).map(([k, inp]) => {
+      if (!inp.widget || linked.has(k)) {
+        const l = d.data.links.find(x => x.to === n.id && x.in === k);
+        return field(k, h('div.row', { style: { flex: 1 } }, chip(inp.type), h('span.dim', {}, l ? `← ${l.from}.${l.out}` : inp.optional ? 'не подключён (необязательный)' : 'не подключён')), inp.hint);
+      }
+      return field(k, widget(d, n, k, inp), inp.hint || inp.type);
+    }),
+    h('h4', {}, 'Выходы'),
+    ...(def.outputs.length ? def.outputs.map(o => {
+      const to = d.data.links.filter(l => l.from === n.id && l.out === o.name).map(l => `${l.to}.${l.in}`);
+      return field(o.name, h('div.row', { style: { flex: 1 } }, chip(o.type), h('span.dim', {}, to.length ? `→ ${to.join(', ')}` : '')));
+    }) : [h('div.dim', {}, def.output ? 'конечная нода' : '—')]),
+    ...result(n),
+    h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap' } },
+      h('button.primary', { onclick: () => queuePrompt(d.id, 1, [n.id]) }, icon('play', { size: 14 }), 'Выполнить до неё'),
+      h('button', { onclick: deleteSel }, icon('delete', { size: 14 }), 'Удалить')),
+  ];
+}
+
+function linkInspector(s) {
+  const d = doc('workflow', s.doc), l = d?.data.links[s.index];
+  if (!l) return [];
+  return [h('h3', {}, icon('link', { size: 16 }), 'Связь'), h('div.mono', {}, `${l.from}.${l.out} → ${l.to}.${l.in}`),
+    h('button', { style: { marginTop: '8px' }, onclick: deleteSel }, 'Удалить связь')];
+}
+
+function workflowInspector(s) {
+  const d = doc('workflow', s.doc);
+  if (!d) return [];
+  const set = (k, v) => edit('workflow', d.id, wf => { if (v === undefined || v === '') delete wf[k]; else wf[k] = v; }, { label: k, merge: `wf.${k}` });
+  const counts = {};
+  for (const n of d.data.nodes) counts[defs()[n.type]?.cat || '?'] = (counts[defs()[n.type]?.cat || '?'] || 0) + 1;
+  const about = h('textarea', { rows: 4, spellcheck: false, placeholder: 'Что делает этот пайплайн' });
+  about.value = d.data.about || '';
+  about.oninput = () => set('about', about.value);
+  return [
+    h('h3', {}, icon('blueprint', { size: 16 }), d.data.title || d.id), h('div.hint', {}, `workflows/${d.id}.json${d.dirty ? ' · не сохранён' : ''}`),
+    field('Название', text(d.data.title, v => set('title', v))),
+    h('h4', {}, 'Описание'), about,
+    h('h4', {}, 'Состав'),
+    h('div.hint', {}, `нод ${d.data.nodes.length}, связей ${d.data.links.length}`),
+    ...Object.entries(counts).map(([c, k]) => h('div.hint', {}, `${c}: ${k}`)),
+    h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap' } },
+      h('button.primary', { onclick: () => queuePrompt(d.id) }, icon('play', { size: 14 }), 'Запуск'),
+      h('button', { onclick: () => queuePrompt(d.id, 4) }, '×4'),
+      h('button', { onclick: () => select({ kind: 'workflow', doc: d.id, id: d.id }) || navigator.clipboard?.writeText(JSON.stringify(d.data, null, 2)) }, icon('copy', { size: 14 }), 'JSON')),
+  ];
+}
+
+export function initNodeInspector() {
+  registerInspector('node', nodeInspector);
+  registerInspector('link', linkInspector);
+  registerInspector('workflow', workflowInspector);
+}

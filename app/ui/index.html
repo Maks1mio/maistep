@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>maistep</title>
+  <link rel="icon" href="icons/maistep.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/studio.css">
+  <link rel="stylesheet" href="css/uikit.css">
+  <link rel="stylesheet" href="css/maistep.css">
+</head>
+<body class="ui-scrollbars">
+<div id="app">
+  <!-- шапка: меню, проект, правка | сервер и запуск графа | очередь и проверка -->
+  <header id="header">
+    <div class="hl">
+      <img class="logo" src="icons/maistep.svg" alt="maistep" data-tip="maistep — нодовый редактор AI-пайплайнов">
+      <nav id="menubar"></nav>
+      <span class="hsep"></span>
+      <button class="chip" id="tb-project" data-tip="Проект: путь, сохранение, перезагрузка"><img class="ui-ic" src="icons/nodes/folder_dark.svg" width="16" height="16" alt=""><span id="tb-project-name">проект</span><span class="badge" id="tb-dirty"></span><img class="ui-ic chev" src="icons/general/chevronDown_dark.svg" width="16" height="16" alt=""></button>
+      <div class="ui-tb">
+        <button class="b" id="tb-save" data-tip="Сохранить всё (Ctrl+S)"><img class="ui-ic" src="icons/general/save_dark.svg" width="16" height="16" alt=""></button>
+        <button class="b" id="tb-undo" data-tip="Отменить (Ctrl+Z)"><img class="ui-ic" src="icons/general/undo_dark.svg" width="16" height="16" alt=""></button>
+        <button class="b" id="tb-redo" data-tip="Повторить (Ctrl+Y)"><img class="ui-ic" src="icons/general/redo_dark.svg" width="16" height="16" alt=""></button>
+      </div>
+    </div>
+    <div class="hc">
+      <div class="runw" id="runw">
+        <button class="cfg" id="tb-server" data-tip="Python-сервер"><span id="srv-dot"></span><span id="srv-text">Сервер</span><img class="ui-ic" src="icons/general/chevronDown_dark.svg" width="16" height="16" alt=""></button>
+        <button class="act run" id="tb-run" data-tip="Запустить воркфлоу (Ctrl+Enter)"><img class="ui-ic" src="icons/run/run_dark.svg" width="16" height="16" alt=""><span class="qn" id="tb-queue"></span></button>
+        <button class="act" id="tb-interrupt" data-tip="Прервать запуск (Ctrl+Shift+Enter)"><img class="ui-ic" src="icons/run/pause_dark.svg" width="16" height="16" alt=""></button>
+        <button class="act" id="tb-restart" data-tip="Перезапустить сервер (Ctrl+F5)"><img class="ui-ic" src="icons/run/restart_dark.svg" width="16" height="16" alt=""></button>
+        <button class="act stop" id="tb-stop" data-tip="Остановить сервер (Shift+F5)"><img class="ui-ic" src="icons/run/stop_dark.svg" width="16" height="16" alt=""></button>
+        <span class="prog" id="tb-progress"></span>
+      </div>
+    </div>
+    <div class="hr">
+      <button class="tbtn" id="tb-check" data-tip="Проверить граф (F7)"><img class="ui-ic" src="icons/general/checkmark_dark.svg" width="16" height="16" alt=""><span>Проверить</span></button>
+      <button class="tbtn" id="tb-results" data-tip="Очередь и результаты (2)"><img class="ui-ic" src="icons/general/history_dark.svg" width="16" height="16" alt=""><span>Результаты</span></button>
+    </div>
+  </header>
+  <!-- вкладки рабочих областей; у каждой своя раскладка панелей (js/dock.js) -->
+  <nav id="wsbar"></nav>
+  <div id="dock">
+    <div class="pane" id="p-hier">
+      <div class="bar" id="hier-bar"></div>
+      <div class="body"><div class="tree" id="hier-tree"></div></div>
+    </div>
+    <div class="pane" id="p-project">
+      <div class="bar" id="pj-bar"></div>
+      <div class="pj-crumbs" id="pj-crumbs"></div>
+      <div class="body" id="pj-body"><div class="pj-grid" id="assets"></div></div>
+      <div class="pj-foot" id="pj-foot"></div>
+    </div>
+    <div class="pane" id="p-console">
+      <div class="bar" id="console-bar"></div>
+      <div class="body" id="console-body"><div class="console" id="console"></div></div>
+    </div>
+    <div class="pane" id="p-inspector">
+      <div class="body"><div class="insp" id="inspector"></div></div>
+    </div>
+    <div class="view" id="v-graph"></div>
+    <div class="view" id="v-results"></div>
+    <div class="view" id="v-library"></div>
+    <div class="view" id="v-code"></div>
+    <div class="view" id="v-uikit"></div>
+  </div>
+  <div id="statusbar"><span id="st-left">Загрузка проекта…</span><span class="grow"></span><span id="st-right"></span></div>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

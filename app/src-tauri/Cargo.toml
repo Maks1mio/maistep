@@ -1,0 +1,27 @@
+[package]
+name = "maistep"
+version = "0.1.0"
+edition = "2021"
+description = "maistep — нодовый редактор AI-пайплайнов (Tauri v2): графы воркфлоу, Python-сервер исполнения, CodeEditor своих нод"
+
+[[bin]]
+name = "maistep"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+walkdir = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 2

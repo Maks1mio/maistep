@@ -1,0 +1,59 @@
+{
+  "title": "Пакетная обработка",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "value.text",
+      "x": 40,
+      "y": 60,
+      "props": {
+        "text": "яблоко\nгруша\nслива"
+      }
+    },
+    {
+      "id": "n2",
+      "type": "text.split",
+      "x": 340,
+      "y": 60,
+      "props": {}
+    },
+    {
+      "id": "n3",
+      "type": "llm.map",
+      "x": 640,
+      "y": 40,
+      "props": {
+        "template": "Один факт про {item}, одним предложением."
+      }
+    },
+    {
+      "id": "n4",
+      "type": "output.save_text",
+      "x": 980,
+      "y": 60,
+      "props": {
+        "name": "facts.md"
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": "n1",
+      "out": "text",
+      "to": "n2",
+      "in": "text"
+    },
+    {
+      "from": "n2",
+      "out": "list",
+      "to": "n3",
+      "in": "items"
+    },
+    {
+      "from": "n3",
+      "out": "text",
+      "to": "n4",
+      "in": "text"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+node_modules/
+app/src-tauri/target/
+app/src-tauri/gen/
+__pycache__/
+.venv/
+venv/
+user/
+output/
+input/

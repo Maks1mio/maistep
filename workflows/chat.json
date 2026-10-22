@@ -1,0 +1,44 @@
+{
+  "title": "Чат с моделью",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "value.text",
+      "x": 40,
+      "y": 60,
+      "props": {
+        "text": "Придумай три названия для кофейни у моря."
+      }
+    },
+    {
+      "id": "n2",
+      "type": "llm.chat",
+      "x": 380,
+      "y": 40,
+      "props": {
+        "system": "Отвечай кратко, по-русски."
+      }
+    },
+    {
+      "id": "n3",
+      "type": "output.show",
+      "x": 740,
+      "y": 60,
+      "props": {}
+    }
+  ],
+  "links": [
+    {
+      "from": "n1",
+      "out": "text",
+      "to": "n2",
+      "in": "prompt"
+    },
+    {
+      "from": "n2",
+      "out": "text",
+      "to": "n3",
+      "in": "value"
+    }
+  ]
+}

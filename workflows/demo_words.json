@@ -1,0 +1,66 @@
+{
+  "title": "Демо без API: подсчёт слов",
+  "about": "Работает без ключей: текст → своя нода из custom_nodes → шаблон → вывод",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "value.text",
+      "x": 40,
+      "y": 60,
+      "props": {
+        "text": "мама мыла раму, рама была рада маме, мама рада"
+      }
+    },
+    {
+      "id": "n2",
+      "type": "custom.word_count",
+      "x": 380,
+      "y": 60,
+      "props": {
+        "top": 3
+      }
+    },
+    {
+      "id": "n3",
+      "type": "text.template",
+      "x": 720,
+      "y": 40,
+      "props": {
+        "template": "Топ слов:\n{a}\n\nВсего слов: {b}"
+      }
+    },
+    {
+      "id": "n4",
+      "type": "output.show",
+      "x": 1060,
+      "y": 60,
+      "props": {}
+    }
+  ],
+  "links": [
+    {
+      "from": "n1",
+      "out": "text",
+      "to": "n2",
+      "in": "text"
+    },
+    {
+      "from": "n2",
+      "out": "report",
+      "to": "n3",
+      "in": "a"
+    },
+    {
+      "from": "n2",
+      "out": "words",
+      "to": "n3",
+      "in": "b"
+    },
+    {
+      "from": "n3",
+      "out": "text",
+      "to": "n4",
+      "in": "value"
+    }
+  ]
+}

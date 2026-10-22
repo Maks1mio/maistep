@@ -1,0 +1,17 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<mask id="stroke0_15697_11250" fill="white">
+<path d="M8 4.5L4.5 1L1 4.5V8L8 15L15 8V4.5L11.5 1L8 4.5Z"/>
+</mask>
+<path d="M4.5 1L8 4.5L11.5 1L15 4.5V8L8 15L1 8V4.5L4.5 1Z" stroke-width="2" stroke="#6C707E" mask="url(#stroke0_15697_11250)"/>
+<mask id="stroke1_15697_11250" fill="white">
+<path d="M4.5 1L8 4.5L11.5 1L15 4.5L8 11.5L1 4.5L4.5 1Z"/>
+</mask>
+<path d="M8 4.5L4.5 1L1 4.5L8 11.5L15 4.5L11.5 1L8 4.5Z" stroke-width="2" stroke="#6C707E" mask="url(#stroke1_15697_11250)"/>
+<mask id="stroke2_15697_11250" fill="white">
+<path d="M8 4.5L11.5 8L8 11.5L4.5 8L8 4.5Z"/>
+</mask>
+<path d="M8 4.5L11.5 8L8 11.5L4.5 8L8 4.5Z" stroke-width="2" stroke="#6C707E" mask="url(#stroke2_15697_11250)"/>
+<path d="M8 10.5V14" stroke="#6C707E"/>
+<path d="M11 8V11.5" stroke="#6C707E"/>
+<path d="M5 8V11.5" stroke="#6C707E"/>
+</svg>

@@ -1,0 +1,124 @@
+/* maistep — дополнения к оболочке OCST: граф воркфлоу, поиск нод, результаты, очередь в шапке. */
+
+/* шапка: очередь и прогресс текущего запуска */
+.runw { position: relative; overflow: hidden; }
+.runw .act.run { width: auto; min-width: 30px; padding: 0 6px; gap: 4px; }
+.runw .qn { display: none; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #3d7a4a; color: #fff; font-size: 11px; line-height: 16px; }
+.runw .qn.on { display: inline-block; }
+.runw .prog { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: #5fd38a; transition: width .2s; pointer-events: none; }
+.runw.busy .prog { animation: maiPulse 1.2s ease-in-out infinite; }
+@keyframes maiPulse { 50% { opacity: .35; } }
+
+/* граф */
+#v-graph { display: flex; flex-direction: column; }
+.bp .palette { display: flex; flex-direction: column; }
+.bp .palette .pal-q { margin: 6px 8px; }
+.bp .palette .grp { padding: 8px 10px 3px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+
+.gfloat, .gedit { position: fixed; z-index: 600; background: var(--p-gray-2, #2b2d30); border: 1px solid var(--p-gray-4, #43454a); border-radius: 8px; box-shadow: 0 8px 28px #000a; }
+.gfloat { width: 340px; padding: 6px; }
+.gfloat input { width: 100%; box-sizing: border-box; }
+.gsearch { max-height: 340px; overflow: auto; margin-top: 6px; }
+.gsearch .it { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.gsearch .it .dim { margin-left: auto; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.gsearch .it i { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.gsearch .it.on, .gsearch .it:hover { background: var(--p-blue-4, #2e436e); }
+.gedit { padding: 6px 8px 8px; display: flex; flex-direction: column; gap: 4px; }
+.gedit textarea, .gedit input { width: 100%; box-sizing: border-box; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 12px; }
+.gfloat-menu { position: fixed; z-index: 600; min-width: 220px; }
+.gfloat-menu .item.on { color: #fff; }
+
+/* инспектор: типы и результаты */
+.tchip { display: inline-block; border: 1px solid; border-radius: 9px; padding: 0 6px; font-size: 10px; line-height: 16px; font-family: 'JetBrains Mono', Consolas, monospace; }
+.insp pre.out { white-space: pre-wrap; word-break: break-word; background: #1d1f23; border: 1px solid #34373d; border-radius: 4px; padding: 6px 8px; margin: 4px 0 8px; max-height: 360px; overflow: auto; font-size: 12px; user-select: text; }
+.insp pre.out.err { color: #ff8a80; border-color: #5a2a2a; background: #2a1c1e; }
+.insp textarea { width: 100%; box-sizing: border-box; }
+
+/* результаты */
+#v-results { display: flex; flex-direction: column; }
+.rgrid { flex: 1; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; padding: 10px; align-content: start; position: relative; }
+.rgrid .msg { position: static; grid-column: 1 / -1; min-height: 200px; }
+.rcard { background: #26282c; border: 1px solid #34373d; border-radius: 8px; padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rcard:hover { border-color: #4a4e56; }
+.rcard.sel { border-color: #ffd24a; }
+.rcard.bad { border-color: #5a2a2a; }
+.rcard .rh { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rcard .rh b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rcard .rh .dim { margin-left: auto; font-size: 11px; white-space: nowrap; }
+.rimgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 4px; }
+.rimgs img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; background: #1d1f23; }
+.rtext { font-size: 12px; color: #c9ccd3; white-space: pre-wrap; max-height: 140px; overflow: hidden; mask-image: linear-gradient(#000 70%, transparent); }
+.rtext.err { color: #ff8a80; mask-image: none; }
+
+/* выбор модели LLM */
+.mpick { width: 520px; }
+.mpick .row { display: flex; gap: 6px; align-items: center; }
+.mpick .row input { flex: 1; }
+.mpick .mfilters { margin-top: 6px; }
+.mchip { height: 22px; padding: 0 8px; border-radius: 11px; font-size: 12px; }
+.mchip.on { background: var(--p-blue-4, #2e436e); border-color: #4a6db0; }
+.mlist { max-height: 420px; }
+.mlist .grp { padding: 8px 8px 2px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.mlist .it { gap: 6px; }
+.mlist .it .mn { flex-shrink: 0; }
+.mlist .it .mid { margin-left: 0 !important; font-size: 11px; font-family: 'JetBrains Mono', Consolas, monospace; overflow: hidden; text-overflow: ellipsis; }
+.mlist .it.cur .mn { color: #ffd24a; }
+.mbadge { display: inline-block; flex-shrink: 0; padding: 0 5px; border-radius: 8px; background: #33363c; color: #c9ccd3; font-size: 10px; line-height: 16px; }
+.mbadge.v, .mbadge.r { background: transparent; padding: 0 1px; font-size: 12px; }
+.mbadge.x { color: #e0a35f; }
+.insp .mcard { background: #24262a; border: 1px solid #34373d; border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.insp .mcard .row { display: flex; gap: 4px; align-items: center; }
+
+/* провайдеры LLM */
+.pdialog { width: 760px; max-width: calc(100vw - 40px); }
+.pdialog .pbody { display: grid; grid-template-columns: 220px 1fr; gap: 16px; min-height: 300px; }
+.pdialog .plist { border-right: 1px solid var(--line, #393b40); padding-right: 12px; display: flex; flex-direction: column; gap: 2px; }
+.pdialog .plist .it { display: flex; gap: 6px; align-items: center; padding: 5px 8px; border-radius: 4px; cursor: pointer; }
+.pdialog .plist .it:hover { background: #33363c; }
+.pdialog .plist .it.on { background: var(--p-blue-4, #2e436e); }
+.pdialog .pform .f { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; padding: 4px 0; }
+.pdialog .pform .f .v { display: flex; gap: 4px; }
+.pdialog .pform .f input { flex: 1; width: 100%; }
+.pdialog .pform .row { display: flex; gap: 6px; }
+
+/* библиотека моделей */
+#v-library { display: flex; flex-direction: column; }
+#v-library .bar .lq { width: 280px; }
+.lgrid { flex: 1; overflow: auto; display: grid; grid-auto-rows: max-content; grid-template-columns: repeat(auto-fill, minmax(var(--lsz, 150px), 1fr)); gap: 10px; padding: 10px; align-content: start; position: relative; }
+.lgrid .msg { position: static; grid-column: 1 / -1; min-height: 160px; }
+.ltile { background: #26282c; border: 1px solid #34373d; border-radius: 8px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; min-width: 0; }
+.ltile:hover { border-color: #4a4e56; }
+.ltile.sel { border-color: #ffd24a; box-shadow: 0 0 0 1px #ffd24a; }
+.ltile .lth { position: relative; aspect-ratio: 3 / 4; background: #1d1f23; overflow: hidden; }
+.ltile .lth img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ltile.nsfw .lth img, .insp .preview.nsfw img { filter: blur(18px) saturate(.6); }
+.ltile .lph { width: 100%; height: 100%; display: grid; place-items: center; align-content: center; gap: 6px; color: var(--dim); font-size: 11px; text-transform: uppercase; }
+.ltile .lbase { position: absolute; left: 6px; bottom: 6px; background: #000a; color: #fff; font-size: 10px; padding: 1px 6px; border-radius: 8px; }
+.ltile .lnm { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ltile .lnm .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.ltile .lnm .dim { font-size: 11px; }
+.insp .preview.nsfw { cursor: pointer; }
+.insp .ltrig { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 12px; background: #1d1f23; border: 1px solid #34373d; border-radius: 4px; padding: 4px 6px; margin: 3px 0; cursor: copy; word-break: break-word; }
+.insp .ltrig:hover { border-color: #4a6db0; }
+.insp .ltags { display: flex; flex-wrap: wrap; gap: 4px; }
+.insp .ltags .mbadge { cursor: copy; }
+.insp details { margin-top: 8px; }
+.insp summary { cursor: pointer; color: var(--dim); }
+.lpop { width: 640px; }
+.lpop .lpick { max-height: 460px; --lsz: 110px; padding: 6px 0 0; }
+.lpop .lpick .ltile .lth { aspect-ratio: 1; }
+
+/* мост ComfyUI */
+.cstat { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0 6px; font-size: 12px; }
+.cstat .pdot { width: 8px; height: 8px; border-radius: 50%; background: #6c707a; flex-shrink: 0; }
+.cstat .pdot.on { background: #5fd38a; }
+.cstat button { height: 22px; }
+.cbind input { width: 100%; box-sizing: border-box; margin-bottom: 4px; }
+.cbrows { max-height: 360px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.cb { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 0 6px; padding: 4px 6px; border-radius: 4px; background: #24262a; border: 1px solid transparent; }
+.cb.on { border-color: #4a6db0; }
+.cb .cbk { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cb .cbv { grid-column: 1; font-size: 11px; color: var(--dim); font-family: 'JetBrains Mono', Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cb .cbb { grid-column: 2; grid-row: 1 / 3; display: flex; gap: 2px; align-items: center; }
+.cb .cbb button { width: 22px; height: 22px; padding: 0; justify-content: center; font-family: 'JetBrains Mono', Consolas, monospace; }
+.cb .cbb button.on { background: #2e436e; border-color: #4a6db0; }
