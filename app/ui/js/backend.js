@@ -72,6 +72,7 @@ function connect() {
   ev('log', d => log(d.level || 'info', `${d.node ? `[${d.node}] ` : ''}${d.text}`));
   ev('components', d => { S.componentsJob = d.job || null; emit('components', d); });
   ev('comp-log', d => emit('component-log', d));
+  ev('update', d => emit('update', d));
   ev('civitai', d => emit('civitai', d));
   ev('agent', d => emit('agent', d));
   ev('error', d => {
@@ -147,6 +148,8 @@ export function componentsStatus({ refresh = false, deep = false } = {}) {
 }
 export const installComponents = (ids, mode = 'recommended') => api('/api/components/install', { ids, mode });
 export const cancelComponents = () => api('/api/components/cancel', {});
+export const updateStatus = (check = false) => api(`/api/update${check ? '?check=1' : ''}`);
+export const downloadUpdate = () => api('/api/update/download', {});
 
 export const interrupt =() => api('/api/interrupt', {}).catch(e => log('error', String(e)));
 export const clearQueue = () => api('/api/queue', { clear: true }).catch(e => log('error', String(e)));

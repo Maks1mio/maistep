@@ -26,10 +26,43 @@ app/dev-server.mjs веб-режим (те же команды, что ядро)
 server/main.py   HTTP API + очередь + SSE (только стандартная библиотека)
 server/maistep/  API нод (@node), исполнитель графа с кэшем
 server/nodes/    встроенные ноды: значения, текст, JSON, логика, файлы, LLM, картинки
-custom_nodes/    свои ноды (пример — example.py)
-workflows/       графы *.json
-input/ output/   входные файлы и результаты (в .gitignore)
-user/settings.json  ключи API (в .gitignore)
+custom_nodes/    свои ноды (в репозитории только пример — example.py)
+defaults/workflows/  стартовые воркфлоу: копируются в workflows/, пока там пусто (scripts/sync-defaults.mjs из templates.js)
+scripts/         release.mjs — установщик и релиз, sync-defaults.mjs
+workflows/       графы пользователя *.json (не в git)
+input/ output/   входные файлы и результаты (не в git)
+user/            ключи API, история, кэши (не в git)
+```
+
+## Что в репозитории
+
+`.gitignore` — белый список: в git, в установщик и в обновления попадают только `app/` (ядро и UI), `server/`, `mcp/`,
+`defaults/`, `custom_nodes/example.py`, `scripts/`, `components.json`, `requirements.txt`, `package*.json`, `README.md`.
+Всё остальное в корне игнорируется само: `workflows/ user/ input/ output/` (графы, ключи, история, картинки),
+`.venv/`, `dist/`, `update/`, `manifest.json`, заметки ИИ-ассистентов (`CLAUDE.md`, `.claude/`, `kilo.json`).
+Новую папку для приложения нужно явно добавить в `.gitignore` (`!/папка/`) и в `PAYLOAD` в `scripts/release.mjs`.
+
+## Установка и обновления
+
+Установщик — `maistep-<версия>-setup.exe` из GitHub Releases (NSIS, без прав администратора, в
+`%LOCALAPPDATA%\maistep`). При первом запуске создаётся `.venv` из системного Python 3.10+; пакеты генерации и LLM
+ставятся в «Компонентах».
+
+Обновления приходят сами: сервер раз в 6 часов смотрит последний стабильный релиз, сверяет его `manifest.json`
+(sha256 каждого файла) с диском и в фоне качает **только изменившиеся файлы** (с raw.githubusercontent.com по тегу
+релиза) в `update/staging/` — прерванная загрузка продолжается. `maistep.exe` (~10 МБ) качается, только если изменился
+код Rust; правки UI, сервера и нод — килобайты. Скачанное применяется при перезапуске окна («Компоненты» →
+«Перезапустить») или при следующем запуске; `workflows/ user/ input/ output/ .venv` не трогаются никогда. UI грузится
+с диска (`app/ui`), вшитый в exe — запасной. В git-копии (есть `.git`) обновлятор только показывает версию.
+Пока репозиторий приватный, нужен токен: `user/settings.json` → `"update": {"token": "…"}` (`"auto": false` —
+не качать самому).
+
+Релиз:
+
+```
+node scripts/release.mjs version 0.2.0   # номер во всех файлах → git commit, git push
+node scripts/release.mjs build           # dist/: установщик, maistep.exe, manifest.json (из HEAD)
+node scripts/release.mjs publish --notes "что нового"   # gh release create v0.2.0
 ```
 
 ## Рабочие области
@@ -162,9 +195,10 @@ SDXL, SD1.5, реалистичные миксы). В Inspector — откуда
 `components.json` (группы «Генерация», «LLM»; torch — с CUDA-индексом), в Inspector — карточка пакета; лог pip —
 в Console.
 «Установить недостающее», «Обновить рекомендованные», «До последней стабильной» ставят пакеты в `.venv` через pip;
-лог идёт вживую, «Прервать» останавливает установку. Обновления maistep — из GitHub Releases (только стабильные,
-без draft/prerelease); при старте один раз предлагаются доступные стабильные обновления.
-API: `GET /api/components?refresh=1&deep=1`, `POST /api/components/install`, `POST /api/components/cancel`.
+лог идёт вживую, «Прервать» останавливает установку. При старте один раз предлагаются недостающие пакеты и их
+стабильные обновления. Карточка maistep сверху — обновление приложения (см. «Установка и обновления»).
+API: `GET /api/components?refresh=1&deep=1`, `POST /api/components/install`, `POST /api/components/cancel`,
+`GET /api/update?check=1`, `POST /api/update/download`.
 
 ## MCP
 

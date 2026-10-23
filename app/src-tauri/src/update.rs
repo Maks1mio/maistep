@@ -146,3 +146,45 @@ impl Assets<Wry> for NoAssets {
         Box::new(std::iter::empty())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn applies_staged_files_and_keeps_user_data() {
+        let root = std::env::temp_dir().join(format!("maistep-update-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let staging = root.join("update").join("staging");
+        for (p, t) in [("server/a.py", "old"), ("server/gone.py", "x"), ("workflows/my.json", "mine")] {
+            fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            fs::write(root.join(p), t).unwrap();
+        }
+        for (p, t) in [("server/a.py", "new"), ("app/ui/js/n.js", "n"), ("workflows/my.json", "evil")] {
+            fs::create_dir_all(staging.join(p).parent().unwrap()).unwrap();
+            fs::write(staging.join(p), t).unwrap();
+        }
+        let plan = json!({ "version": "9.9.9", "files": ["server/a.py", "app/ui/js/n.js", "workflows/my.json", "../out.txt"],
+            "remove": ["server/gone.py", "workflows/my.json"], "exe": false, "manifest": { "version": "9.9.9" } });
+        fs::write(root.join("update").join("pending.json"), plan.to_string()).unwrap();
+
+        assert!(!apply_pending(&root));
+        assert_eq!(fs::read_to_string(root.join("server/a.py")).unwrap(), "new");
+        assert_eq!(fs::read_to_string(root.join("app/ui/js/n.js")).unwrap(), "n");
+        assert!(!root.join("server/gone.py").exists());
+        assert_eq!(fs::read_to_string(root.join("workflows/my.json")).unwrap(), "mine");
+        // недопустимые пути — ошибка, pending остаётся для разбора
+        let res: Value = serde_json::from_str(&fs::read_to_string(root.join("update/applied.json")).unwrap()).unwrap();
+        assert_eq!(res["ok"], false);
+        assert!(root.join("update/pending.json").exists());
+
+        // чистый план применяется целиком: манифест записан, staging убран
+        fs::write(root.join("update").join("pending.json"), json!({ "version": "9.9.9", "files": ["server/a.py"], "remove": [], "exe": false, "manifest": { "version": "9.9.9" } }).to_string()).unwrap();
+        assert!(!apply_pending(&root));
+        let res: Value = serde_json::from_str(&fs::read_to_string(root.join("update/applied.json")).unwrap()).unwrap();
+        assert_eq!(res["ok"], true);
+        assert!(!root.join("update/pending.json").exists() && !staging.exists());
+        assert!(fs::read_to_string(root.join("manifest.json")).unwrap().contains("9.9.9"));
+        let _ = fs::remove_dir_all(&root);
+    }
+}
