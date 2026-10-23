@@ -1,7 +1,8 @@
-"""Magic KSampler: подбор параметров сэмплинга под чекпоинт и LoRA.
+"""Magic KSampler: подбор параметров сэмплинга под чекпоинт.
 
+LoRA на параметры (steps/cfg/сэмплер) не влияют — по ним только совместимость с базой, сила и триггер-слова.
 Источники (по убыванию веса):
-  1. «быстрые» модели и LoRA (Lightning / Hyper / Turbo / LCM / DMD2) — у них жёсткие требования к steps/cfg/сэмплеру;
+  1. «быстрые» чекпоинты (Lightning / Hyper / Turbo / LCM / DMD2) — у них жёсткие требования к steps/cfg/сэмплеру;
   2. описание версии чекпоинта с Civitai (.cminfo.json) — автор обычно пишет «Steps: 25-30, CFG: 5-7, Sampler: Euler a»;
   3. параметры картинок-примеров версии на Civitai (медиана; запрос один раз, кэш user/magic_cache.json);
   4. профиль базовой модели (Illustrious, NoobAI, Pony, Animagine, SDXL, SD1.5, реалистичные миксы).
@@ -316,19 +317,9 @@ def recommend(ckpt, loras=(), refresh=False, online=True):
         if lf and lf != fam:
             row["ok"] = False
             row["note"] = f"LoRA для {lf.replace('other:', '')}, чекпоинт — {prof['title']}: не подойдёт"
-        lsp = _speed(f"{li['name']} {linfo.get('ModelName') or ''}")
-        if lsp and float(strength or 0) > 0:
-            take(lsp, f"{lsp['title']}-LoRA")
-            notes.append(f"{lsp['title']}-LoRA: шаги {lsp['steps']}, CFG {lsp['cfg']}, {lsp['sampler_name']}/{lsp['scheduler']}")
         if row["weight"] and abs(float(strength or 0) - row["weight"]) > 0.25:
             row["note"] = (row.get("note") + "; " if row.get("note") else "") + f"автор советует силу ≈ {row['weight']}"
         lor.append(row)
-    # LoRA стиля/персонажа при высоком CFG пережигают картинку — чуть снижаем
-    strong = sum(max(0.0, float(r.get("strength") or 0)) for r in lor if r.get("ok"))
-    if strong > 1.6 and params["cfg"] > 4 and not sp and source["cfg"].startswith("профиль"):
-        params["cfg"] = max(3.5, params["cfg"] - 1.0)
-        source["cfg"] += " − 1 (несколько сильных LoRA)"
-        notes.append(f"суммарная сила LoRA {strong:.1f} — CFG снижен, чтобы не пережечь картинку")
     if key == "pony":
         notes.append("Pony: начните промпт с score_9, score_8_up, score_7_up")
     if "vpred" in it["name"].lower() or "v-pred" in (info.get("VersionName") or "").lower():

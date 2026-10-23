@@ -48,8 +48,10 @@ mashit (игра и её редактор) **не трогаем** — maistep �
   веса становятся inference-тензорами и PEFT не включает LoRA (`requires_grad … inference tensor`).
 - MCP-сервер `mcp/maistep_mcp.py` подключён в kilo.json, не в Claude Code; то же самое — HTTP API (`/api/history` и т.д.).
 - Картинки на холсте грузятся с `crossOrigin='anonymous'` (сервер шлёт CORS) — иначе холст «грязный» и не снимается.
-- Magic KSampler (`magic.py`, `magic.js`): рекомендация хранится в ноде (`n.magic = {key, rec, profile}`), подстановка —
-  без записи в отмену; при смене модели меняются только значения, равные прежней рекомендации.
+- Magic KSampler (`magic.py`, `magic.js`): параметры берутся только из правила чекпоинта; LoRA на steps/cfg/сэмплер
+  не влияют (только совместимость, сила, триггеры). Рекомендация хранится в ноде (`n.magic = {key, rec, profile}`),
+  подстановка — без записи в отмену; при смене модели меняются только значения, равные прежней рекомендации.
+  Версия правила в ключе `magic.js` (`RULE`) — старые рекомендации пересчитываются.
 - ImageNaizer (`naizer.js`) шлёт скрытый граф `id: "naizer"` (sd.inpaint) через /api/prompt; маска — уникальный
   `input/naizer_mask_*.png` (кэш нод по входам). Маскированный сэмплинг — `sample(noise_mask=…)` (как SetLatentNoiseMask).
 - Картинки в ноды: `images.js` — выбор из input/ и output/ или с диска, перетаскивание (файлы, text/mai-file, ссылки

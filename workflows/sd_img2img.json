@@ -42,10 +42,10 @@
     {
       "id": "image",
       "type": "image.load",
-      "x": 0,
-      "y": 300,
+      "x": 10,
+      "y": 370,
       "props": {
-        "file": "input/photo_2026-10-23_02-35-09.jpg"
+        "file": "input/chat_mvk6g8u5_image.png"
       }
     },
     {
@@ -89,19 +89,19 @@
       "y": -10,
       "props": {
         "seed": -1,
-        "steps": 8,
-        "cfg": 2,
-        "sampler_name": "dpmpp_sde",
-        "scheduler": "karras",
-        "denoise": 1
+        "steps": 36,
+        "cfg": 7,
+        "sampler_name": "euler_ancestral",
+        "scheduler": "normal",
+        "denoise": 0.55
       },
       "magic": {
-        "key": "{\"ckpt\":\"aMixIllustrious_aMix.safetensors\",\"loras\":[[\"hentai_studio_quality-000013.safetensors\",1]]}",
+        "key": "[\"ckpt-only-1\",{\"ckpt\":\"aMixIllustrious_aMix.safetensors\",\"loras\":[[\"hentai_studio_quality-000013.safetensors\",1]]}]",
         "rec": {
-          "steps": 8,
-          "cfg": 2,
-          "sampler_name": "dpmpp_sde",
-          "scheduler": "karras"
+          "steps": 36,
+          "cfg": 7,
+          "sampler_name": "euler_ancestral",
+          "scheduler": "normal"
         },
         "profile": "Illustrious"
       }
@@ -157,18 +157,6 @@
       "in": "clip"
     },
     {
-      "from": "ckpt",
-      "out": "model",
-      "to": "n10",
-      "in": "model"
-    },
-    {
-      "from": "n10",
-      "out": "model",
-      "to": "n11",
-      "in": "model"
-    },
-    {
       "from": "pos",
       "out": "conditioning",
       "to": "n11",
@@ -191,6 +179,18 @@
       "out": "latent",
       "to": "decode",
       "in": "samples"
+    },
+    {
+      "from": "ckpt",
+      "out": "model",
+      "to": "n10",
+      "in": "model"
+    },
+    {
+      "from": "n10",
+      "out": "model",
+      "to": "n11",
+      "in": "model"
     }
   ],
   "about": "Перерисовка картинки: Load Image → VAE Encode → KSampler (denoise 0.55: меньше — ближе к исходнику). Загрузите картинку в ноду Load Image (Inspector → кнопка загрузки) или бросьте файл на граф."

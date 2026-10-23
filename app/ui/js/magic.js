@@ -1,7 +1,8 @@
-// Magic KSampler: параметры сэмплинга под чекпоинт и LoRA выше по входу model (server/maistep/magic.py, /api/magic).
-// Рекомендация хранится в самой ноде (n.magic = { key, rec, profile }) и ставится в виджеты сразу; значения можно
-// менять руками. При смене чекпоинта/LoRA новые рекомендации заменяют только нетронутые значения; «Сбросить»
-// возвращает все. Подстановка — без записи в отмену: Ctrl+Z смены модели откатывает и её параметры.
+// Magic KSampler: параметры сэмплинга под чекпоинт выше по входу model (server/maistep/magic.py, /api/magic).
+// LoRA на параметры не влияет — только совместимость и подсказки. Рекомендация хранится в самой ноде
+// (n.magic = { key, rec, profile }) и ставится в виджеты сразу; значения можно менять руками. При смене
+// чекпоинта/LoRA новые рекомендации заменяют только нетронутые значения; «Сбросить» возвращает все.
+// Подстановка — без записи в отмену: Ctrl+Z смены модели откатывает и её параметры.
 import { S, on, emit, doc, edit } from './store.js';
 import { api } from './backend.js';
 import { debounce } from './util.js';
@@ -13,7 +14,8 @@ const loading = new Map(); // key → Promise
 const failed = new Map();  // key → ошибка
 
 const val = (n, k) => n.props?.[k] ?? S.nodes[n.type]?.inputs?.[k]?.default;
-export const keyOf = src => JSON.stringify(src);
+const RULE = 'ckpt-only-1';  // версия правила: старые рекомендации (с параметрами от LoRA) пересчитываются
+export const keyOf = src => JSON.stringify([RULE, src]);
 
 // чекпоинт и LoRA выше по входу model (через любые ноды с входом MODEL); выключенная нода обрывает цепочку
 export function magicSources(d, n) {
