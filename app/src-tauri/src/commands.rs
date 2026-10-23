@@ -138,7 +138,9 @@ pub fn fs_write(st: State<AppState>, path: String, text: String) -> Result<(), S
 
 #[tauri::command]
 pub fn server_start(app: AppHandle, st: State<AppState>, port: Option<u16>) -> Result<Status, String> {
-    server::start(&app, &st.server, &st.root, port.unwrap_or(server::DEFAULT_PORT))
+    // MAISTEP_PORT перекрывает порт из UI (вторая копия рядом с основной, проверки)
+    let env = std::env::var("MAISTEP_PORT").ok().and_then(|p| p.parse().ok());
+    server::start(&app, &st.server, &st.root, env.or(port).unwrap_or(server::DEFAULT_PORT))
 }
 
 #[tauri::command]

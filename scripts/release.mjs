@@ -1,16 +1,20 @@
-// Релиз maistep: установщик (Tauri NSIS) + манифест для обновлятора + публикация в GitHub Releases.
+// Релиз maistep: установщик + манифест для обновлятора + публикация в GitHub Releases.
 //
 //   node scripts/release.mjs version 0.2.0   номер версии во всех файлах (потом — коммит и push)
 //   node scripts/release.mjs build           dist/: установщик, maistep.exe, manifest.json  (--dirty — из рабочей копии, для проверки)
+//   установщик: maistep-setup.exe --silent --dir <папка> [--desktop] [--start-menu] [--python] — без окна
 //   node scripts/release.mjs publish         gh release create v<версия> с файлами из dist/ (коммит должен быть в origin)
 //
 // Что входит в приложение — PAYLOAD ниже: ровно эти пути из git (git archive HEAD), без личного и локального
 // (.gitignore — белый список). Файлы берутся из коммита, а не с диска: обновлятор сверяет sha256 с raw.githubusercontent.com
 // по тегу, а в рабочей копии Windows могут быть CRLF. exe.source — отпечаток исходников Rust без номера версии:
 // если он не изменился, обновление не качает maistep.exe (сборки Rust не побайтно воспроизводимы).
+// Установщик — тот же maistep.exe с архивом приложения в конце (формат — app/src-tauri/src/setup.rs): запустившись,
+// он видит архив и показывает окно установки (setup.html), а в папку кладёт exe без архива.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -22,7 +26,7 @@ const TAURI = path.join(ROOT, RUST, 'tauri.conf.json');
 
 const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28 });
 const gitBuf = (...args) => execFileSync('git', args, { cwd: ROOT, maxBuffer: 1 << 28 });
-const run = (cmd, args) => execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit', shell: process.platform === 'win32' && cmd === 'npx' });
+const run = (cmd, args) => execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
 const sha = buf => crypto.createHash('sha256').update(buf).digest('hex');
 const readJson = p => JSON.parse(fs.readFileSync(p, 'utf8'));
 const writeJson = (p, v) => fs.writeFileSync(p, `${JSON.stringify(v, null, 2)}\n`);
@@ -75,29 +79,37 @@ function build(dirty) {
   const comp = readJson(path.join(ROOT, 'components.json'));
   if (comp.app?.stable !== v) die(`components.json app.stable = ${comp.app?.stable}, а версия ${v} — node scripts/release.mjs version ${v}`);
   fs.rmSync(DIST, { recursive: true, force: true });
-  const stage = path.join(DIST, 'payload');
+  fs.mkdirSync(DIST, { recursive: true });
   const manifest = { name: 'maistep', version: v, tag: `v${v}`, repo: comp.app.repo, files: {}, exe: { source: rustSource(dirty) } };
-  for (const [f, buf] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
-    fs.mkdirSync(path.dirname(path.join(stage, f)), { recursive: true });
-    fs.writeFileSync(path.join(stage, f), buf);
-    manifest.files[f] = { sha256: sha(buf), size: buf.length };
-  }
-  // манифест установленной версии (без sha exe — он ещё не собран; обновлятору достаточно exe.source)
-  writeJson(path.join(stage, 'manifest.json'), manifest);
+  const entries = [...files].sort(([a], [b]) => a.localeCompare(b));
+  for (const [f, buf] of entries) manifest.files[f] = { sha256: sha(buf), size: buf.length };
+  // манифест установленной версии (без sha exe — обновлятору достаточно exe.source)
+  entries.push(['manifest.json', Buffer.from(`${JSON.stringify(manifest, null, 2)}
+`)]);
   const bytes = Object.values(manifest.files).reduce((s, f) => s + f.size, 0);
   console.log(`приложение: ${files.size} файлов, ${(bytes / 1048576).toFixed(1)} МБ`);
 
-  run('npx', ['tauri', 'build', '--config', 'scripts/tauri.release.json']);
-  const rel = path.join(ROOT, RUST, 'target', 'release');
-  const exe = fs.readFileSync(path.join(rel, 'maistep.exe'));
+  run('cargo', ['build', '--release', '--manifest-path', `${RUST}/Cargo.toml`]);
+  const exe = fs.readFileSync(path.join(ROOT, RUST, 'target', 'release', 'maistep.exe'));
   manifest.exe = { ...manifest.exe, sha256: sha(exe), size: exe.length };
-  fs.copyFileSync(path.join(rel, 'maistep.exe'), path.join(DIST, 'maistep.exe'));
-  const nsis = path.join(rel, 'bundle', 'nsis');
-  const setup = fs.readdirSync(nsis).find(f => f.includes(v) && f.endsWith('-setup.exe'));
-  if (!setup) die(`нет установщика в ${nsis}`);
-  fs.copyFileSync(path.join(nsis, setup), path.join(DIST, `maistep-${v}-setup.exe`));
+  fs.writeFileSync(path.join(DIST, 'maistep.exe'), exe);
+
+  // архив: u16 длина пути, путь, u32 размер, u32 сжатый размер, deflate; в конце u64 длина и метка
+  const parts = [];
+  for (const [f, buf] of entries) {
+    const name = Buffer.from(f, 'utf8'), comp = zlib.deflateRawSync(buf, { level: 9 });
+    const hd = Buffer.alloc(2 + name.length + 8);
+    hd.writeUInt16LE(name.length, 0); name.copy(hd, 2);
+    hd.writeUInt32LE(buf.length, 2 + name.length); hd.writeUInt32LE(comp.length, 6 + name.length);
+    parts.push(hd, comp);
+  }
+  const blob = Buffer.concat(parts), tail = Buffer.alloc(24);
+  tail.writeBigUInt64LE(BigInt(blob.length), 0); tail.write('MAISTEP-PAYLOAD1', 8, 'latin1');
+  const setup = Buffer.concat([exe, blob, tail]);
+  fs.writeFileSync(path.join(DIST, `maistep-${v}-setup.exe`), setup);
   writeJson(path.join(DIST, 'manifest.json'), manifest);
-  console.log(`dist/: maistep-${v}-setup.exe, maistep.exe (${(exe.length / 1048576).toFixed(1)} МБ), manifest.json${dirty ? '  [--dirty: не публиковать]' : ''}`);
+  const m = n => (n / 1048576).toFixed(1);
+  console.log(`dist/: maistep-${v}-setup.exe (${m(setup.length)} МБ), maistep.exe (${m(exe.length)} МБ), manifest.json${dirty ? '  [--dirty: не публиковать]' : ''}`);
 }
 
 function publish() {

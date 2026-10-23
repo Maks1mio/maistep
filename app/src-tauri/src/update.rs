@@ -13,7 +13,7 @@ use tauri::{Assets, Wry};
 // Пользовательские данные: обновление сюда не пишет никогда
 const USER_DIRS: [&str; 8] = ["workflows", "user", "input", "output", ".venv", "venv", "update", ".git"];
 
-fn safe_rel(rel: &str) -> Option<PathBuf> {
+pub fn safe_rel(rel: &str) -> Option<PathBuf> {
     let p = Path::new(rel);
     let ok = !rel.is_empty()
         && p.components().all(|c| matches!(c, Component::Normal(_)))

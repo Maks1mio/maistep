@@ -4,6 +4,7 @@
 mod commands;
 mod project;
 mod server;
+mod setup;
 mod update;
 
 use std::borrow::Cow;
@@ -11,18 +12,18 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tauri::http::{Response, StatusCode};
-use tauri::Manager;
+use tauri::{Manager, WebviewWindowBuilder};
 
-// Корень проекта — папка с server/main.py (ищем от текущей папки и от exe вверх)
+// Корень проекта — папка с server/main.py (ищем сначала от exe вверх, потом от текущей папки)
 fn find_root() -> PathBuf {
     let mut bases = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        bases.push(cwd);
-    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             bases.push(dir.to_owned());
         }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        bases.push(cwd);
     }
     for base in bases {
         let mut dir = Some(base.as_path());
@@ -55,6 +56,30 @@ fn percent_decode(s: &str) -> String {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    // установщик: тот же exe с архивом приложения в конце (setup.rs)
+    if setup::payload().is_some() {
+        if args.iter().any(|a| a == "--silent") {
+            std::process::exit(setup::silent(&args));
+        }
+        return setup::run(tauri::generate_context!(), None);
+    }
+    // удаление — только папки самого exe с install.json (не от текущей папки!)
+    if args.iter().any(|a| a == "--uninstall") {
+        let silent = args.iter().any(|a| a == "--silent");
+        let root = match setup::installed_root() {
+            Ok(r) => r,
+            Err(e) => {
+                if silent { eprintln!("{e}"); } else { setup::error_box(&e); }
+                std::process::exit(1);
+            }
+        };
+        if silent {
+            let keep = args.iter().any(|a| a == "--keep-data");
+            std::process::exit(setup::uninstall(&root, keep).map(|_| 0).unwrap_or_else(|e| { eprintln!("{e}"); 1 }));
+        }
+        return setup::run(tauri::generate_context!(), Some(root));
+    }
     let root = find_root();
     update::cleanup();
     if update::apply_pending(&root) {
@@ -107,10 +132,13 @@ fn main() {
             commands::app_restart,
         ])
         .setup(|app| {
-            if let Some(w) = app.get_webview_window("main") {
-                let root = app.state::<commands::AppState>().root.clone();
-                let _ = w.set_title(&format!("maistep — {}", root.display()));
-            }
+            // окно создаётся здесь, а не из tauri.conf.json: данные WebView (localStorage) — в папке приложения
+            let root = app.state::<commands::AppState>().root.clone();
+            let conf = app.config().app.windows.iter().find(|w| w.label == "main").cloned().ok_or("нет окна main в tauri.conf.json")?;
+            WebviewWindowBuilder::from_config(app.handle(), &conf)?
+                .data_directory(setup::webview_dir(app, &root))
+                .title(format!("maistep — {}", root.display()))
+                .build()?;
             Ok(())
         })
         .build(context)

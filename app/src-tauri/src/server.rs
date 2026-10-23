@@ -1,5 +1,5 @@
 // Сервер исполнения графов: `python -u server/main.py --port N` (по умолчанию 3300).
-// Python: MAISTEP_PYTHON, иначе .venv проекта, иначе `python` / `py -3` из PATH.
+// Python: MAISTEP_PYTHON, иначе .venv проекта, иначе портативный python/ из установщика, иначе `python` / `py -3` из PATH.
 // Вывод сервера идёт в консоль редактора (событие "console"), смена состояния — событие "server".
 // Перед запуском порт освобождается: если его держит python (сервер прошлого запуска), процесс завершается;
 // чужой процесс не трогаем — команда вернёт ошибку с его именем.
@@ -51,7 +51,12 @@ fn ensure_venv(app: &AppHandle, root: &Path) {
     if std::env::var("MAISTEP_PYTHON").is_ok_and(|p| !p.trim().is_empty()) || root.join(".venv").is_dir() || root.join("venv").is_dir() {
         return;
     }
-    let base: Option<(&str, Vec<&str>)> = if run_hidden("python", &["--version"]).is_some() {
+    // портативный Python установщика (<папка>/python) — приоритетнее системного
+    let portable = root.join("python").join("python.exe");
+    let portable = portable.to_string_lossy().into_owned();
+    let base: Option<(&str, Vec<&str>)> = if cfg!(windows) && Path::new(&portable).is_file() {
+        Some((portable.as_str(), vec![]))
+    } else if run_hidden("python", &["--version"]).is_some() {
         Some(("python", vec![]))
     } else if cfg!(windows) && run_hidden("py", &["-3", "--version"]).is_some() {
         Some(("py", vec!["-3"]))
@@ -59,7 +64,7 @@ fn ensure_venv(app: &AppHandle, root: &Path) {
         None
     };
     let Some((cmd, mut args)) = base else {
-        let _ = app.emit("console", json!({ "src": "editor", "level": "error", "text": "Python 3.10+ не найден — установите его с python.org (галочка «Add to PATH») и перезапустите maistep" }));
+        let _ = app.emit("console", json!({ "src": "editor", "level": "error", "text": "Python 3.10+ не найден — переустановите maistep с галочкой «Портативный Python» или поставьте Python с python.org (галочка «Add to PATH») и перезапустите" }));
         return;
     };
     let _ = app.emit("console", json!({ "src": "editor", "level": "info", "text": "первый запуск: создаётся .venv…" }));
@@ -83,6 +88,10 @@ fn python(root: &Path) -> (PathBuf, Vec<String>) {
         if p.is_file() {
             return (p, vec![]);
         }
+    }
+    let portable = root.join("python").join("python.exe");
+    if cfg!(windows) && portable.is_file() {
+        return (portable, vec![]);
     }
     if run_hidden("python", &["--version"]).is_some() {
         return (PathBuf::from("python"), vec![]);

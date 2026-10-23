@@ -9,7 +9,6 @@
 !/.github/
 !/README.md
 !/package.json
-!/package-lock.json
 !/requirements.txt
 !/components.json
 !/app/

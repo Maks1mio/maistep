@@ -16,6 +16,10 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 walkdir = "2"
+flate2 = "1"
+tar = "0.4"
+ureq = "2"
+rfd = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Console"] }

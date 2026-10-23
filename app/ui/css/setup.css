@@ -1,0 +1,35 @@
+/* Окно установки/удаления maistep (setup.html) — только токены и компоненты UI Kit. */
+html, body { height: 100%; margin: 0; }
+body { background: var(--ui-bg1); color: var(--ui-fg); font: 400 13px/18px Inter, 'Segoe UI', sans-serif; user-select: none; overflow: hidden; }
+#setup { display: flex; flex-direction: column; height: 100%; }
+
+.st-head { display: flex; align-items: center; gap: 14px; padding: 22px 26px 18px; border-bottom: 1px solid var(--ui-sep); background: var(--p-gray-2); }
+.st-head img { width: 44px; height: 44px; border-radius: 10px; }
+.st-head h1 { margin: 0; font: 600 18px/24px Inter, 'Segoe UI', sans-serif; }
+.st-head .sub { color: var(--ui-fg-dim); font-size: 12px; }
+
+.st-body { flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 20px 26px; overflow: auto; }
+.st-label { color: var(--ui-fg-dim); font-size: 12px; margin-bottom: 4px; }
+.st-path { display: flex; gap: 8px; }
+.st-path input { flex: 1; height: 28px; box-sizing: border-box; padding: 0 8px; border-radius: var(--ui-radius); border: 1px solid var(--ui-border);
+  background: var(--ui-bg); color: var(--ui-fg); font: 400 13px Inter, 'Segoe UI', sans-serif; outline: none; }
+.st-path input:focus { border-color: var(--ui-accent); outline: 1px solid var(--ui-accent); }
+.st-note { font-size: 12px; color: var(--ui-fg-dim); min-height: 16px; margin-top: 5px; }
+.st-note.warn { color: var(--p-yellow-7); }
+.st-note.bad { color: var(--p-red-8); }
+.st-note.ok { color: var(--p-green-7); }
+.st-opts { display: flex; flex-direction: column; gap: 8px; }
+
+.st-box { padding: 10px 12px; border: 1px solid var(--ui-sep); border-radius: 8px; background: var(--p-gray-2); color: var(--ui-fg-dim); font-size: 12px; }
+.st-box b { color: var(--ui-fg); font-weight: 500; }
+
+.st-prog { height: 6px; border-radius: 3px; background: var(--p-gray-3); overflow: hidden; }
+.st-prog > i { display: block; height: 100%; width: 0; background: var(--ui-accent); transition: width .2s; }
+.st-stage { display: flex; justify-content: space-between; color: var(--ui-fg-dim); font-size: 12px; }
+.st-big { font: 600 15px/22px Inter, 'Segoe UI', sans-serif; color: var(--ui-fg); }
+.st-err { color: var(--p-red-8); white-space: pre-wrap; user-select: text; }
+
+.st-foot { display: flex; align-items: center; gap: 8px; padding: 12px 26px; border-top: 1px solid var(--ui-sep); background: var(--p-gray-2); }
+.st-foot .grow { flex: 1; }
+.ui-btn.danger { background: var(--p-red-6); color: #fff; }
+.ui-btn.danger:hover { background: var(--p-red-7); }
