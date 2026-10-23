@@ -6,7 +6,7 @@ import { assetUrl } from './api.js';
 import { icon } from './icons.js';
 import { search } from './kit.js';
 
-const LS = 'ocst-picker';
+const LS = 'maistep-picker';
 const pref = (() => { try { return { view: 'grid', ...JSON.parse(localStorage.getItem(LS)) }; } catch { return { view: 'grid' }; } })();
 const CHUNK = 120;
 let open = null;

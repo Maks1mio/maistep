@@ -1,7 +1,7 @@
 # maistep
 
-Нодовый редактор AI-пайплайнов в духе ComfyUI. Оболочка — OCST (Open Client Studio) из проекта mashit:
-те же док-панели, UI Kit в стиле JetBrains New UI, Tauri v2. Исполнение графов — Python-сервер.
+Нодовый редактор AI-пайплайнов в духе ComfyUI: окно на Tauri v2 с док-панелями и UI Kit в стиле JetBrains New UI,
+исполнение графов — Python-сервер.
 
 ```
 npm run app          # окно (cargo run; сам поднимает python server/main.py на :3300)

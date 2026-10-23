@@ -161,7 +161,7 @@ http.createServer(async (req, res) => {
   }
   let file;
   try {
-    if (u.pathname.startsWith('/oja/p/')) file = projPath(decodeURIComponent(u.pathname.slice(7)));
+    if (u.pathname.startsWith('/mai/p/')) file = projPath(decodeURIComponent(u.pathname.slice(7)));
     else file = path.join(UI, decodeURIComponent(u.pathname === '/' ? '/index.html' : u.pathname));
     if (!file.startsWith(ROOT) || !fs.statSync(file).isFile()) throw 0;
   } catch { res.writeHead(404); return res.end('not found'); }

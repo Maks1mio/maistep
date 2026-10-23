@@ -1,4 +1,4 @@
-/* OCST — тёмная тема в духе Unity: док-панели, вкладки, инспектор, консоль.
+/* maistep — тёмная тема: док-панели, вкладки, инспектор, консоль.
    Цвета — палитра JetBrains New UI (см. css/uikit.css, переменные --p-*). */
 :root {
   --bg: var(--p-gray-1); --panel: var(--p-gray-2); --panel2: var(--p-gray-3); --head: var(--p-gray-1);

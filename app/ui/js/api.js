@@ -21,11 +21,11 @@ export function listen(evt, fn) {
   return Promise.resolve(() => {});
 }
 
-// Картинка из graphics (custom/ перекрывает game/) без игрового сервера — протокол oja ядра
+// Файл проекта по пути (pak 'p') через протокол mai ядра — без Python-сервера
 export function assetUrl(rel, pak = 'g') {
   const p = rel.split('/').map(encodeURIComponent).join('/');
-  if (!isTauri) return `/oja/${pak}/${p}`;
-  return isWin ? `http://oja.localhost/${pak}/${p}` : `oja://localhost/${pak}/${p}`;
+  if (!isTauri) return `/mai/${pak}/${p}`;
+  return isWin ? `http://mai.localhost/${pak}/${p}` : `mai://localhost/${pak}/${p}`;
 }
 
 export function openExternal(url) {

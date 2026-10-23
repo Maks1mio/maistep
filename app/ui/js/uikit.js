@@ -538,12 +538,12 @@ const TREE_DEMO = [
   { label: 'Version Control', kids: [{ label: 'Git' }] }, { label: 'Build, Execution, Deployment', kids: [{ label: 'Compiler' }] }, { label: 'Tools', kids: [{ label: 'Terminal' }] },
 ];
 const PROJECT_DEMO = [
-  { label: 'mashit', hint: '~/mashit', ic: 'folder', open: true, kids: [
-    { label: 'data', ic: 'folder', open: true, kids: [{ label: 'ui', ic: 'folder', kids: [{ label: 'title.json', ic: 'json' }] },
-      { label: 'anims', ic: 'folder', kids: [] }, { label: 'mobs.json', ic: 'json', sel: true }] },
-    { label: 'editor', ic: 'folder', kids: [{ label: 'README.md', ic: 'text' }] },
-    { label: 'server', ic: 'folder', open: true, kids: [{ label: 'index.js', ic: 'code' }, { label: 'room.js', ic: 'code' }] },
-    { label: 'package.json', ic: 'json' }] },
+  { label: 'maistep', hint: '~/maistep', ic: 'folder', open: true, kids: [
+    { label: 'workflows', ic: 'folder', open: true, kids: [{ label: 'drafts', ic: 'folder', kids: [{ label: 'idea.json', ic: 'json' }] },
+      { label: 'archive', ic: 'folder', kids: [] }, { label: 'sd_txt2img.json', ic: 'json', sel: true }] },
+    { label: 'custom_nodes', ic: 'folder', kids: [{ label: 'example.py', ic: 'code' }] },
+    { label: 'server', ic: 'folder', open: true, kids: [{ label: 'main.py', ic: 'code' }, { label: 'README.md', ic: 'text' }] },
+    { label: 'components.json', ic: 'json' }] },
 ];
 
 function trow({ depth = 0, open, ic: k, label, hint, sel, off, check }, dark) {

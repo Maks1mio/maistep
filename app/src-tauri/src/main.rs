@@ -73,8 +73,8 @@ fn main() {
     let file_root = root.clone();
     let app = tauri::Builder::default()
         .manage(commands::AppState { root, server: shared })
-        // oja://localhost/p/<путь> (на Windows http://oja.localhost/p/…) — любой файл проекта для проводника Project
-        .register_uri_scheme_protocol("oja", move |_ctx, req| {
+        // mai://localhost/p/<путь> (на Windows http://mai.localhost/p/…) — любой файл проекта для проводника Project
+        .register_uri_scheme_protocol("mai", move |_ctx, req| {
             let path = percent_decode(req.uri().path().trim_start_matches('/'));
             let (pak, rel) = path.split_once('/').unwrap_or(("", ""));
             let file = if pak == "p" { project::resolve_file(&file_root, rel) } else { None };

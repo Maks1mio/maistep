@@ -1,7 +1,9 @@
 {
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "maistep",
     "shortDescription": "Нодовый редактор AI-пайплайнов",
     "resources": {
@@ -10,8 +12,12 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["Russian", "English"],
-        "displayLanguageSelector": false
+        "languages": [
+          "Russian",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
       }
     }
   }

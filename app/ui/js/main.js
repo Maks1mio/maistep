@@ -115,7 +115,7 @@ const MENU = [
     ['Открыть API в браузере', '', () => openExternal(`http://localhost:${S.server.port}/api/nodes`)],
   ]],
   ['Справка', [
-    ['О программе', '', () => messageBox({ img: 'icons/maistep.svg', title: 'maistep', text: 'Версия 0.1 · Tauri v2 + Python\nНодовый редактор AI-пайплайнов: графы из нод (LLM, текст, картинки, логика), очередь запусков на Python-сервере, стриминг ответов прямо на ноды, свои ноды на Python в custom_nodes/.\nОболочка — OCST (Open Client Studio).', ok: 'Закрыть', cancel: null })],
+    ['О программе', '', () => messageBox({ img: 'icons/maistep.svg', title: 'maistep', text: 'Версия 0.1 · Tauri v2 + Python\nНодовый редактор AI-пайплайнов: графы из нод (LLM, текст, картинки, логика), очередь запусков на Python-сервере, стриминг ответов прямо на ноды, свои ноды на Python в custom_nodes/.', ok: 'Закрыть', cancel: null })],
   ]],
 ];
 
