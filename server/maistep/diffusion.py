@@ -858,11 +858,14 @@ def _span(lo, hi, size, minside):
 
 
 def inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, sampler, scheduler, denoise,
-            only_masked=True, padding=48, resolution=0, feather=12):
+            only_masked=True, padding=48, resolution=0, feather=12, fill=False, patch=False):
     """Перерисовка области по маске, как «Inpaint only masked» в A1111 / Detailer в ComfyUI: область маски с полями
     вырезается и масштабируется до родного разрешения модели (мелкие детали получают все пиксели), латент вне маски
     держится на месте, результат уменьшается обратно и вклеивается с растушёвкой — остальная картинка не трогается
-    вовсе (без потерь VAE). denoise ~0.3–0.5 — детализация, 0.8–1 — заменить объект по промпту."""
+    вовсе (без потерь VAE). denoise ~0.3–0.5 — детализация, 0.8–1 — заменить объект по промпту.
+    fill — область маски перед сэмплингом размывается (как «fill» в A1111): старый объект не просвечивает.
+    patch — сохраняется только область (RGBA, альфа — растушёванная маска) для слоёв редактора.
+    Возвращает (файл, {"x", "y", "w", "h", "W", "H"}) — где область лежит на картинке."""
     torch, _diffusers, Image = _packages()
     from PIL import ImageFilter
     root = ctx.root if ctx else ROOT
@@ -891,13 +894,19 @@ def inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, 
     tw, th = max(64, int(round(cw * k / 8)) * 8), max(64, int(round(ch * k / 8)) * 8)
     part = src.crop(crop).resize((tw, th), Image.LANCZOS)
     pmask = msk.crop(crop)
+    if fill:
+        r = max(8, min(tw, th) // 10)
+        soft = pmask.resize((tw, th), Image.BILINEAR).filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(4))
+        part = Image.composite(part.filter(ImageFilter.GaussianBlur(r)), part, soft)
     # маска латента — чуть шире и мягче: шов перерисовывается вместе с областью
     grow = max(2, int(round(min(cw, ch) * 0.015)))
     lmask = pmask.filter(ImageFilter.MaxFilter(grow * 2 + 1)).filter(ImageFilter.GaussianBlur(grow))
     lmask = lmask.resize((tw // 8, th // 8), Image.BILINEAR)
     nm = torch.tensor(list(lmask.getdata()), dtype=torch.float32).view(1, 1, th // 8, tw // 8) / 255.0
+    box = {"x": x0, "y": y0, "w": cw, "h": ch, "W": W, "H": H}
     if ctx:
-        ctx.log(f"inpaint: area {cw}×{ch} at ({x0},{y0}) → {tw}×{th}, denoise {denoise}")
+        ctx.log(f"inpaint: area {cw}×{ch} at ({x0},{y0}) → {tw}×{th}, denoise {denoise}" + (", fill" if fill else ""))
+        ctx.preview_meta = {"box": box}
     lat = encode_pil(ctx, vae, part)
     out = sample(ctx, model, positive, negative, lat, seed, steps, cfg, sampler, scheduler, denoise, noise_mask=nm)
     gen = decode_pils(ctx, vae, out)[0].resize((cw, ch), Image.LANCZOS)
@@ -906,6 +915,10 @@ def inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, 
     paste = pmask.filter(ImageFilter.MaxFilter(3))
     if f:
         paste = paste.filter(ImageFilter.MaxFilter(min(f, 15) // 2 * 2 + 1)).filter(ImageFilter.GaussianBlur(f / 2))
+    if patch:
+        layer = gen.convert("RGBA")
+        layer.putalpha(paste)
+        return save_pils(ctx, [layer], "naizer", int(seed))[0], box
     result = src.copy()
     result.paste(Image.composite(gen, src.crop(crop), paste), crop[:2])
-    return save_pils(ctx, [result], "inpaint", int(seed))[0]
+    return save_pils(ctx, [result], "inpaint", int(seed))[0], box

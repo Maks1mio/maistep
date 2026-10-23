@@ -174,14 +174,21 @@ def magic_ksampler(model, positive, negative, latent_image, seed, steps, cfg, sa
               "only_masked": ("BOOLEAN", {"default": True, "hint": "crop the masked area and upscale it to the model's resolution"}),
               "padding": ("INT", {"default": 48, "min": 0, "max": 512, "step": 8, "hint": "context around the mask, px"}),
               "resolution": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 64, "hint": "0 — model native (SDXL 1024, SD1.5 640)"}),
-              "feather": ("INT", {"default": 12, "min": 0, "max": 128, "hint": "soft edge of the pasted area, px"})},
+              "feather": ("INT", {"default": 12, "min": 0, "max": 128, "hint": "soft edge of the pasted area, px"}),
+              "fill": ("BOOLEAN", {"default": False, "hint": "blur the masked area before sampling — the old object "
+                                                             "does not show through (for replacing at high denoise)"}),
+              "patch": ("BOOLEAN", {"default": False, "hint": "output only the changed area (PNG with transparency) — "
+                                                              "for layers; its position is in the UI result"})},
       outputs={"image": "IMAGE", "seed": "INT"},
       volatile=lambda a: a.get("seed", 0) < 0,
       hint="Redraws only the masked area (like «Inpaint only masked» / Detailer): the area is cropped, upscaled, "
            "denoised with the rest of the latent held in place, scaled back and pasted with a soft edge.")
 def inpaint(model, positive, negative, vae, image, mask, seed, steps, cfg, sampler_name, scheduler, denoise,
-            only_masked, padding, resolution, feather, ctx):
+            only_masked, padding, resolution, feather, ctx, fill=False, patch=False):
     seed = random.randint(0, 2**50) if seed < 0 else int(seed)
-    f = D.inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, sampler_name, scheduler, denoise,
-                  only_masked, padding, resolution, feather)
-    return {"image": {"file": f}, "seed": seed, "ui": {"images": [f]}}
+    f, box = D.inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, sampler_name, scheduler,
+                       denoise, only_masked, padding, resolution, feather, fill=fill, patch=patch)
+    ui = {"images": [f]}
+    if patch:
+        ui["patch"] = box
+    return {"image": {"file": f}, "seed": seed, "ui": ui}

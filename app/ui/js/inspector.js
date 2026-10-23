@@ -23,12 +23,21 @@ function render() {
   b.replaceChildren(...content.filter(Boolean));
 }
 
+// в инспекторе сейчас печатают (текстовое поле в фокусе) — перерисовка сбросила бы ввод. Кнопки, галочки, ползунки
+// и выпадающие списки фокус тоже получают, но после клика по ним форму как раз нужно перерисовать.
+const TEXT = /^(text|search|number|email|url|password|tel|)$/;
+export function typingIn(el) {
+  const a = document.activeElement;
+  if (!el || !a || a === document.body || !el.contains(a)) return false;
+  return a.tagName === 'TEXTAREA' || a.isContentEditable || (a.tagName === 'INPUT' && TEXT.test(a.getAttribute('type') || ''));
+}
+
 // перерисовка инспектора при внешних правках — без потери фокуса в поле, которое сейчас редактируют
-const soft = debounce(() => { if (!box().contains(document.activeElement) || document.activeElement === document.body) render(); }, 60);
+const soft = debounce(() => { if (!typingIn(box())) render(); }, 60);
 
 export function initInspector() {
   on('select', render);
-  on('change', e => { if (e.undo || e.created || e.removed || !box().contains(document.activeElement)) render(); else soft(); });
+  on('change', e => { if (e.undo || e.created || e.removed || !typingIn(box())) render(); else soft(); });
   on('project', render);
   on('nodes', render);
   on('run-output', soft);

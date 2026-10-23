@@ -154,8 +154,8 @@ export const reloadNodes = () => api('/api/reload', {}).then(r => log('ok', `Ð½Ð
 export const history = (limit = 60) => api(`/api/history?limit=${limit}&workflow=1`);
 export const check = wf => api('/api/check', { workflow: wf });
 
-export async function upload(file) {
-  const r = await fetch(`${base()}/api/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file });
+export async function upload(file, dir = 'input') {
+  const r = await fetch(`${base()}/api/upload?name=${encodeURIComponent(file.name)}${dir === 'output' ? '&dir=output' : ''}`, { method: 'POST', body: file });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return (await r.json()).file;
 }

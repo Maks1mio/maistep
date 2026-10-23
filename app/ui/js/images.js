@@ -109,7 +109,7 @@ export async function imagePicker(at, { value = '', onPick }) {
     if (files[dir]) return;
     try {
       const l = await api(`/api/files?dir=${dir}`);
-      files[dir] = l.filter(f => IMG.test(f.file) && !/naizer_(mask|base)_/.test(f.file));
+      files[dir] = l.filter(f => IMG.test(f.file) && !/naizer_/.test(f.file));
     } catch (e) { files[dir] = []; log('error', `список картинок: ${e.message} (сервер запущен?)`); }
     if (pop) fill();
   };

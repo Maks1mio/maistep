@@ -16,7 +16,7 @@
       "x": 380,
       "y": 140,
       "props": {
-        "lora_name": "hentai_studio_quality-000013.safetensors",
+        "lora_name": "Gachiakuta_Manga_Style_WAI.safetensors",
         "strength_model": 1,
         "strength_clip": 1
       }
@@ -30,7 +30,8 @@
         "lora_name": "long_nipples_addift_v2.safetensors",
         "strength_model": 1,
         "strength_clip": 1.6
-      }
+      },
+      "mode": "mute"
     },
     {
       "id": "skip",
@@ -47,7 +48,7 @@
       "x": 1060,
       "y": 0,
       "props": {
-        "text": "long nipples, hentai_studio_quality, shiny skin, masterpiece, best quality, amazing quality"
+        "text": "long nipples, shiny skin, masterpiece, best quality, amazing quality, gachiakuta"
       },
       "title": "Positive",
       "w": 290

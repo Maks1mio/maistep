@@ -13,7 +13,7 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   POST /api/reload             перечитать ноды (server/nodes, custom_nodes)
   GET  /api/settings, POST /api/settings  провайдеры LLM (user/settings.json; ключи в ответе замаскированы)
   GET  /api/models?provider=id&refresh=1  каталог моделей провайдера (кэш 6 ч)
-  POST /api/upload?name=x.png  тело — файл → input/x.png
+  POST /api/upload?name=x.png  тело — файл → input/x.png (&dir=output — в output/)
   GET  /api/files?dir=input    файлы input/ или output/
   GET  /api/library?refresh=1   библиотека моделей (только чтение): корни, категории, модели
   GET  /api/library/model?id=cat/name   карточка модели (заголовок safetensors, .cminfo.json, …)
@@ -372,9 +372,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/api/upload":
                 name = Path(qs.get("name") or "upload.bin").name
-                p = ROOT / "input" / name
+                d = "output" if qs.get("dir") == "output" else "input"
+                p = ROOT / d / name
+                p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(self.body())
-                return self.json({"file": f"input/{name}"})
+                return self.json({"file": f"{d}/{name}"})
             data = json.loads(self.body() or b"{}")
         except ValueError as e:
             return self.json({"error": f"плохой JSON: {e}"}, 400)

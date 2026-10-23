@@ -110,6 +110,7 @@ class Ctx:
     def __init__(self, run, node_id, root: Path):
         self._run, self.node_id, self.root = run, node_id, root
         self.input_dir, self.output_dir = root / "input", root / "output"
+        self.preview_meta = {}  # добавляется к каждому превью (например, область inpaint на картинке)
 
     def progress(self, value, max_=None):
         self._run.emit("progress", {"node": self.node_id, "value": value, "max": max_})
@@ -117,7 +118,7 @@ class Ctx:
 
     def preview(self, data_url, step=None):
         """Промежуточная картинка (data:image/jpeg;base64,…) — UI показывает её в ноде, пока она работает."""
-        self._run.emit("preview", {"node": self.node_id, "image": data_url, "step": step})
+        self._run.emit("preview", {**self.preview_meta, "node": self.node_id, "image": data_url, "step": step})
 
     def stream(self, text):
         """Кусок текста по мере генерации — UI дописывает его в превью ноды."""

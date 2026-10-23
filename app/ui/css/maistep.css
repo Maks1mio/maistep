@@ -265,26 +265,55 @@ pre.ag-json.err { color: #f0a8a6; }
 .ag-acc { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .ag-acc .dim { margin-left: auto; font-size: 11px; }
 
-/* ImageNaizer: холст с выделением, полоса версий, режимы в Inspector */
+/* ImageNaizer: тулбар, инструменты слева, холст, панель слоёв справа, строка параметров инструмента */
 #v-naizer .bar .hsep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
-#v-naizer .bar .ui-range { width: 110px; }
-.nz-wrap { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+#v-naizer .bar .ui-seg > button { height: 20px; }
+.nz-body { flex: 1; min-height: 0; display: flex; }
+.nz-tools { flex: none; padding: 6px 4px; gap: 2px; border-right: 1px solid var(--line); background: var(--panel); justify-content: flex-start; }
+.nz-tools .b { width: 30px; height: 30px; }
+.nz-tools .b.on { background: var(--ui-sel); color: #fff; }
+.nz-svg { display: inline-flex; color: var(--ui-fg); }
+.nz-svg svg { display: block; }
+.nz-wrap { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: hidden; }
 .nz-wrap canvas { position: absolute; inset: 0; outline: none; touch-action: none; }
-.nz-strip { display: flex; gap: 6px; padding: 6px; border-top: 1px solid var(--line); background: var(--panel2); overflow-x: auto; flex-shrink: 0; }
-.nz-ver { position: relative; width: 64px; height: 64px; flex: none; border: 2px solid transparent; border-radius: 6px; overflow: hidden; cursor: pointer; background: var(--p-gray-1); }
-.nz-ver img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.nz-ver span { position: absolute; left: 3px; bottom: 3px; font-size: 10px; padding: 0 4px; border-radius: 6px; background: #000b; color: #fff; }
-.nz-ver.on { border-color: var(--accent); }
-.nz-ver:hover:not(.on) { border-color: var(--p-gray-6); }
-.insp .nz-modes { display: flex; gap: 4px; margin: 8px 0 4px; }
+.nz-side { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--panel); }
+.nz-split { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 1; }
+.nz-split:hover { background: var(--accent); opacity: .6; }
+.nz-side .hd { display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 4px 0 10px; border-bottom: 1px solid var(--line); flex: none; }
+.nz-side .hd > span:nth-child(3) { font-weight: 600; margin-left: 4px; }
+.nz-side .b { min-width: 24px; height: 24px; padding: 0 4px; border: 0; border-radius: 5px; background: transparent; }
+.nz-side .b:hover:not(:disabled) { background: var(--ui-hover); }
+.nz-side .b:disabled { opacity: .4; }
+.nz-side .sep { width: 1px; height: 16px; background: var(--ui-sep); margin: 0 3px; }
+.nz-list { flex: 1; min-height: 60px; overflow: auto; padding: 4px; display: flex; flex-direction: column; gap: 1px; }
+.nz-row { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 3px 6px 3px 2px; border-radius: 5px; cursor: default; user-select: none; }
+.nz-row:hover { background: var(--ui-hover); }
+.nz-row.on { background: var(--ui-sel); }
+.nz-row .eye { flex: none; }
+.nz-row .th { width: 38px; height: 38px; flex: none; object-fit: contain; border-radius: 3px; border: 1px solid var(--p-gray-4);
+  background: repeating-conic-gradient(#2B2D30 0 25%, #393B40 0 50%) 0 0 / 8px 8px; }
+.nz-row .nm { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.nz-row .nm b { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nz-row .nm span { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nz-row .nm input { height: 22px; }
+.nz-row.off .th, .nz-row.off .nm { opacity: .45; }
+.nz-row .vars { display: flex; align-items: center; gap: 0; font-size: 11px; color: var(--dim); flex: none; }
+.nz-row .vars .b { min-width: 18px; height: 20px; padding: 0 2px; }
+.nz-row .lock { opacity: .5; flex: none; display: inline-flex; }
+.nz-row.base { border-top: 1px solid var(--ui-sep); border-radius: 0 0 5px 5px; margin-top: 2px; }
+.nz-row.pending .th { border-style: dashed; background: transparent; }
+.nz-row.drop-above { box-shadow: inset 0 2px 0 var(--accent); }
+.nz-row.drop-below { box-shadow: inset 0 -2px 0 var(--accent); }
+.nz-spin { width: 12px; height: 12px; border: 2px solid var(--p-green-6); border-right-color: transparent; border-radius: 50%; animation: nz-spin .8s linear infinite; }
+@keyframes nz-spin { to { transform: rotate(360deg); } }
+.nz-props { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border-top: 1px solid var(--line); }
+.nz-props .ui-range { flex: 1; }
+.nz-props button { gap: 4px; }
+.nz-opts { display: flex; align-items: center; gap: 12px; height: 28px; padding: 0 10px; border-top: 1px solid var(--line); background: var(--panel2); color: var(--dim); font-size: 11.5px; flex: none; white-space: nowrap; overflow: hidden; }
+.nz-opts b { color: var(--text); font-weight: 500; }
+.nz-opts .ui-range { width: 140px; }
+.insp .nz-modes { display: flex; margin: 8px 0 4px; }
 .insp .nz-modes button { flex: 1; }
-.insp .nz-layers { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 2px; }
-.insp .nz-layer { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
-.insp .nz-layer:hover { background: #24262a; }
-.insp .nz-layer.on { border-color: #35538f; background: #24262a; }
-.insp .nz-layer img { width: 34px; height: 34px; object-fit: cover; border-radius: 3px; flex: none; background: var(--p-gray-1); }
-.insp .nz-layer .nm { flex: 1; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.insp .nz-layer input[type=checkbox] { flex: none; margin: 0; }
 .insp .nz-adv { margin-top: 8px; }
 .insp .nz-adv summary { cursor: pointer; color: var(--dim); margin-bottom: 4px; }
 .lpop .ipick .ltile .lth img { object-fit: cover; }
