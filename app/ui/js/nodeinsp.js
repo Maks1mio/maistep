@@ -7,6 +7,7 @@ import { defs, deleteSel, issuesOf, TYPE_COLOR, llmModel } from './graph.js';
 import { fileUrl, queuePrompt, upload } from './backend.js';
 import { modelPicker, badges } from './modelpick.js';
 import { libraryPicker } from './library.js';
+import { applyLoraTriggers } from './lora.js';
 import { imagePicker } from './images.js';
 import { MAGIC, MAGIC_KEYS, magicState, fetchRec, resetMagic, refreshMagic } from './magic.js';
 
@@ -14,7 +15,10 @@ const chip = t => h('span.tchip', { style: { borderColor: TYPE_COLOR[t] || '#b5b
 
 function widget(d, n, k, inp) {
   const v = n.props?.[k] ?? inp.default;
-  const set = val => edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); nn.props ||= {}; nn.props[k] = val; }, { label: `${n.id}.${k}`, merge: `${n.id}.${k}` });
+  const set = val => {
+    edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); nn.props ||= {}; nn.props[k] = val; }, { label: `${n.id}.${k}`, merge: `${n.id}.${k}` });
+    if (n.type === 'sd.lora' && k === 'lora_name') applyLoraTriggers(d.id, n.id, val);
+  };
   if (inp.type === 'COMBO') return sel(v, inp.options || [], set);
   if (inp.picker === 'library_model') {
     const i = text(v, set, { placeholder: 'имя модели' });
@@ -34,6 +38,11 @@ function widget(d, n, k, inp) {
   if (inp.multiline) {
     const t = h('textarea', { rows: 6, spellcheck: false, placeholder: inp.hint || '' });
     t.value = v ?? '';
+    // Ctrl+↑/↓ меняет вес тега под курсором/выделения: (girl:1.2)
+    if ((n.type === 'sd.text_encode' && k === 'text') || (n.type === 'image.generate_openai' && k === 'prompt')) {
+      t.dataset.promptWeight = '';
+      t.title = 'Ctrl+↑ / Ctrl+↓ — вес тега: (girl:1.2)';
+    }
     t.addEventListener('input', () => set(t.value));
     return t;
   }

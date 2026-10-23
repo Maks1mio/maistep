@@ -6,6 +6,7 @@ import time
 import urllib.request
 
 from maistep import node
+from maistep import translate as T
 
 
 def image_bytes(img, root):
@@ -48,6 +49,7 @@ def image_save(image, prefix, ctx):
       hint="POST <base_url>/images/generations of the openai provider (File → LLM providers) or OPENAI_API_KEY.")
 def image_generate_openai(prompt, model, size, seed, ctx):
     from maistep import providers
+    prompt = T.translate(ctx, prompt)
     p = providers.provider("openai")
     base, key = (p.get("base_url") or "https://api.openai.com/v1").rstrip("/"), p.get("api_key", "")
     req = urllib.request.Request(f"{base}/images/generations", method="POST",

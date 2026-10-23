@@ -95,6 +95,7 @@ def public(settings=None):
                             "has_key": bool(p.get("api_key")),
                             "api_key": (MASK + p["api_key"][-4:]) if p.get("api_key") else "",
                             "builtin": pid in BUILTIN, "env": p.get("env", "")} for pid, p in ps.items()},
+        "translate": s.get("translate") or {},
     }
 
 
@@ -117,6 +118,18 @@ def update(data):
                 cur.pop("api_key", None)
     if data.get("default_provider"):
         s["default_provider"] = data["default_provider"]
+    tr = data.get("translate")
+    if isinstance(tr, dict):
+        cur = s.setdefault("translate", {})
+        if "enabled" in tr:
+            cur["enabled"] = bool(tr["enabled"])
+        for k in ("provider", "model"):
+            if k in tr:
+                v = str(tr[k] or "").strip()
+                if v:
+                    cur[k] = v
+                else:
+                    cur.pop(k, None)
     save_settings(s)
     invalidate()
     return public(s)

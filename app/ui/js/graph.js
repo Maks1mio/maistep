@@ -11,6 +11,7 @@ import { icon } from './icons.js';
 import { fileUrl, queuePrompt, upload, getModels, modelMeta } from './backend.js';
 import { modelPicker } from './modelpick.js';
 import { libraryPicker } from './library.js';
+import { applyLoraTriggers, appendTriggers } from './lora.js';
 import { MAGIC, magicState, isMagicChanged, resetMagic } from './magic.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage } from './images.js';
 
@@ -42,6 +43,7 @@ const views = new Map((() => { try { return Object.entries(JSON.parse(localStora
 const keepViews = debounce(() => { try { localStorage.setItem(VIEWS_KEY, JSON.stringify(Object.fromEntries(views))); } catch {} }, 400);
 const setView = () => { views.set(S.current.workflow, { ...view }); keepViews(); };
 const imgs = new Map(); // url → Image
+const imgRetry = new Map(); // url → сколько раз уже пробовали (сервер мог ещё не подняться)
 
 export const defs = () => S.nodes || {};
 const cur = () => doc('workflow', S.current.workflow);
@@ -141,7 +143,20 @@ function image(url) {
   let im = imgs.get(url);
   if (!im) {
     if (imgs.size > 200) imgs.delete(imgs.keys().next().value);
-    im = new Image(); im.decoding = 'async'; im.crossOrigin = 'anonymous'; im.onload = () => redraw(); im.src = url; imgs.set(url, im);
+    im = new Image(); im.decoding = 'async'; im.crossOrigin = 'anonymous';
+    im.onload = () => { imgRetry.delete(url); redraw(); };
+    // картинка из input/ или output/: сервер мог быть ещё не готов при старте окна — пробуем ещё несколько раз,
+    // иначе «битая» картинка навсегда оставалась в кеше и превью после перезапуска было пустым
+    im.onerror = () => {
+      if (imgs.get(url) === im) imgs.delete(url);
+      const n = (imgRetry.get(url) || 0) + 1;
+      if (n > 5) return;
+      imgRetry.set(url, n);
+      setTimeout(() => { if (S.server.running || n < 2) redraw(); }, 350 * n);
+    };
+    const n = imgRetry.get(url) || 0;
+    im.src = n ? `${url}&_r=${n}` : url; // обходим закешированный неудачный ответ
+    imgs.set(url, im);
   }
   return im;
 }
@@ -465,16 +480,20 @@ export function connect(from, out, to, inp) {
 
 function setProp(id, k, v, merge = true) {
   wfEdit(wf => { const n = wf.nodes.find(z => z.id === id); n.props ||= {}; n.props[k] = v; }, { label: `${id}.${k}`, merge: merge ? `${id}.${k}` : null });
+  if (k === 'lora_name') applyLoraTriggers(S.current.workflow, id, v);
 }
 
-export function addNode(type, at, props = {}) {
+export function addNode(type, at, props = {}, opts = {}) {
   const d = cur();
   const def = defs()[type];
   if (!d || !def) return null;
   const id = uniqueId(`n${d.data.nodes.length + 1}`, d.data.nodes.map(n => n.id));
   const pos = at || toWorld({ x: wrap.clientWidth / 2 - NW / 2, y: wrap.clientHeight / 2 - 60 });
   const defaults = Object.fromEntries(Object.entries(def.inputs).filter(([, i]) => i.widget).map(([k, i]) => [k, i.default]));
-  wfEdit(wf => { wf.nodes.push({ id, type, x: Math.round(pos.x / 10) * 10, y: Math.round(pos.y / 10) * 10, props: { ...defaults, ...props } }); }, { label: `нода ${def.title}` });
+  wfEdit(wf => {
+    wf.nodes.push({ id, type, x: Math.round(pos.x / 10) * 10, y: Math.round(pos.y / 10) * 10, props: { ...defaults, ...props } });
+    if (opts.triggers?.length) appendTriggers(wf, opts.triggers); // вместе с нодой — одним шагом отмены
+  }, { label: `нода ${def.title}` });
   select({ kind: 'node', doc: d.id, id });
   return id;
 }
@@ -728,6 +747,11 @@ function inlineEdit(t) {
   const multi = inp.type === 'STRING' && (inp.multiline || String(v).includes('\n'));
   const ed = multi ? h('textarea', { rows: 8, spellcheck: false }) : h('input', { spellcheck: false, type: ['INT', 'FLOAT'].includes(inp.type) ? 'number' : 'text', step: inp.step || 'any' });
   ed.value = v ?? '';
+  // Ctrl+↑/↓ меняет вес тега под курсором/выделения: (girl:1.2)
+  if (multi && ((t.n.type === 'sd.text_encode' && t.widget === 'text') || (t.n.type === 'image.generate_openai' && t.widget === 'prompt'))) {
+    ed.dataset.promptWeight = '';
+    ed.title = 'Ctrl+↑ / Ctrl+↓ — вес тега: (girl:1.2)';
+  }
   const sp = toScreen({ x: t.n.x + 10, y: t.L.wTop + t.L.widgets.indexOf(t.widget) * ROW });
   const r = cv.getBoundingClientRect();
   const commit = () => {
@@ -959,6 +983,8 @@ export function initGraph() {
   on('run-preview', redraw);
   on('models', redraw);
   on('magic', redraw);
+  // сервер поднялся после окна — неудачные загрузки снова попадут в очередь (битые из кеша уже удалены)
+  on('server', s => { if (!s.running) return; imgRetry.clear(); setTimeout(draw, 500); });
   // чекпоинт / LoRA / VAE — сразу своим загрузчиком, остальное — «Library Model»
   const LOADER = { checkpoints: ['sd.checkpoint', 'ckpt_name'], loras: ['sd.lora', 'lora_name'], vae: ['sd.vae', 'vae_name'] };
   on('library-insert', it => {
@@ -966,8 +992,10 @@ export function initGraph() {
     requestAnimationFrame(() => {
       if (!cur()) return;
       const [type, key] = LOADER[it.cat] || [];
-      if (type && defs()[type]) addNode(type, null, { [key]: it.name });
-      else addNode('library.model', null, { cat: it.cat, name: it.name });
+      if (type && defs()[type]) {
+        const triggers = it.cat === 'loras' && type === 'sd.lora' && it.trained?.length ? it.trained : null;
+        addNode(type, null, { [key]: it.name }, { triggers });
+      } else addNode('library.model', null, { cat: it.cat, name: it.name });
     });
   });
   on('change', e => { const d = cur(); if (S.server.running && d && (!e.kind || e.kind === 'workflow')) for (const pid of providersUsed(d)) if (!S.models[pid]) getModels(pid); });

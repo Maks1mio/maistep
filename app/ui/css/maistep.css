@@ -86,6 +86,7 @@
 .pdialog .pform .f .v { display: flex; gap: 4px; }
 .pdialog .pform .f input { flex: 1; width: 100%; }
 .pdialog .pform .row { display: flex; gap: 6px; }
+.pdialog .ptrans { border-top: 1px solid var(--line, #393b40); margin-top: 12px; padding-top: 2px; }
 
 /* библиотека моделей */
 #v-library { display: flex; flex-direction: column; }
@@ -277,6 +278,13 @@ pre.ag-json.err { color: #f0a8a6; }
 .nz-ver:hover:not(.on) { border-color: var(--p-gray-6); }
 .insp .nz-modes { display: flex; gap: 4px; margin: 8px 0 4px; }
 .insp .nz-modes button { flex: 1; }
+.insp .nz-layers { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 2px; }
+.insp .nz-layer { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+.insp .nz-layer:hover { background: #24262a; }
+.insp .nz-layer.on { border-color: #35538f; background: #24262a; }
+.insp .nz-layer img { width: 34px; height: 34px; object-fit: cover; border-radius: 3px; flex: none; background: var(--p-gray-1); }
+.insp .nz-layer .nm { flex: 1; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insp .nz-layer input[type=checkbox] { flex: none; margin: 0; }
 .insp .nz-adv { margin-top: 8px; }
 .insp .nz-adv summary { cursor: pointer; color: var(--dim); margin-bottom: 4px; }
 .lpop .ipick .ltile .lth img { object-fit: cover; }

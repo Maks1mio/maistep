@@ -65,7 +65,7 @@
       },
       "title": "Magic KSampler",
       "magic": {
-        "key": "{\"ckpt\":\"waiIllustriousSDXL_v160.safetensors\",\"loras\":[]}",
+        "key": "[\"ckpt-only-1\",{\"ckpt\":\"waiIllustriousSDXL_v160.safetensors\",\"loras\":[]}]",
         "rec": {
           "steps": 24,
           "cfg": 6,

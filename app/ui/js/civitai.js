@@ -3,7 +3,7 @@
 // (или список загрузок); Inspector — карточка модели: версии, файлы, картинки с промптами, триггер-слова, метки,
 // «Скачать». Ctrl/Shift+щелчок по плитке — выбор нескольких моделей (скачать / пометить пачкой).
 // Сервер — /api/civitai/* (server/maistep/civitai.py), прогресс — SSE «civitai». Фильтры помнит localStorage.
-import { h, debounce, prompt } from './util.js';
+import { h, debounce, prompt, confirmBox } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector } from './inspector.js';
 import { icon } from './icons.js';
@@ -110,10 +110,25 @@ export async function download(list) {
 }
 
 async function jobOp(op, id) {
-  try { const r = await api(`/api/civitai/${op}`, { id }); if (r?.id) jobs.set(r.id, r); }
-  catch (e) { log('error', e.message); }
-  if (op === 'retry' || op === 'clear') { const r = await api('/api/civitai/jobs'); jobs.clear(); for (const j of r.jobs) jobs.set(j.id, j); }
+  let r = null;
+  try {
+    r = await api(`/api/civitai/${op}`, { id });
+    if (r?.id) jobs.set(r.id, r);
+    if (r?.jobs) { jobs.clear(); for (const j of r.jobs) jobs.set(j.id, j); }
+  } catch (e) { log('error', e.message); }
+  if (op === 'retry' || op === 'clear') { try { const q = await api('/api/civitai/jobs'); jobs.clear(); for (const j of q.jobs) jobs.set(j.id, j); } catch {} }
+  if (op === 'delete') loadLibrary(true);
   redraw();
+  return r;
+}
+
+async function deleteJob(j) {
+  const ok = await confirmBox(`Удалить с диска файл и запись загрузки?\n\n${j.dest}`, { title: 'Удалить загрузку', ok: 'Удалить' });
+  if (!ok) return;
+  const r = await jobOp('delete', j.id);
+  if (r?.removed?.length) log('ok', `удалено: ${r.removed.map(p => p.split(/[\\/]/).pop()).join(', ')}`);
+  for (const m of models.values()) if (m.id === j.model?.id) m.full = false;
+  if (S.sel?.kind === 'civmodel' && S.sel.id === j.model?.id) emit('civitai-sel');
 }
 
 async function setTags(list, add = [], remove = []) {
@@ -270,6 +285,7 @@ function jobRow(j) {
       live ? h('button', { onclick: () => jobOp('cancel', j.id) }, icon('stop', { size: 14 }), 'Отмена') : null,
       ['error', 'cancelled'].includes(j.state) ? h('button', { onclick: () => jobOp('retry', j.id) }, icon('restart', { size: 14 }), 'Повторить') : null,
       j.state === 'done' ? h('button.icon', { 'data-tip': 'Показать в папке', onclick: () => jobOp('reveal', j.id) }, icon('folder', { size: 14 })) : null,
+      !live ? h('button.icon', { 'data-tip': j.state === 'done' ? 'Удалить файл с диска' : 'Убрать из истории', onclick: () => deleteJob(j) }, icon('delete', { size: 14 })) : null,
       j.model?.id ? h('button.icon', { 'data-tip': 'Карточка модели', onclick: () => { fullModel(j.model.id).then(() => select({ kind: 'civmodel', id: j.model.id })); } }, icon('properties', { size: 14 })) : null));
 }
 
@@ -278,7 +294,7 @@ function downloadsView() {
   const done = list.filter(j => !['queued', 'running', 'verifying'].includes(j.state));
   return h('div.cv-dl', {},
     h('div.bar', {}, icon('download', { size: 14 }), h('b', {}, 'Загрузки'), h('span.dim', {}, `· активных ${activeJobs().length} · в папку ${st.root || '—'}`), h('span.grow'),
-      h('button', { disabled: !done.length, onclick: () => jobOp('clear') }, icon('delete', { size: 14 }), 'Очистить историю'),
+      h('button', { disabled: !done.length, 'data-tip': 'Только список; файлы на диске остаются', onclick: () => jobOp('clear') }, icon('delete', { size: 14 }), 'Очистить историю'),
       h('button.icon', { 'data-tip': 'Настройки Civitai', onclick: settingsDialog }, icon('settings', { size: 14 }))),
     h('div.cv-jobs', {}, ...(list.length ? list.map(jobRow) : [h('div.msg', {}, 'Загрузок ещё не было — найдите модель и нажмите «Скачать»')])));
 }

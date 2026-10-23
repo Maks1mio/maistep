@@ -5,6 +5,7 @@ import random
 from maistep import node
 from maistep import diffusion as D
 from maistep import library as L
+from maistep import translate as T
 
 
 def _default(cat, prefs=()):
@@ -70,9 +71,10 @@ def clip_skip(clip, stop_at_clip_layer):
 @node("sd.text_encode", title="CLIP Text Encode (Prompt)", cat="Conditioning",
       inputs={"clip": ("CLIP", {}), "text": ("STRING", {"multiline": True, "default": ""})},
       outputs={"conditioning": "CONDITIONING"},
-      hint="Encodes a prompt. Use one node for the positive prompt and one for the negative.")
+      hint="Encodes a prompt. Use one node for the positive prompt and one for the negative. "
+           "Russian or mixed text is translated to English automatically (Settings → LLM providers).")
 def text_encode(clip, text, ctx):
-    return D.encode(ctx, clip, text)
+    return D.encode(ctx, clip, T.translate(ctx, text))
 
 
 @node("sd.empty_latent", title="Empty Latent Image", cat="Latent",

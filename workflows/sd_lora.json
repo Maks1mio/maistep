@@ -1,12 +1,11 @@
 {
   "title": "SD: txt2img + 2 LoRA",
-  "about": "Две Load LoRA цепочкой между чекпоинтом и промптами. Выберите LoRA щелчком по полю lora_name (галерея библиотеки); пустое поле — LoRA пропускается.",
   "nodes": [
     {
       "id": "ckpt",
       "type": "sd.checkpoint",
       "x": 40,
-      "y": 200,
+      "y": 190,
       "props": {
         "ckpt_name": "waiIllustriousSDXL_v160.safetensors"
       }
@@ -17,9 +16,9 @@
       "x": 380,
       "y": 140,
       "props": {
-        "lora_name": "",
-        "strength_model": 0.8,
-        "strength_clip": 0.8
+        "lora_name": "hentai_studio_quality-000013.safetensors",
+        "strength_model": 1,
+        "strength_clip": 1
       }
     },
     {
@@ -28,9 +27,9 @@
       "x": 380,
       "y": 350,
       "props": {
-        "lora_name": "",
-        "strength_model": 0.8,
-        "strength_clip": 0.8
+        "lora_name": "long_nipples_addift_v2.safetensors",
+        "strength_model": 1,
+        "strength_clip": 1.6
       }
     },
     {
@@ -48,9 +47,10 @@
       "x": 1060,
       "y": 0,
       "props": {
-        "text": "masterpiece, best quality, amazing quality, 1girl, solo, cafe by the sea at night, paper lanterns, warm light, looking at viewer, smile, scenery"
+        "text": "long nipples, hentai_studio_quality, shiny skin, masterpiece, best quality, amazing quality"
       },
-      "title": "Positive"
+      "title": "Positive",
+      "w": 290
     },
     {
       "id": "neg",
@@ -81,10 +81,10 @@
       "props": {
         "seed": -1,
         "steps": 25,
-        "cfg": 6.0,
+        "cfg": 6,
         "sampler_name": "euler_ancestral",
         "scheduler": "normal",
-        "denoise": 1.0
+        "denoise": 1
       }
     },
     {
@@ -189,5 +189,6 @@
       "to": "save",
       "in": "image"
     }
-  ]
+  ],
+  "about": "Две Load LoRA цепочкой между чекпоинтом и промптами. Выберите LoRA щелчком по полю lora_name (галерея библиотеки); пустое поле — LoRA пропускается."
 }

@@ -4,23 +4,28 @@
 // Inpaint Region) в общей очереди сервера: прогресс и поэтапное превью приходят как у любого запуска, результат —
 // в output/ и в Results. Параметры сэмплинга подбирает Magic (/api/magic) под выбранный чекпоинт.
 // Hierarchy (контекст naizer) — версии текущей картинки и последние файлы output/ и input/; Inspector — настройки.
-import { h, num, debounce, clamp } from './util.js';
+// Версии — слои: холст собирает исходник и видимые версии по их маскам, выделение хранится в версии/черновике.
+// «Контекст сцены» — vision-LLM (скрытый llm.chat) описывает картинку, теги подмешиваются в промпт.
+import { h, num, check, debounce, clamp } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector } from './inspector.js';
 import { icon } from './icons.js';
-import { api, fileUrl, upload, interrupt } from './backend.js';
+import { api, fileUrl, upload, interrupt, getModels, getSettings } from './backend.js';
 import { isShown, activeView } from './dock.js';
 import { dropdown } from './kit.js';
 import { libraryPicker } from './library.js';
+import { modelPicker } from './modelpick.js';
 import { fetchRec, MAGIC_KEYS } from './magic.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage } from './images.js';
 
-const LS = 'maistep-naizer';
+const LS = 'maistep-naizer', MASK_KEY = 'maistep-naizer-mask';
 const DEF = {
   file: '', versions: [], mode: 'detail', prompt: { detail: '', redraw: '' }, negative: '', denoise: { detail: 0.4, redraw: 0.9 },
   ckpt: '', params: null, magic: null, padding: 48, feather: 12, resolution: 0, seed: -1, tool: 'brush', size: 40,
+  context: '', useContext: true, ctxProvider: '', ctxModel: '',
 };
 const st = (() => { try { return { ...DEF, ...JSON.parse(localStorage.getItem(LS)) }; } catch { return { ...DEF }; } })();
+if (!Array.isArray(st.versions)) st.versions = [];
 const keep = debounce(() => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch {} }, 200);
 const log = (level, text) => emit('log', { src: 'naizer', level, text });
 const MODES = { detail: ['Детализировать', 'Те же формы, больше деталей: denoise 0.3–0.5'], redraw: ['Перерисовать', 'На месте выделения — то, что в промпте: denoise 0.8–1'] };
@@ -30,6 +35,14 @@ const TINT = '#548AF7';
 let cv = null, wrap = null, img = null, cmpImg = null, mask = null, tint = null, view = { x: 0, y: 0, z: 1 }, fitted = false;
 let mouse = null, shape = null, undoStack = [], compare = false, busy = null, files = { output: [], input: [] }, lastMask = null;
 let rec = null; // рекомендация Magic для st.ckpt
+const layers = new Map(); // file → Image (для сборки слоёв)
+let comp = null, compSig = '', compBuild = 0, maskToken = 0;
+let ctxProviders = null, ctxBusy = false, ctxPid = null;
+
+const CTX_PROMPT = 'Describe the image for an inpainting prompt. Return one line of comma-separated English tags: '
+  + 'subject and appearance, clothing, pose, scene, background, lighting, color palette, art style. '
+  + 'No quality words, no sentences, no markdown.';
+const CTX_SYSTEM = 'You caption images for a Stable Diffusion inpaint node. Keep the subject identity and style, be concrete and brief.';
 
 const cur = () => st.versions.find(v => v.file === st.file) || null;
 const ckptName = () => st.ckpt || S.nodes['sd.checkpoint']?.inputs?.ckpt_name?.default || '';
@@ -39,15 +52,42 @@ const fileOf = f => (/^(input|output)\//.test(f) ? f : `input/${f}`);
 function open(file, { version = false } = {}) {
   if (!file) return;
   st.file = fileOf(file);
-  if (!version && !st.versions.some(v => v.file === st.file)) st.versions = [{ file: st.file, root: true }];
+  // цепочка слоёв должна содержать открытый файл: иначе композит соберётся из чужой истории
+  if (!st.versions.some(v => v.file === st.file)) {
+    st.versions = [{ file: st.file, root: true }];
+    st.context = ''; // описание сцены относится к конкретной картинке
+  }
   keep();
+  invalidate();
   img = new Image();
   img.crossOrigin = 'anonymous';
-  img.onload = () => { newMask(); fitted = false; fit(); refresh(); };
+  img.onload = () => {
+    newMask();
+    fitted = false;
+    fit();
+    loadCurrentMask();
+    buildComp();
+    refresh();
+  };
   img.onerror = () => { log('error', `не открылась картинка ${st.file} (сервер запущен?)`); img = null; draw(); };
   img.src = fileUrl(st.file);
   cmpImg = null;
   refresh();
+}
+
+// маска открытой версии: файл из запуска, иначе черновик выделения (переживает перезапуск)
+async function loadCurrentMask() {
+  const v = cur();
+  const token = ++maskToken;
+  const draft = draftGet(st.file);
+  const src = draft || (v?.mask ? fileUrl(v.mask) : null);
+  if (!src) { retint(); draw(); return; }
+  const im = await loadImage(src);
+  if (!im || token !== maskToken || !mask) return;
+  const c = mask.getContext('2d');
+  c.clearRect(0, 0, mask.width, mask.height);
+  c.drawImage(im, 0, 0, mask.width, mask.height);
+  retint(); draw();
 }
 
 function newMask(keepOld = false) {
@@ -82,16 +122,110 @@ function undoMask() {
   const d = undoStack.pop();
   if (!d) return;
   mask.getContext('2d').putImageData(d, 0, 0);
-  retint(); draw();
+  retint(); keepDraft(); draw();
 }
-function clearMask() { if (!mask) return; pushUndo(); mask.getContext('2d').clearRect(0, 0, mask.width, mask.height); retint(); draw(); }
+function clearMask() { if (!mask) return; pushUndo(); mask.getContext('2d').clearRect(0, 0, mask.width, mask.height); retint(); keepDraft(); draw(); }
 function invertMask() {
   if (!mask) return;
   pushUndo();
   const m = mask.getContext('2d');
   m.globalCompositeOperation = 'xor'; m.fillStyle = '#fff'; m.fillRect(0, 0, mask.width, mask.height);
   m.globalCompositeOperation = 'source-over';
-  retint(); draw();
+  retint(); keepDraft(); draw();
+}
+
+// черновик выделения: маска ещё не отправлена на сервер, но должна пережить перезапуск окна
+function draftGet(file) {
+  try {
+    const d = JSON.parse(localStorage.getItem(MASK_KEY));
+    return d?.file === file && d.data ? d.data : null;
+  } catch { return null; }
+}
+const keepDraft = debounce(() => {
+  if (!mask || !st.file) return;
+  try { localStorage.setItem(MASK_KEY, JSON.stringify({ file: st.file, data: mask.toDataURL('image/png') })); } catch {}
+}, 400);
+
+// ---------- слои (версии правок) ----------
+function invalidate() { comp = null; compSig = ''; }
+function layerSig() {
+  return JSON.stringify([img?.naturalWidth, img?.naturalHeight,
+    st.versions.map(v => [v.file, v.mask || '', v.visible !== false, v.opacity ?? 1])]);
+}
+function loadImage(src) {
+  const hit = layers.get(src);
+  if (hit) return Promise.resolve(hit);
+  return new Promise(res => {
+    const im = new Image();
+    im.crossOrigin = 'anonymous';
+    im.onload = () => { layers.set(src, im); res(im); };
+    im.onerror = () => res(null);
+    im.src = src;
+  });
+}
+// композит: исходник + видимые версии, каждая — только по своей маске (как слои в фотошопе)
+async function buildComp() {
+  if (!img?.naturalWidth) return null;
+  const sig = layerSig();
+  if (comp && compSig === sig) return comp;
+  const token = ++compBuild, W = img.naturalWidth, H = img.naturalHeight;
+  const root = st.versions[0]?.file || st.file;
+  const base = await loadImage(fileUrl(root));
+  if (!base || token !== compBuild) return null;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.drawImage(base, 0, 0, W, H);
+  const rest = st.versions.slice(1);
+  const clean = rest.every(v => v.visible !== false && (v.opacity ?? 1) >= 1);
+  if (clean && rest.length) {
+    // все слои видимы — последний результат уже содержит всю цепочку, маски не нужны (без швов)
+    const last = await loadImage(fileUrl(rest[rest.length - 1].file));
+    if (!last || token !== compBuild) return null;
+    x.clearRect(0, 0, W, H);
+    x.drawImage(last, 0, 0, W, H);
+    comp = c; compSig = sig;
+    draw();
+    return c;
+  }
+  for (const v of rest) {
+    if (v.visible === false) continue;
+    const op = clamp(v.opacity ?? 1, 0, 1);
+    if (op <= 0) continue;
+    const im = await loadImage(fileUrl(v.file));
+    if (!im || token !== compBuild) return null;
+    let src = im;
+    if (v.mask) {
+      const mk = await loadImage(fileUrl(v.mask));
+      if (!mk || token !== compBuild) return null;
+      const t = document.createElement('canvas');
+      t.width = W; t.height = H;
+      const tx = t.getContext('2d');
+      tx.drawImage(im, 0, 0, W, H);
+      tx.globalCompositeOperation = 'destination-in';
+      tx.drawImage(mk, 0, 0, W, H);
+      src = t;
+    }
+    x.globalAlpha = op; x.drawImage(src, 0, 0, W, H); x.globalAlpha = 1;
+  }
+  if (token !== compBuild) return null;
+  comp = c; compSig = sig;
+  draw();
+  return c;
+}
+// все слои видимы и непрозрачны — можно взять последний файл как есть, иначе «сплющить» композит
+async function baseForRun() {
+  const rest = st.versions.slice(1);
+  if (!rest.length) return st.file;
+  const clean = rest.every(v => v.visible !== false && (v.opacity ?? 1) >= 1);
+  const last = rest[rest.length - 1]?.file;
+  if (clean && last) return last;
+  const c = await buildComp() || img;
+  const flat = document.createElement('canvas');
+  flat.width = img.naturalWidth; flat.height = img.naturalHeight;
+  flat.getContext('2d').drawImage(c, 0, 0, flat.width, flat.height);
+  const blob = await new Promise(r => flat.toBlob(r, 'image/png'));
+  return upload(new File([blob], `naizer_base_${Date.now()}.png`, { type: 'image/png' }));
 }
 
 // мазок/фигура — сразу в маску и в подсветку
@@ -105,6 +239,7 @@ function paint(fn, erase) {
     fn(x);
     x.restore();
   }
+  keepDraft();
 }
 
 // ---------- вид ----------
@@ -137,7 +272,8 @@ function draw() {
   if (!fitted) fit();
   const iw = img.naturalWidth * view.z, ih = img.naturalHeight * view.z;
   c.imageSmoothingQuality = 'high';
-  c.drawImage(compare && cmpImg?.complete ? cmpImg : img, view.x, view.y, iw, ih);
+  const shown = compare && cmpImg?.complete ? cmpImg : (comp || img);
+  c.drawImage(shown, view.x, view.y, iw, ih);
   if (!compare && tint) { c.globalAlpha = 0.45; c.drawImage(tint, view.x, view.y, iw, ih); c.globalAlpha = 1; }
   c.strokeStyle = '#43454A'; c.strokeRect(view.x - 0.5, view.y - 0.5, iw + 1, ih + 1);
   // фигура в процессе
@@ -265,6 +401,72 @@ async function loadRec(refresh = false) {
 }
 const changedKeys = () => (st.magic?.rec ? MAGIC_KEYS.filter(k => String(st.params?.[k]) !== String(st.magic.rec[k])) : []);
 
+// ---------- контекст сцены (vision-LLM) ----------
+let ctxLoading = false;
+async function ensureCtx() {
+  if (!S.server.running || ctxLoading) return;
+  ctxLoading = true;
+  try {
+    if (!ctxProviders) {
+      const s = await getSettings();
+      ctxProviders = s.providers || {};
+      if (!st.ctxProvider) {
+        st.ctxProvider = s.default_provider || Object.keys(ctxProviders).find(k => ctxProviders[k].has_key) || '';
+        keep();
+      }
+    }
+    const pid = st.ctxProvider;
+    if (!pid) return;
+    await getModels(pid);
+    if (!st.ctxModel) {
+      const all = S.models[pid]?.models || [];
+      // у Ollama нет флага vision — берём первую модель, остальное автор выберет вручную
+      const m = all.find(x => x.vision) || (ctxProviders[pid]?.kind === 'ollama' ? all[0] : null);
+      if (m) { st.ctxModel = m.id; keep(); }
+    }
+    refresh_();
+  } catch (e) {
+    log('warn', `контекст: ${e.message}`);
+  } finally { ctxLoading = false; }
+}
+
+const ctxMeta = () => (S.models[st.ctxProvider]?.models || []).find(m => m.id === st.ctxModel) || null;
+
+async function describe() {
+  if (ctxBusy) return;
+  if (!S.server.running) { log('warn', 'сервер не запущен'); emit('server-start'); return; }
+  if (!img?.naturalWidth) return log('warn', 'сначала откройте картинку');
+  await ensureCtx();
+  if (!st.ctxProvider || !st.ctxModel) return log('warn', 'выберите vision-модель для контекста');
+  const meta = ctxMeta();
+  const ollama = ctxProviders[st.ctxProvider]?.kind === 'ollama';
+  if (meta && !meta.vision && !ollama) return log('warn', `${st.ctxModel} не принимает картинки — выберите модель со значком 👁`);
+  ctxBusy = true;
+  refresh_();
+  const pid = crypto.randomUUID().replace(/-/g, '');
+  ctxPid = pid;
+  const wf = {
+    id: 'naizer_ctx', title: 'ImageNaizer: контекст',
+    nodes: [
+      { id: 'img', type: 'image.load', props: { file: st.file } },
+      { id: 'llm', type: 'llm.chat', props: { prompt: CTX_PROMPT, system: CTX_SYSTEM, provider: st.ctxProvider, model: st.ctxModel,
+        max_tokens: 700, effort: 'auto', temperature: 0.3, seed: Date.now() % 1000000 } },
+      { id: 'out', type: 'output.show', props: {} },
+    ],
+    links: [{ from: 'img', out: 'image', to: 'llm', in: 'image' }, { from: 'llm', out: 'text', to: 'out', in: 'value' }],
+    targets: ['out'],
+  };
+  try {
+    await api('/api/prompt', { id: pid, workflow: wf });
+    log('info', `контекст: ${st.ctxModel}`);
+  } catch (e) {
+    ctxBusy = false; ctxPid = null;
+    for (const is of e.data?.issues || []) log('error', `нода ${is.node}: ${is.message}`);
+    if (!e.data?.issues) log('error', `контекст: ${e.message}`);
+    refresh_();
+  }
+}
+
 // ---------- запуск ----------
 async function maskFile() {
   // маска в размер картинки: белое — перерисовать; уникальное имя — кэш нод сервера по входам
@@ -279,7 +481,10 @@ async function run(again = false) {
   const ck = ckptName();
   if (!ck) return log('warn', 'выберите чекпоинт в Inspector');
   const v = cur();
-  const base = again && v?.parent ? v.parent : st.file;
+  let base = again && v?.parent ? v.parent : null;
+  if (!base) {
+    try { base = await baseForRun(); } catch (e) { return log('error', `подготовка основы: ${e.message}`); }
+  }
   let mfile = again && v?.mask ? v.mask : null;
   if (!mfile) {
     if (!masked()) return log('warn', 'выделите область: кисть (B), прямоугольник (R) или лассо (L)');
@@ -290,7 +495,10 @@ async function run(again = false) {
   if (mode === 'redraw' && !user) return log('warn', 'напишите в промпте, что нарисовать на месте выделения');
   if (!rec?.ok) await loadRec();
   const q = rec?.prompt || { positive: 'masterpiece, best quality', negative: 'lowres, worst quality, bad anatomy' };
-  const positive = mode === 'detail' ? [q.positive, 'highly detailed, sharp focus, intricate details', user].filter(Boolean).join(', ') : [q.positive, user].filter(Boolean).join(', ');
+  const ctx = st.useContext !== false ? (st.context || '').trim() : '';
+  const positive = mode === 'detail'
+    ? [q.positive, ctx, 'highly detailed, sharp focus, intricate details', user].filter(Boolean).join(', ')
+    : [q.positive, ctx, user].filter(Boolean).join(', ');
   const negative = st.negative.trim() || q.negative;
   const p = { ...(rec?.params || {}), ...(st.params || {}) };
   const L = (from, out, to, inn) => ({ from, out, to, in: inn });
@@ -327,7 +535,7 @@ async function run(again = false) {
 
 function onResult(file) {
   const b = busy;
-  st.versions.push({ file, parent: b.base, mask: b.mask, mode: b.mode, prompt: b.prompt, at: Date.now() });
+  st.versions.push({ file, parent: b.base, mask: b.mask, mode: b.mode, prompt: b.prompt, at: Date.now(), visible: true, opacity: 1 });
   lastMask = b.mask;
   busy = null;
   open(file, { version: true });
@@ -406,7 +614,7 @@ async function loadFiles() {
   if (!S.server.running) return;
   try {
     const [o, i] = await Promise.all([api('/api/files?dir=output'), api('/api/files?dir=input')]);
-    files = { output: o.filter(f => /\.(png|jpe?g|webp)$/i.test(f.file)).slice(0, 40), input: i.filter(f => /\.(png|jpe?g|webp)$/i.test(f.file) && !/naizer_mask_/.test(f.file)).slice(0, 40) };
+    files = { output: o.filter(f => /\.(png|jpe?g|webp)$/i.test(f.file)).slice(0, 40), input: i.filter(f => /\.(png|jpe?g|webp)$/i.test(f.file) && !/naizer_(mask|base)_/.test(f.file)).slice(0, 40) };
   } catch {}
   if (S.ctx === 'naizer') emit('change', { kind: null });
 }
@@ -426,9 +634,69 @@ export function naizerTreeItems() {
 }
 
 // ---------- Inspector ----------
+function layersCard() {
+  if (!st.versions.length) return [];
+  const rows = st.versions.map((v, i) => {
+    const vis = v.visible !== false, op = v.opacity ?? 1;
+    const eye = check(vis, val => { v.visible = val; keep(); invalidate(); buildComp(); draw(); });
+    eye.disabled = i === 0;
+    eye.addEventListener('click', e => e.stopPropagation());
+    const opIn = h('input.ui-range', { type: 'range', min: 0, max: 1, step: 0.05, value: op, title: 'непрозрачность слоя',
+      style: { width: '64px', flex: 'none' } });
+    opIn.disabled = i === 0;
+    opIn.addEventListener('pointerdown', e => e.stopPropagation());
+    opIn.addEventListener('click', e => e.stopPropagation());
+    opIn.addEventListener('input', () => { v.opacity = +opIn.value; keep(); invalidate(); buildComp(); draw(); });
+    const what = i ? `${MODES[v.mode]?.[0] || 'правка'}${v.prompt ? `: ${v.prompt}` : ''}` : 'исходная';
+    return h(`div.nz-layer${v.file === st.file ? '.on' : ''}`, { title: `${what}\n${v.file}`, onclick: () => open(v.file, { version: true }) },
+      eye,
+      h('img', { src: fileUrl(v.file), loading: 'lazy', alt: '', crossOrigin: 'anonymous' }),
+      h('span.nm', {}, i ? `v${i} · ${MODES[v.mode]?.[0] || 'правка'}` : 'исходная'),
+      opIn);
+  });
+  return [h('h4', {}, 'Слои'), h('div.nz-layers', {}, ...rows),
+    h('div.hint', {}, 'Галочка — показывать слой, ползунок — прозрачность. Клик по слою открывает его версию.')];
+}
+
+function contextCard() {
+  if (!S.server.running) return [];
+  if (ctxProviders === null) { ensureCtx(); return [h('h4', {}, 'Контекст сцены'), h('div.hint', {}, 'загрузка провайдеров…')]; }
+  const provs = Object.entries(ctxProviders).map(([id, p]) => [id, p.name || id]);
+  if (!provs.length) return [];
+  const meta = ctxMeta();
+  const ollama = ctxProviders[st.ctxProvider]?.kind === 'ollama';
+  const model = h('input', { type: 'text', value: st.ctxModel, readOnly: true, placeholder: 'модель с 👁' });
+  const pick = h('button.icon', { 'data-tip': 'Модель, которая видит картинку', onclick: () => modelPicker(pick, { provider: st.ctxProvider, value: st.ctxModel, onPick: id => { st.ctxModel = id; keep(); refresh_(); } }) }, icon('search', { size: 14 }));
+  const ta = h('textarea', { rows: 4, spellcheck: false, placeholder: 'нажмите «Описать» — теги появятся здесь, их можно править' });
+  ta.value = st.context || '';
+  ta.addEventListener('input', () => { st.context = ta.value; keep(); });
+  return [
+    h('h4', {}, 'Контекст сцены'),
+    h('div.hint', {}, 'Vision-модель описывает, кто на картинке, стиль и сцену; теги добавляются в промпт (для детализации и перерисовки).'),
+    h('div.f', {}, h('label', {}, 'провайдер'), h('div.v', {}, dropdown(st.ctxProvider, provs, v => {
+      st.ctxProvider = v; st.ctxModel = ''; keep(); ensureCtx(); refresh_();
+    }, { width: 150 }))),
+    h('div.f', {}, h('label', {}, 'модель'), h('div.v', {}, model, pick)),
+    meta && !meta.vision && !ollama ? h('div.hint', { style: { color: 'var(--err)' } }, 'модель не принимает картинки — выберите со значком 👁') : null,
+    ta,
+    h('div.row', { style: { flexWrap: 'wrap', marginTop: '4px' } },
+      h('button.primary', { onclick: describe, disabled: ctxBusy || !st.ctxModel }, icon('spark', { size: 14 }), ctxBusy ? 'Описание…' : 'Описать картинку'),
+      st.context ? h('button', { onclick: () => { st.context = ''; keep(); refresh(); } }, 'Очистить') : null,
+      h('label.row', { style: { gap: '4px', marginLeft: 'auto', fontSize: '11px' } },
+        check(st.useContext !== false, v => { st.useContext = v; keep(); }), 'в промпте')),
+  ];
+}
+
 function inspector() {
   const v = cur();
-  const area = (value, ph, set, rows = 3) => { const t = h('textarea', { rows, spellcheck: false, placeholder: ph }); t.value = value || ''; t.addEventListener('input', () => set(t.value)); t.addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); run(); } }); return t; };
+  const area = (value, ph, set, rows = 3) => {
+    const t = h('textarea', { rows, spellcheck: false, placeholder: ph, title: 'Ctrl+↑ / Ctrl+↓ — вес тега: (girl:1.2)' });
+    t.dataset.promptWeight = '';
+    t.value = value || '';
+    t.addEventListener('input', () => set(t.value));
+    t.addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); run(); } });
+    return t;
+  };
   const row = (label, ctl, tip) => h('div.f', { title: tip || '' }, h('label', {}, label), h('div.v', {}, ctl));
   const slider = (value, min, max, step, set) => {
     const r = h('input.ui-range', { type: 'range', min, max, step, value });
@@ -450,10 +718,12 @@ function inspector() {
     h('div.hint', {}, img?.naturalWidth ? `${st.file} · ${img.naturalWidth}×${img.naturalHeight}${v?.parent ? ` · правка от ${v.parent.split('/').pop()}` : ''}` : 'картинка не открыта'),
     h('div.nz-modes', {}, ...Object.entries(MODES).map(([k, [label, tip]]) => h(`button${st.mode === k ? '.on' : ''}`, { 'data-tip': tip, onclick: () => { st.mode = k; keep(); refresh(); } }, label))),
     h('div.hint', {}, MODES[st.mode][1]),
+    ...layersCard(),
     h('h4', {}, st.mode === 'redraw' ? 'Что нарисовать на месте выделения' : 'Что подчеркнуть (необязательно)'),
     area(st.prompt[st.mode], st.mode === 'redraw' ? 'например: red rose in a glass vase' : 'например: detailed eyes, sharp texture', t => { st.prompt[st.mode] = t; keep(); }),
     h('h4', {}, 'Негатив'),
     area(st.negative, rec?.prompt?.negative || 'по умолчанию — теги базы модели', t => { st.negative = t; keep(); }, 2),
+    ...contextCard(),
     row('сила', slider(st.denoise[st.mode], 0.1, 1, 0.05, x => { st.denoise[st.mode] = x; keep(); }), 'denoise: насколько сильно менять выделенное'),
     h('h4', {}, 'Модель'),
     row('чекпоинт', h('div.row', { style: { flex: 1 } }, ckIn, ckBtn)),
@@ -475,7 +745,7 @@ function inspector() {
       busy ? h('button', { onclick: () => interrupt() }, icon('stop', { size: 14 }), 'Прервать')
         : h('button.primary', { onclick: () => run(), disabled: !img }, icon('play', { size: 14 }), MODES[st.mode][0]),
       !busy && v?.parent ? h('button', { 'data-tip': 'То же выделение и промпт, новый seed — от той же исходной картинки', onclick: () => run(true) }, icon('refresh', { size: 14 }), 'Ещё вариант') : null),
-    h('div.hint', { style: { marginTop: '10px' } }, 'B — кисть, E — ластик, R — прямоугольник, L — лассо, Alt — стереть фигурой, [ ] — размер кисти, I — инвертировать, Del — снять выделение, Ctrl+Z — отменить мазок, колесо — масштаб, ПКМ/Space — сдвиг, Ctrl+Enter — применить.'),
+    h('div.hint', { style: { marginTop: '10px' } }, 'B — кисть, E — ластик, R — прямоугольник, L — лассо, Alt — стереть фигурой, [ ] — размер кисти, I — инвертировать, Del — снять выделение, Ctrl+Z — отменить мазок, Ctrl+↑/↓ — вес тега в промпте, колесо — масштаб, ПКМ/Space — сдвиг, Ctrl+Enter — применить.'),
   ];
 }
 
@@ -515,18 +785,45 @@ export function initNaizer() {
     im.src = d.image;
   });
   on('run-output', d => { if (busy && d.prompt_id === busy.pid && d.node === 'inp' && d.output?._ui?.images?.[0]) onResult(d.output._ui.images[0]); });
+  on('run-output', d => {
+    if (!ctxPid || d.prompt_id !== ctxPid || d.node !== 'out') return;
+    const text = (d.output?._ui?.text || '').trim().replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '');
+    if (text) { st.context = text; keep(); log('ok', 'контекст сцены описан'); }
+  });
+  on('run-error', d => {
+    if (!ctxPid || d.prompt_id !== ctxPid) return;
+    ctxBusy = false; ctxPid = null;
+    log('error', `контекст: ${String(d.message || 'ошибка').split('\n')[0]}`);
+    refresh_();
+  });
+  on('run-done', d => {
+    if (!ctxPid || d.prompt_id !== ctxPid) return;
+    if (!d.ok) log('error', `контекст: ${d.error?.message?.split('\n')[0] || 'запуск не удался'}`);
+    ctxBusy = false; ctxPid = null;
+    refresh_();
+  });
   on('run-done', d => {
     if (!busy || (d.prompt_id && d.prompt_id !== busy.pid)) return;
     if (!d.ok) log('error', `ImageNaizer: ${d.error?.message?.split('\n')[0] || 'запуск не удался'}`);
     busy = null; refresh();
   });
-  on('server', s => { if (s.running) setTimeout(() => { loadFiles(); if (st.file && !img) open(st.file, { version: true }); }, 900); });
+  on('server', s => {
+    if (!s.running) return;
+    setTimeout(() => {
+      loadFiles();
+      ensureCtx();
+      if (st.file && !img) open(st.file, { version: true });
+      layers.clear(); invalidate();
+      if (img?.naturalWidth) { loadCurrentMask(); buildComp(); draw(); }
+    }, 900);
+  });
   addEventListener('view', e => { if (e.detail === 'naizer') render(); });
 }
 
 export function showNaizer() {
   if (S.sel?.kind !== 'naizer') select({ kind: 'naizer', id: 'naizer' });
   if (st.file && !img && S.server.running) open(st.file, { version: true });
+  ensureCtx();
   loadFiles();
   render();
 }

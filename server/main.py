@@ -22,7 +22,7 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   POST /api/components/install { ids?, mode: recommended|missing|latest }  установка в .venv (SSE comp-log)
   GET  /api/civitai/search?q=&types=&bases=&sort=&period=&nsfw=1&limit=&cursor=  поиск Civitai
   GET  /api/civitai/model?id= | resolve?q=ссылка | jobs | tags | settings | meta
-  POST /api/civitai/download { items: [{ model, version, file? }], root? } | cancel | retry | clear | reveal { id }
+  POST /api/civitai/download { items: [{ model, version, file? }], root? } | cancel | retry | clear | reveal | delete { id }
   POST /api/civitai/tags { models, add, remove } | settings { api_key, root, connections, concurrent, … }
   GET  /api/magic?ckpt=имя&loras=[[имя, сила], …]&refresh=1  Magic KSampler: параметры под чекпоинт и LoRA
   POST /api/free               выгрузить модели генерации из памяти и сбросить кэш нод
@@ -248,6 +248,8 @@ def civitai_post(op, d):
         return civitai.retry(d.get("id"))
     if op == "clear":
         return {"jobs": civitai.clear(d.get("ids"))}
+    if op == "delete":
+        return civitai.delete_job(d.get("id"))
     if op == "reveal":
         return civitai.reveal(d.get("id"))
     if op == "tags":

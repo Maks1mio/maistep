@@ -389,6 +389,57 @@ def clear(job_ids=None):
     return jobs()
 
 
+def _in_library(p):
+    """Путь внутри библиотеки моделей (или папки models) — защита от удаления чего-то ещё."""
+    try:
+        p = Path(p).resolve()
+    except OSError:
+        return False
+    for r in roots():
+        try:
+            p.relative_to(Path(r).resolve())
+            return True
+        except (ValueError, OSError):
+            pass
+    return "models" in (x.lower() for x in p.parts)
+
+
+def delete_job(job_id):
+    """Удалить скачанный файл (и .cminfo/.preview) и запись из истории загрузок."""
+    with _lock:
+        j = next((x for x in _jobs if x.id == job_id), None)
+        if not j:
+            raise ValueError("no such download")
+        if j.state in ("queued", "running", "verifying"):
+            raise ValueError("сначала остановите загрузку")
+        dest = Path(j.dest)
+        removed = []
+        if dest.exists():
+            if dest.suffix.lower() not in L.MODEL_EXT:
+                raise ValueError("это не файл модели — удаление отменено")
+            if not _in_library(dest):
+                raise ValueError("файл вне папки моделей — удаление отменено")
+            try:
+                dest.unlink()
+                removed.append(str(dest))
+            except OSError as e:
+                raise RuntimeError(f"не удалось удалить {dest.name}: {e}") from None
+        if dest.parent.exists() and _in_library(dest.parent):
+            stem = dest.with_suffix("")
+            for p in (dest.with_name(dest.name + ".part"), Path(f"{stem}.cminfo.json"), Path(f"{stem}.preview.jpeg")):
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        removed.append(str(p))
+                except OSError:
+                    pass
+        _jobs.remove(j)
+        _save_jobs()
+    L.index(refresh=True)
+    _broadcast()
+    return {"ok": True, "removed": removed, "jobs": jobs()}
+
+
 def reveal(job_id):
     j = next((x for x in _jobs if x.id == job_id), None)
     if not j:

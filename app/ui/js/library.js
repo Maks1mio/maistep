@@ -16,6 +16,8 @@ const keep = () => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch
 let lib = null, loading = null;
 const details = new Map(); // id → карточка
 
+export const libraryItem = name => (lib?.items || []).find(it => it.name === name) || null;
+
 const base = () => `http://localhost:${S.server.port}`;
 export const previewUrl = id => `${base()}/api/library/preview?id=${encodeURIComponent(id)}`;
 export const fmtSize = n => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} ГБ` : n >= 1 << 20 ? `${Math.round(n / (1 << 20))} МБ` : `${Math.round(n / 1024)} КБ`);

@@ -24,6 +24,7 @@ import { initBackend, queuePrompt, interrupt, clearQueue, reloadNodes, api } fro
 import { providersDialog } from './providers.js';
 import { initMagic } from './magic.js';
 import { initImages } from './images.js';
+import { initPromptWeights } from './promptedit.js';
 
 const $ = id => document.getElementById(id);
 const log = (level, text, src = 'editor') => emit('log', { src, level, text });
@@ -218,6 +219,7 @@ async function boot() {
   initGraph();
   initMagic();
   initImages();
+  initPromptWeights();
   initResults();
   initLibrary();
   initCodeEditor();

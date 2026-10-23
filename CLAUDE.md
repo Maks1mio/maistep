@@ -25,6 +25,7 @@ mashit (игра и её редактор) **не трогаем** — maistep �
 - В воркфлоу и моделях пользователя бывает NSFW — в тестах только нейтральные промпты и примеры из workflows/.
 - Библиотека моделей — `server/maistep/library.py`, строго только чтение; источники — yaml Comfy Desktop + model_roots.
   В папки моделей пишет только загрузка Civitai (`civitai.py`) по явной кнопке: файл + `.cminfo.json` + `.preview.jpeg`.
+  Удаление — корзина в «Загрузках»: файл и сайдкары (только внутри папок моделей), запись истории убирается.
   Тестировать загрузки — с `root=` в scratchpad, не в библиотеку пользователя.
 - Civitai API: с текстом `query` выдача пустая при period ≠ AllTime, а фильтры типа/базы применяются после поиска —
   поэтому сервер добирает страницы по 100. Картинки — `/original=true/` → менять на `/width=N/`. Скачивание — `?token=`,
@@ -32,6 +33,9 @@ mashit (игра и её редактор) **не трогаем** — maistep �
 - Python — только `.venv` проекта (пользователь не хочет засорять систему); ядро и dev-server запускают сервер из него.
 - Провайдеры LLM — `server/maistep/providers.py`; CheapVibeCode = kind `proxy` (Claude → SDK anthropic с base_url без /v1,
   остальное → chat/completions). Через прокси работают `effort` и `fallbacks` (проверено 2026-10-22).
+- Перевод промптов — `server/maistep/translate.py` на входе `sd.text_encode` и `image.generate_openai`: русский/смешанный
+  текст переводится LLM (настройки `translate` в user/settings.json, UI — «Провайдеры LLM… → Перевод промптов»;
+  пустая модель — авто: flash/mini/haiku). Кэш — `user/prompts_en.json`; ошибка перевода не валит запуск.
 - На Windows `allow_reuse_address` выключен: иначе второй сервер тихо делил порт 3300 со старым.
 - Сервер — только стандартная библиотека (ThreadingHTTPServer + SSE); пакеты нужны лишь отдельным нодам (requirements.txt).
 - Провайдер anthropic — официальный SDK `anthropic` (ленивый импорт); openai/ollama — urllib.
@@ -54,6 +58,13 @@ mashit (игра и её редактор) **не трогаем** — maistep �
   Версия правила в ключе `magic.js` (`RULE`) — старые рекомендации пересчитываются.
 - ImageNaizer (`naizer.js`) шлёт скрытый граф `id: "naizer"` (sd.inpaint) через /api/prompt; маска — уникальный
   `input/naizer_mask_*.png` (кэш нод по входам). Маскированный сэмплинг — `sample(noise_mask=…)` (как SetLatentNoiseMask).
+  Версии правок — слои (visible/opacity), холст показывает композит исходника и видимых версий по их маскам; выделение
+  хранится в маске версии и в черновике localStorage (MASK_KEY) — переживает запуск и перезапуск. «Контекст сцены» —
+  vision-LLM через скрытый `llm.chat` (теги в промпт); модель/провайдер — в Inspector.
 - Картинки в ноды: `images.js` — выбор из input/ и output/ или с диска, перетаскивание (файлы, text/mai-file, ссылки
   /view), Ctrl+V. История запусков — `user/history.json`; результаты нод в UI — localStorage `maistep-outputs`.
+- Триггер-слова LoRA: `lora.js` — при вставке из библиотеки или смене `lora_name` дописывает `trained` в положительный
+  `sd.text_encode` (по связи sampler.positive, иначе по названию ноды); если `text` приходит по связи — предупреждение.
+- Вес тегов: Ctrl+↑/↓ в textarea с `data-prompt-weight` (`promptedit.js`) — выделение или тег под курсором становится
+  `(tag:1.2)`, шаг 0.1, 0.1…2.0; поля CLIP Text Encode, Generate Image и промпты ImageNaizer.
 - Для проверки UI при занятом 3210 — конфигурация `maistep-web-alt` (:3220) в .claude/launch.json.
