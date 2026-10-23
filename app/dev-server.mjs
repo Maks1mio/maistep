@@ -79,8 +79,18 @@ function stopServer() {
   emit('server', status());
 }
 
+// Первый запуск: пока в workflows/ нет ни одного графа, туда копируются стартовые из defaults/workflows/
+function seed(dir) {
+  if (fs.existsSync(dir) && fs.readdirSync(dir).some(f => f.endsWith('.json'))) return;
+  const src = path.join(ROOT, 'defaults', 'workflows');
+  if (!fs.existsSync(src)) return;
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of fs.readdirSync(src).filter(f => f.endsWith('.json'))) fs.copyFileSync(path.join(src, f), path.join(dir, f));
+}
+
 function loadProject() {
   const dir = path.join(ROOT, 'workflows'), workflows = [], errors = [];
+  seed(dir);
   if (fs.existsSync(dir)) {
     for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.json') && !f.startsWith('_')).sort()) {
       try { workflows.push({ id: f.slice(0, -5), data: JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) }); } catch (e) { errors.push(`workflows/${f}: ${e.message}`); }

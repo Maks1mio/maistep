@@ -46,6 +46,31 @@ pub fn status(s: &Shared) -> Status {
 
 // ---------- выбор Python ----------
 
+// Первый запуск установленной копии: .venv проекта создаётся из системного Python (пакеты — «Компоненты»)
+fn ensure_venv(app: &AppHandle, root: &Path) {
+    if std::env::var("MAISTEP_PYTHON").is_ok_and(|p| !p.trim().is_empty()) || root.join(".venv").is_dir() || root.join("venv").is_dir() {
+        return;
+    }
+    let base: Option<(&str, Vec<&str>)> = if run_hidden("python", &["--version"]).is_some() {
+        Some(("python", vec![]))
+    } else if cfg!(windows) && run_hidden("py", &["-3", "--version"]).is_some() {
+        Some(("py", vec!["-3"]))
+    } else {
+        None
+    };
+    let Some((cmd, mut args)) = base else {
+        let _ = app.emit("console", json!({ "src": "editor", "level": "error", "text": "Python 3.10+ не найден — установите его с python.org (галочка «Add to PATH») и перезапустите maistep" }));
+        return;
+    };
+    let _ = app.emit("console", json!({ "src": "editor", "level": "info", "text": "первый запуск: создаётся .venv…" }));
+    let venv = root.join(".venv");
+    let venv = venv.to_string_lossy().into_owned();
+    args.extend(["-m", "venv", venv.as_str()]);
+    if run_hidden(cmd, &args).is_none() {
+        let _ = app.emit("console", json!({ "src": "editor", "level": "error", "text": format!("не удалось создать .venv ({cmd} -m venv)") }));
+    }
+}
+
 // Интерпретатор и аргументы перед скриптом
 fn python(root: &Path) -> (PathBuf, Vec<String>) {
     if let Ok(p) = std::env::var("MAISTEP_PYTHON") {
@@ -157,6 +182,7 @@ fn free_port(app: &AppHandle, port: u16) -> Result<(), String> {
 pub fn start(app: &AppHandle, s: &Shared, root: &Path, port: u16) -> Result<Status, String> {
     stop(app, s);
     free_port(app, port)?;
+    ensure_venv(app, root);
     let (py, pre) = python(root);
     let mut c = Command::new(&py);
     c.args(&pre)

@@ -53,8 +53,26 @@ pub fn mime(path: &Path) -> &'static str {
     }
 }
 
+// Первый запуск: пока в workflows/ нет ни одного графа, туда копируются стартовые из defaults/workflows/
+fn seed(root: &Path) {
+    let dir = root.join("workflows");
+    let has = fs::read_dir(&dir).map(|rd| rd.flatten().any(|e| e.path().extension().is_some_and(|x| x == "json"))).unwrap_or(false);
+    if has {
+        return;
+    }
+    let Ok(rd) = fs::read_dir(root.join("defaults").join("workflows")) else { return };
+    let _ = fs::create_dir_all(&dir);
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "json") {
+            let _ = fs::copy(&p, dir.join(e.file_name()));
+        }
+    }
+}
+
 // Все воркфлоу: { root, workflows: [{ id, data }], errors }
 pub fn load(root: &Path) -> Value {
+    seed(root);
     let mut docs = Vec::new();
     let mut errors = Vec::new();
     if let Ok(rd) = fs::read_dir(root.join("workflows")) {

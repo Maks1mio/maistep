@@ -4,6 +4,7 @@
 mod commands;
 mod project;
 mod server;
+mod update;
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -55,6 +56,18 @@ fn percent_decode(s: &str) -> String {
 
 fn main() {
     let root = find_root();
+    update::cleanup();
+    if update::apply_pending(&root) {
+        // новый maistep.exe уже на месте старого — запускаем его
+        if let Ok(exe) = std::env::current_exe() {
+            if std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().is_ok() {
+                return;
+            }
+        }
+    }
+    let mut context = tauri::generate_context!();
+    let embedded = context.set_assets(Box::new(update::NoAssets));
+    context.set_assets(Box::new(update::DiskAssets { dir: root.join("app").join("ui"), fallback: embedded }));
     let shared: server::Shared = Arc::new(Mutex::new(server::Server::default()));
     let on_exit = shared.clone();
     let file_root = root.clone();
@@ -91,6 +104,7 @@ fn main() {
             commands::server_stop,
             commands::server_status,
             commands::open_external,
+            commands::app_restart,
         ])
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {
@@ -99,7 +113,7 @@ fn main() {
             }
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("не удалось запустить maistep");
     app.run(move |_, ev| {
         if let tauri::RunEvent::Exit = ev {

@@ -27,12 +27,14 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   GET  /api/magic?ckpt=имя&loras=[[имя, сила], …]&refresh=1  Magic KSampler: параметры под чекпоинт и LoRA
   POST /api/free               выгрузить модели генерации из памяти и сбросить кэш нод
   POST /api/components/cancel  прервать установку
+  GET  /api/update?check=1     обновление maistep из GitHub Releases: статус / проверить (SSE update)
+  POST /api/update/download    скачать изменившиеся файлы в update/staging (применяет ядро при перезапуске)
   GET  /api/agent/chats | chat?id=   диалоги AI Agent (user/chats/)
   POST /api/agent/chat { id?, title, provider, model, effort, wf, hidden } | delete { id } | stop { id }
   POST /api/agent/send { id, text, images: [input/…], workflows: { id: граф } }  ход агента (SSE agent)
   GET  /view?file=output/a.png файл из input/ или output/
   GET  /events                 SSE: status, start, executing, progress, preview, stream, executed, error, done, log, nodes,
-                               components, comp-log, agent
+                               components, comp-log, agent, update
 """
 import argparse
 import json
@@ -52,7 +54,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "server"))
 
-from maistep import registry, executor, providers, library, components, civitai, agent, magic  # noqa: E402
+from maistep import registry, executor, providers, library, components, civitai, agent, magic, updater  # noqa: E402
 from maistep.registry import Cancelled  # noqa: E402
 
 for d in ("input", "output", "user", "workflows", "custom_nodes"):
@@ -342,6 +344,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(components.status(qs.get("refresh") == "1", qs.get("deep") == "1"))
             except Exception as e:
                 return self.json({"error": f"{type(e).__name__}: {e}"}, 500)
+        if u.path == "/api/update":
+            if qs.get("check") == "1":
+                updater.check()
+            return self.json(updater.status())
         if u.path == "/api/agent/chats":
             return self.json(agent.chats())
         if u.path == "/api/agent/chat":
@@ -426,6 +432,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/components/install":
             r = components.install(data.get("ids") or [], data.get("mode") or "recommended")
             return self.json(r, 409 if r.get("error") else 200)
+        if u.path == "/api/update/download":
+            r = updater.download()
+            return self.json(r, 409 if r.get("error") else 200)
         if u.path == "/api/components/cancel":
             r = components.cancel()
             return self.json(r, 409 if r.get("error") else 200)
@@ -468,6 +477,8 @@ def main():
     ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     a = ap.parse_args()
     registry.load_all(ROOT, log)
+    updater.configure(lambda event, data: HUB.emit(event, data), log)
+    updater.start()
     Q = Queue()
     agent.configure(lambda event, data: HUB.emit(event, data), lambda wf, pid: Q.put(wf, pid),
                     lambda: list(Q.history), Q.interrupt)

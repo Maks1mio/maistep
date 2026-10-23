@@ -152,6 +152,13 @@ pub fn server_status(st: State<AppState>) -> Status {
     server::status(&st.server)
 }
 
+// Перезапуск окна: при старте применяется скачанное обновление (update.rs)
+#[tauri::command]
+pub fn app_restart(app: AppHandle, st: State<AppState>) {
+    server::stop(&app, &st.server);
+    app.restart();
+}
+
 #[tauri::command]
 pub fn open_external(url: String) -> Result<(), String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {

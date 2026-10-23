@@ -1,9 +1,33 @@
-node_modules/
+# Белый список: в репозиторий (и в установщик/обновления) попадает только перечисленное ниже.
+# Всё остальное в корне — личное или локальное и игнорируется по умолчанию:
+#   workflows/ user/ input/ output/   графы, ключи API, история, картинки пользователя
+#   .venv/ venv/ node_modules/ dist/ update/   окружения, сборки, скачанные обновления
+#   manifest.json                     манифест установленной версии (пишут установщик и обновлятор)
+#   CLAUDE.md kilo.json .claude/      заметки и настройки ИИ-ассистентов разработчика
+/*
+!/.gitignore
+!/.github/
+!/README.md
+!/package.json
+!/package-lock.json
+!/requirements.txt
+!/components.json
+!/app/
+!/server/
+!/mcp/
+!/custom_nodes/
+!/defaults/
+!/scripts/
+
+# свои ноды пользователя — только пример
+/custom_nodes/*
+!/custom_nodes/example.py
+
+# сборки и кэши внутри разрешённых папок
 app/src-tauri/target/
 app/src-tauri/gen/
 __pycache__/
-.venv/
-venv/
-user/
-output/
-input/
+*.py[cod]
+.DS_Store
+Thumbs.db
+desktop.ini

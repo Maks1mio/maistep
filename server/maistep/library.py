@@ -27,7 +27,7 @@ PREVIEW_EXT = (".preview.jpeg", ".preview.jpg", ".preview.png", ".preview.webp",
 DEFAULT_ROOTS = [
     r"D:\ComfyUI\models",
     os.path.expandvars(r"%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Shared\models"),
-    os.path.expandvars(r"%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs\EvTs\ComfyUI\models"),
+    *sorted(str(p) for p in Path(os.path.expandvars(r"%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs")).glob("*/ComfyUI/models")),
 ]
 HEADER_MAX = 64 * 1024 * 1024  # заголовок safetensors длиннее — только в экзотике
 

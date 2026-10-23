@@ -1,6 +1,6 @@
 {
-  "title": "SD: txt2img",
-  "about": "Базовая генерация как в ComfyUI: Load Checkpoint → CLIP Set Last Layer → Positive / Negative → Empty Latent → KSampler → VAE Decode → Save Image.",
+  "title": "SD: Magic KSampler",
+  "about": "txt2img с Magic KSampler: steps, cfg, сэмплер и планировщик подбираются под чекпоинт и LoRA сами (описание автора на Civitai, примеры, профиль базы). Меняйте что угодно — «Сбросить» на ноде вернёт рекомендацию.",
   "nodes": [
     {
       "id": "ckpt",
@@ -53,17 +53,18 @@
     },
     {
       "id": "sampler",
-      "type": "sd.ksampler",
+      "type": "sd.magic_ksampler",
       "x": 1060,
       "y": 60,
       "props": {
         "seed": -1,
         "steps": 25,
-        "cfg": 6.0,
+        "cfg": 6,
         "sampler_name": "euler_ancestral",
         "scheduler": "normal",
-        "denoise": 1.0
-      }
+        "denoise": 1
+      },
+      "title": "Magic KSampler"
     },
     {
       "id": "decode",
@@ -78,7 +79,7 @@
       "x": 1740,
       "y": 60,
       "props": {
-        "prefix": "txt2img"
+        "prefix": "magic"
       }
     }
   ],

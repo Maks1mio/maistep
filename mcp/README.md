@@ -31,8 +31,8 @@ python mcp/maistep_mcp.py                # stdio-транспорт (обычн�
 {
   "mcpServers": {
     "maistep": {
-      "command": "C:\\Users\\OneEvT\\maistep\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\Users\\OneEvT\\maistep\\mcp\\maistep_mcp.py"],
+      "command": "C:\\path\\to\\maistep\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\path\\to\\maistep\\mcp\\maistep_mcp.py"],
       "env": { "MAISTEP_URL": "http://127.0.0.1:3300" }
     }
   }

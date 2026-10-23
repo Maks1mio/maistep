@@ -1,33 +1,11 @@
 {
-  "title": "Идея → LLM-промпт → SD",
-  "about": "LLM превращает идею на любом языке в теги для Illustrious, ответ подаётся связью в поле text у Positive. Нужен провайдер LLM (Файл → Провайдеры LLM).",
+  "title": "SD: txt2img",
+  "about": "Базовая генерация как в ComfyUI: Load Checkpoint → CLIP Set Last Layer → Positive / Negative → Empty Latent → KSampler → VAE Decode → Save Image.",
   "nodes": [
-    {
-      "id": "idea",
-      "type": "value.text",
-      "x": 40,
-      "y": 0,
-      "props": {
-        "text": "уютное кафе у моря ночью, бумажные фонарики, девушка-бариста улыбается"
-      },
-      "title": "Идея"
-    },
-    {
-      "id": "llm",
-      "type": "llm.chat",
-      "x": 380,
-      "y": 0,
-      "props": {
-        "system": "Turn the idea into a prompt for an SDXL / Illustrious anime model: English danbooru-style tags separated by commas, start with masterpiece, best quality, amazing quality. Output only the tags.",
-        "max_tokens": 400,
-        "effort": "low"
-      },
-      "title": "Промпт-инженер"
-    },
     {
       "id": "ckpt",
       "type": "sd.checkpoint",
-      "x": 720,
+      "x": 40,
       "y": 200,
       "props": {
         "ckpt_name": "waiIllustriousSDXL_v160.safetensors"
@@ -36,7 +14,7 @@
     {
       "id": "skip",
       "type": "sd.clip_skip",
-      "x": 1060,
+      "x": 380,
       "y": 40,
       "props": {
         "stop_at_clip_layer": -2
@@ -45,17 +23,17 @@
     {
       "id": "pos",
       "type": "sd.text_encode",
-      "x": 1400,
+      "x": 720,
       "y": 0,
       "props": {
-        "text": ""
+        "text": "masterpiece, best quality, amazing quality, 1girl, solo, cafe by the sea at night, paper lanterns, warm light, looking at viewer, smile, scenery"
       },
       "title": "Positive"
     },
     {
       "id": "neg",
       "type": "sd.text_encode",
-      "x": 1400,
+      "x": 720,
       "y": 190,
       "props": {
         "text": "lowres, worst quality, bad quality, bad anatomy, bad hands, extra fingers, watermark, text, signature"
@@ -65,7 +43,7 @@
     {
       "id": "latent",
       "type": "sd.empty_latent",
-      "x": 1400,
+      "x": 720,
       "y": 400,
       "props": {
         "width": 832,
@@ -76,31 +54,31 @@
     {
       "id": "sampler",
       "type": "sd.ksampler",
-      "x": 1740,
+      "x": 1060,
       "y": 60,
       "props": {
         "seed": -1,
         "steps": 25,
-        "cfg": 6.0,
+        "cfg": 6,
         "sampler_name": "euler_ancestral",
         "scheduler": "normal",
-        "denoise": 1.0
+        "denoise": 1
       }
     },
     {
       "id": "decode",
       "type": "sd.vae_decode",
-      "x": 2080,
+      "x": 1400,
       "y": 60,
       "props": {}
     },
     {
       "id": "save",
       "type": "image.save",
-      "x": 2420,
+      "x": 1740,
       "y": 60,
       "props": {
-        "prefix": "idea"
+        "prefix": "txt2img"
       }
     }
   ],
@@ -146,18 +124,6 @@
       "out": "latent",
       "to": "sampler",
       "in": "latent_image"
-    },
-    {
-      "from": "idea",
-      "out": "text",
-      "to": "llm",
-      "in": "prompt"
-    },
-    {
-      "from": "llm",
-      "out": "text",
-      "to": "pos",
-      "in": "text"
     },
     {
       "from": "sampler",

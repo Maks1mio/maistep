@@ -59,10 +59,10 @@
       "props": {
         "seed": -1,
         "steps": 20,
-        "cfg": 6.0,
+        "cfg": 6,
         "sampler_name": "euler_ancestral",
         "scheduler": "normal",
-        "denoise": 1.0
+        "denoise": 1
       }
     },
     {
@@ -84,7 +84,7 @@
       "props": {
         "seed": -1,
         "steps": 12,
-        "cfg": 6.0,
+        "cfg": 6,
         "sampler_name": "euler_ancestral",
         "scheduler": "normal",
         "denoise": 0.5

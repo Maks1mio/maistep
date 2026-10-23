@@ -325,9 +325,8 @@ def status(refresh=False, deep=False):
     pypi = cache.get("pypi") or {}
 
     app_cfg = m.get("app") or {}
-    pkg = _read_json(ROOT / "package.json", {})
-    tauri = _read_json(ROOT / "app" / "src-tauri" / "tauri.conf.json", {})
-    app_installed = str(tauri.get("version") or pkg.get("version") or "0.0.0")
+    from maistep import updater
+    app_installed = updater.installed_version()
     app_rec = str(app_cfg.get("stable") or app_installed)
     gh = cache.get("app") or {}
     app_latest = gh.get("version") or app_rec

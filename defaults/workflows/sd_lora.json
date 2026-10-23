@@ -1,11 +1,12 @@
 {
   "title": "SD: txt2img + 2 LoRA",
+  "about": "Две Load LoRA цепочкой между чекпоинтом и промптами. Выберите LoRA щелчком по полю lora_name (галерея библиотеки); пустое поле — LoRA пропускается.",
   "nodes": [
     {
       "id": "ckpt",
       "type": "sd.checkpoint",
       "x": 40,
-      "y": 190,
+      "y": 200,
       "props": {
         "ckpt_name": "waiIllustriousSDXL_v160.safetensors"
       }
@@ -16,9 +17,9 @@
       "x": 380,
       "y": 140,
       "props": {
-        "lora_name": "Gachiakuta_Manga_Style_WAI.safetensors",
-        "strength_model": 1,
-        "strength_clip": 1
+        "lora_name": "",
+        "strength_model": 0.8,
+        "strength_clip": 0.8
       }
     },
     {
@@ -27,11 +28,10 @@
       "x": 380,
       "y": 350,
       "props": {
-        "lora_name": "long_nipples_addift_v2.safetensors",
-        "strength_model": 1,
-        "strength_clip": 1.6
-      },
-      "mode": "mute"
+        "lora_name": "",
+        "strength_model": 0.8,
+        "strength_clip": 0.8
+      }
     },
     {
       "id": "skip",
@@ -48,10 +48,9 @@
       "x": 1060,
       "y": 0,
       "props": {
-        "text": "long nipples, shiny skin, masterpiece, best quality, amazing quality, gachiakuta"
+        "text": "masterpiece, best quality, amazing quality, 1girl, solo, cafe by the sea at night, paper lanterns, warm light, looking at viewer, smile, scenery"
       },
-      "title": "Positive",
-      "w": 290
+      "title": "Positive"
     },
     {
       "id": "neg",
@@ -190,6 +189,5 @@
       "to": "save",
       "in": "image"
     }
-  ],
-  "about": "Две Load LoRA цепочкой между чекпоинтом и промптами. Выберите LoRA щелчком по полю lora_name (галерея библиотеки); пустое поле — LoRA пропускается."
+  ]
 }
