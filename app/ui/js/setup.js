@@ -55,8 +55,9 @@ function installScreen() {
   const input = h('input', { value: info.dir, spellcheck: false });
   const note = h('div.st-note');
   const desktop = check('Ярлык на рабочем столе', null, true);
-  const menu = check('Ярлык в меню «Пуск»', null, false);
-  const python = check('Портативный Python 3.12', 'скачать ~22 МБ в папку приложения — не нужен Python в системе', true);
+  const linux = info.os === 'linux';
+  const menu = check(linux ? 'Ярлык в меню приложений' : 'Ярлык в меню «Пуск»', null, linux);
+  const python = check('Портативный Python 3.12', `скачать ~${linux ? 34 : 22} МБ в папку приложения — не нужен Python в системе`, true);
   const go = btn('primary', 'Установить', () => runInstall(input.value, desktop.input.checked, menu.input.checked, python.input.checked));
   let seq = 0;
   const validate = async () => {
@@ -107,7 +108,7 @@ function doneScreen(dir) {
     head('maistep установлен', dir),
     h('div.st-body', {},
       h('div.st-big', {}, 'Готово.'),
-      h('div.st-box', {}, 'Удалить можно файлом ', h('b', {}, 'uninstall.cmd'), ' в папке приложения. ',
+      h('div.st-box', {}, 'Удалить можно файлом ', h('b', {}, info.os === 'linux' ? 'uninstall.sh' : 'uninstall.cmd'), ' в папке приложения. ',
         'Обновления приходят сами: изменившиеся файлы скачиваются в фоне и применяются при перезапуске.'),
       launch.el),
     foot(btn('secondary', 'Открыть папку', () => call('setup_open_dir', { dir })), h('span.grow'),

@@ -1,6 +1,7 @@
 // Обновления: скачивает Python-сервер (server/maistep/updater.py) в update/staging/, здесь — применение при старте,
-// до запуска сервера и окна: файлы переносятся на место, лишние удаляются, maistep.exe подменяется (запущенный exe
-// на Windows можно переименовать в .old) и процесс перезапускается. Итог — update/applied.json (его читает сервер).
+// до запуска сервера и окна: файлы переносятся на место, лишние удаляются, бинарь подменяется (Windows — maistep.exe:
+// запущенный exe можно переименовать в .old; Linux — maistep.AppImage: файл заменяется на месте) и процесс
+// перезапускается. Итог — update/applied.json (его читает сервер).
 // UI грузится с диска (app/ui), вшитый в exe — запасной: обновление интерфейса не требует нового exe.
 use std::borrow::Cow;
 use std::fs;
@@ -21,14 +22,31 @@ pub fn safe_rel(rel: &str) -> Option<PathBuf> {
     ok.then(|| p.to_path_buf())
 }
 
+// Имя бинаря приложения в папке установки
+pub const BIN: &str = if cfg!(windows) { "maistep.exe" } else { "maistep.AppImage" };
+
+// Сам бинарь: в AppImage current_exe — файл внутри смонтированного образа, настоящий путь — в $APPIMAGE
+pub fn self_path() -> std::io::Result<PathBuf> {
+    match std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()) {
+        Some(p) => Ok(PathBuf::from(p)),
+        None => std::env::current_exe(),
+    }
+}
+
+fn old_path(exe: &Path) -> PathBuf {
+    let mut s = exe.as_os_str().to_owned();
+    s.push(".old");
+    PathBuf::from(s)
+}
+
 fn write_result(root: &Path, v: &Value) {
     let _ = fs::write(root.join("update").join("applied.json"), format!("{v}\n"));
 }
 
 // Остаток прошлой подмены exe
 pub fn cleanup() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = fs::remove_file(exe.with_extension("exe.old"));
+    if let Ok(exe) = self_path() {
+        let _ = fs::remove_file(old_path(&exe));
     }
 }
 
@@ -69,23 +87,11 @@ pub fn apply_pending(root: &Path) -> bool {
         }
     }
     let mut exe_swapped = false;
-    let new_exe = staging.join("maistep.exe");
+    let new_exe = staging.join(BIN);
     if plan["exe"].as_bool() == Some(true) && new_exe.is_file() {
-        match std::env::current_exe() {
-            Ok(exe) => {
-                let old = exe.with_extension("exe.old");
-                let _ = fs::remove_file(&old);
-                match fs::rename(&exe, &old).and_then(|_| fs::rename(&new_exe, &exe)) {
-                    Ok(()) => exe_swapped = true,
-                    Err(e) => {
-                        if !exe.exists() {
-                            let _ = fs::rename(&old, &exe);
-                        }
-                        errors.push(format!("maistep.exe: {e}"));
-                    }
-                }
-            }
-            Err(e) => errors.push(format!("maistep.exe: {e}")),
+        match self_path().and_then(|exe| swap_bin(&new_exe, &exe)) {
+            Ok(()) => exe_swapped = true,
+            Err(e) => errors.push(format!("{BIN}: {e}")),
         }
     }
     if !errors.is_empty() {
@@ -100,6 +106,24 @@ pub fn apply_pending(root: &Path) -> bool {
     let _ = fs::remove_dir_all(&staging);
     write_result(root, &json!({ "ok": true, "version": version, "exe": exe_swapped }));
     exe_swapped
+}
+
+// Новый бинарь на место запущенного: старый уходит в .old (Windows не даёт перезаписать запущенный exe,
+// но даёт переименовать; на Linux так же можно — процесс держит inode, а не имя)
+fn swap_bin(new: &Path, exe: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(new, fs::Permissions::from_mode(0o755))?;
+    }
+    let old = old_path(exe);
+    let _ = fs::remove_file(&old);
+    fs::rename(exe, &old)?;
+    fs::rename(new, exe).or_else(|_| fs::copy(new, exe).map(|_| ())).inspect_err(|_| {
+        if !exe.exists() {
+            let _ = fs::rename(&old, exe);
+        }
+    })
 }
 
 // UI с диска (app/ui), иначе — вшитый при сборке
@@ -150,6 +174,21 @@ impl Assets<Wry> for NoAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swaps_binary_and_keeps_old() {
+        let dir = std::env::temp_dir().join(format!("maistep-swap-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (exe, new) = (dir.join(BIN), dir.join("new.bin"));
+        fs::write(&exe, "old").unwrap();
+        fs::write(&new, "new").unwrap();
+        swap_bin(&new, &exe).unwrap();
+        assert_eq!(fs::read_to_string(&exe).unwrap(), "new");
+        assert_eq!(fs::read_to_string(old_path(&exe)).unwrap(), "old");
+        assert!(!new.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn applies_staged_files_and_keeps_user_data() {

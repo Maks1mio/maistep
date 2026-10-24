@@ -17,7 +17,7 @@ use tauri::{Manager, WebviewWindowBuilder};
 // Корень проекта — папка с server/main.py (ищем сначала от exe вверх, потом от текущей папки)
 fn find_root() -> PathBuf {
     let mut bases = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = update::self_path() {
         if let Some(dir) = exe.parent() {
             bases.push(dir.to_owned());
         }
@@ -83,8 +83,8 @@ fn main() {
     let root = find_root();
     update::cleanup();
     if update::apply_pending(&root) {
-        // новый maistep.exe уже на месте старого — запускаем его
-        if let Ok(exe) = std::env::current_exe() {
+        // новый бинарь уже на месте старого — запускаем его
+        if let Ok(exe) = update::self_path() {
             if std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().is_ok() {
                 return;
             }

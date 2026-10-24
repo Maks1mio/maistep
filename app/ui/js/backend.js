@@ -149,6 +149,7 @@ export function componentsStatus({ refresh = false, deep = false } = {}) {
 }
 export const installComponents = (ids, mode = 'recommended') => api('/api/components/install', { ids, mode });
 export const cancelComponents = () => api('/api/components/cancel', {});
+export const setComponentsVariant = (variant, gfx) => api('/api/components/variant', { variant, gfx });
 export const updateStatus = (check = false) => api(`/api/update${check ? '?check=1' : ''}`);
 export const downloadUpdate = () => api('/api/update/download', {});
 

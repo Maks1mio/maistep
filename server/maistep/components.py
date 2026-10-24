@@ -142,13 +142,13 @@ def installed(py=None):
     if _versions["key"] == key and time.time() - _versions["at"] < VERSIONS_TTL:
         return _versions["data"]
     script = (
-        "import json, importlib.metadata as md\n"
+        "import json, sys, importlib.metadata as md\n"
         f"names = {names!r}\n"
         "out, err = {}, {}\n"
         "for n in names:\n"
         "    try: out[n] = md.version(n)\n"
         "    except Exception as e: err[n] = type(e).__name__\n"
-        "print(json.dumps({'versions': out, 'errors': err}))\n"
+        "print(json.dumps({'versions': out, 'errors': err, 'python': '.'.join(map(str, sys.version_info[:3]))}))\n"
     )
     data = _run_json(py, script, 30)
     data.setdefault("versions", {})
@@ -158,7 +158,7 @@ def installed(py=None):
 
 
 def deep_status():
-    """CUDA и видеопамять (запускает torch в отдельном процессе, кэш 5 мин)."""
+    """CUDA/ROCm и видеопамять (запускает torch в отдельном процессе, кэш 5 мин)."""
     info = python_info()
     if _deep["key"] == info["path"] and time.time() - _deep["at"] < DEEP_TTL:
         return _deep["data"]
@@ -166,10 +166,11 @@ def deep_status():
         "import json\n"
         "try:\n"
         "    import torch\n"
-        "    d = {'torch': torch.__version__, 'cuda': bool(torch.cuda.is_available())}\n"
+        "    d = {'torch': torch.__version__, 'cuda': bool(torch.cuda.is_available()), 'hip': getattr(torch.version, 'hip', None)}\n"
         "    if d['cuda']:\n"
         "        p = torch.cuda.get_device_properties(0)\n"
-        "        d.update(device=p.name, vram_gb=round(p.total_memory / 2**30, 1), capability=f'{p.major}.{p.minor}')\n"
+        "        d.update(device=p.name, vram_gb=round(p.total_memory / 2**30, 1), capability=f'{p.major}.{p.minor}',\n"
+        "                 arch=(getattr(p, 'gcnArchName', '') or '').split(':')[0] or None)\n"
         "    print(json.dumps(d))\n"
         "except Exception as e:\n"
         "    print(json.dumps({'error': f'{type(e).__name__}: {e}'}))\n"
@@ -177,6 +178,168 @@ def deep_status():
     data = _run_json(info["path"], script, 120)
     _deep.update(key=info["path"], at=time.time(), data=data)
     return data
+
+
+# ---------- видеокарта и вариант torch ----------
+# Сборка torch зависит от видеокарты: CUDA (NVIDIA), ROCm (AMD, пакет под архитектуру gfx — с индекса AMD) или CPU.
+# Видеокарта определяется без torch: Linux — sysfs (/sys/class/kfd даёт архитектуру AMD), Windows — WMI + название.
+# Ручной выбор — user/settings.json → "components": {"torch_variant": "auto|cuda|rocm|cpu", "gfx": "gfx1201"}.
+GPU_TTL = 600
+_gpu = {"at": 0, "data": None}
+VARIANTS = ("cuda", "rocm", "cpu")
+
+# Windows не сообщает архитектуру AMD — по названию карты (как таблицы ROCm)
+_AMD_NAMES = [
+    (r"RX\s*90[67]0|R9[67]00", "gfx1201"), (r"RX\s*906\d", "gfx1200"),
+    (r"RX\s*79[05]0", "gfx1100"), (r"RX\s*7[78]\d0", "gfx1101"), (r"RX\s*76\d0", "gfx1102"),
+    (r"RX\s*6[89]\d0", "gfx1030"), (r"RX\s*67\d0", "gfx1031"), (r"RX\s*66\d0", "gfx1032"), (r"RX\s*6[45]\d0", "gfx1034"),
+    (r"80[56]0S", "gfx1151"), (r"8[89]0M", "gfx1150"), (r"7[68]0M", "gfx1103"),
+]
+
+
+def _amd_gfx(name):
+    return next((g for pat, g in _AMD_NAMES if re.search(pat, name or "", re.I)), None)
+
+
+def _gfx_from_target(v):
+    """gfx_target_version из kfd: 120001 → gfx1201, 90010 → gfx90a."""
+    v = int(v)
+    major, minor, step = v // 10000, v // 100 % 100, v % 100
+    return f"gfx{major}{minor:x}{step:x}"
+
+
+def _gpus_linux():
+    out = []
+    for node in sorted(Path("/sys/class/kfd/kfd/topology/nodes").glob("*/properties")):
+        try:
+            props = dict(line.split(None, 1) for line in node.read_text().splitlines() if " " in line)
+        except OSError:
+            continue
+        if int(props.get("simd_count", "0")) > 0 and int(props.get("gfx_target_version", "0")) > 0:
+            gfx = _gfx_from_target(props["gfx_target_version"])
+            name = ""
+            try:
+                name = (node.parent / "name").read_text().strip()
+            except OSError:
+                pass
+            out.append({"vendor": "amd", "name": name or gfx, "gfx": gfx})
+    for card in sorted(Path("/sys/class/drm").glob("card[0-9]*/device/vendor")):
+        try:
+            if card.read_text().strip() == "0x10de":
+                out.append({"vendor": "nvidia", "name": "NVIDIA", "gfx": None})
+                break
+        except OSError:
+            pass
+    return out
+
+
+def _gpus_windows():
+    script = "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name | ConvertTo-Json -Compress"
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=20, creationflags=0x08000000)
+        names = json.loads(r.stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    out = []
+    for name in [names] if isinstance(names, str) else names or []:
+        if re.search(r"NVIDIA|GeForce|Quadro|Tesla", name, re.I):
+            out.append({"vendor": "nvidia", "name": name, "gfx": None})
+        elif re.search(r"AMD|Radeon", name, re.I):
+            out.append({"vendor": "amd", "name": name, "gfx": _amd_gfx(name)})
+    return out
+
+
+def _nvidia_names():
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return []
+    try:
+        r = subprocess.run([exe, "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True,
+                           timeout=15, creationflags=0x08000000 if sys.platform == "win32" else 0)
+        return [n.strip() for n in (r.stdout or "").splitlines() if n.strip()]
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
+def gpu_info():
+    """Видеокарты и выбранный вариант torch: {"gpus": [...], "auto": …, "variant": …, "gfx": …}."""
+    if _gpu["data"] is None or time.time() - _gpu["at"] > GPU_TTL:
+        gpus = _gpus_windows() if sys.platform == "win32" else _gpus_linux() if sys.platform.startswith("linux") else []
+        nv = _nvidia_names()
+        if nv:
+            gpus = [g for g in gpus if g["vendor"] != "nvidia"] + [{"vendor": "nvidia", "name": n, "gfx": None} for n in nv]
+        _gpu.update(at=time.time(), data=gpus)
+    gpus = _gpu["data"]
+    cfg = _settings().get("components") or {}
+    amd = next((g for g in gpus if g["vendor"] == "amd" and g["gfx"]), None)
+    auto = "cuda" if any(g["vendor"] == "nvidia" for g in gpus) else "rocm" if amd else "cpu"
+    variant = cfg.get("torch_variant") if cfg.get("torch_variant") in VARIANTS else auto
+    gfx = str(cfg.get("gfx") or "").strip() or (amd or {}).get("gfx")
+    return {"gpus": gpus, "auto": auto, "variant": variant, "manual": cfg.get("torch_variant") in VARIANTS, "gfx": gfx}
+
+
+def set_variant(variant, gfx=None):
+    """Ручной выбор сборки torch (auto — по видеокарте)."""
+    if variant not in (*VARIANTS, "auto"):
+        return {"error": f"неизвестный вариант: {variant}"}
+    if gfx is not None and gfx and not re.fullmatch(r"gfx[0-9a-f]{3,4}x?", str(gfx)):
+        return {"error": f"архитектура AMD вида gfx1201, а не «{gfx}»"}
+    s = _settings()
+    cfg = s.setdefault("components", {})
+    if variant == "auto":
+        cfg.pop("torch_variant", None)
+    else:
+        cfg["torch_variant"] = variant
+    if gfx is not None:
+        if gfx:
+            cfg["gfx"] = gfx
+        else:
+            cfg.pop("gfx", None)
+    _write_json(SETTINGS, s)
+    return status()
+
+
+def _installed_variant(version):
+    """Сборка установленного torch по локальной части версии: +cu130 / +rocm10.1.0 / +cpu."""
+    local = str(version or "").partition("+")[2].lower()
+    if "rocm" in local:
+        return "rocm"
+    if local.startswith("cu"):
+        return "cuda"
+    if local == "cpu" or sys.platform != "linux":
+        return "cpu"
+    return "cuda"  # torch с PyPI на Linux — CUDA-сборка
+
+
+def _resolve(c, gpu):
+    """Компонент с подставленным вариантом сборки (для torch — по видеокарте)."""
+    vs = c.get("variants")
+    if not isinstance(vs, dict) or not vs:
+        return c
+    name = gpu["variant"] if gpu["variant"] in vs else next(iter(vs))
+    out = {k: v for k, v in c.items() if k != "variants"}
+    out.update({k: v for k, v in vs[name].items() if k != "title"})
+    out["variant"] = name
+    out["variants"] = [{"id": k, "title": v.get("title") or k} for k, v in vs.items()]
+    if out.get("extra"):
+        out["extra"] = out["extra"].replace("{gfx}", gpu.get("gfx") or "")
+    return out
+
+
+def _spec(c, version):
+    """pip-спецификация: torch[device-gfx1201]==2.14.0+rocm10.1.0."""
+    extra = f"[{c['extra']}]" if c.get("extra") else ""
+    local = f"+{c['local']}" if c.get("local") else ""
+    return f"{c['package']}{extra}=={version}{local}"
+
+
+def _py_ok(c, py):
+    """Подходит ли версия Python сборке (у ROCm-колёс AMD — до 3.14)."""
+    m = re.fullmatch(r"<(\d+)\.(\d+)", str(c.get("python_lt") or ""))
+    if not m or not py:
+        return True
+    return tuple(int(x) for x in py.split(".")[:2]) < (int(m[1]), int(m[2]))
 
 
 # ---------- манифест и обновления ----------
@@ -338,14 +501,24 @@ def status(refresh=False, deep=False):
     elif _vcmp(app_installed, app_rec) > 0:
         app_status = "newer"
 
+    gpu = gpu_info()
+    py = ver.get("python")
     rows = []
-    for c in m["python"]["components"]:
+    for c in (_resolve(c, gpu) for c in m["python"]["components"]):
         cid, package = c["id"], c["package"]
         inst = versions.get(package)
         rec = str(c.get("recommended") or "")
         latest = (pypi.get(package) or {}).get("version")
+        inst_variant = _installed_variant(inst) if inst and c.get("variant") else None
+        problem = None
+        if c.get("variant") == "rocm" and not gpu.get("gfx"):
+            problem = "не удалось определить архитектуру AMD — укажите её (например gfx1201)"
+        elif not _py_ok(c, py):
+            problem = f"сборка не поддерживает Python {py} (нужен {c['python_lt']})"
         if inst is None:
             st = "missing"
+        elif inst_variant and inst_variant != c["variant"]:
+            st = "update"  # стоит сборка под другую видеокарту
         elif rec and _vcmp(_base(inst), rec) < 0:
             st = "update"
         elif rec and _vcmp(_base(inst), rec) > 0:
@@ -354,12 +527,15 @@ def status(refresh=False, deep=False):
             st = "ok"
         rows.append({
             "id": cid, "title": c.get("title") or package, "package": package, "group": c.get("group") or "Прочее",
+            "tabs": c.get("tabs") or [],
             "required": bool(c.get("required")), "note": c.get("note") or "", "size": c.get("size") or "",
             "installed": inst, "installed_base": _base(inst) if inst else None, "recommended": rec,
             "latest": latest, "latest_newer": bool(latest and rec and _vcmp(latest, rec) > 0),
             "status": st, "index_url": c.get("index_url"),
             "pypi": c.get("pypi") is not False,
-            "spec": f"{package}=={rec}" if rec else package,
+            "spec": _spec(c, rec) if rec else package,
+            "variant": c.get("variant"), "variants": c.get("variants"), "installed_variant": inst_variant,
+            "problem": problem,
         })
     data = {
         "app": {"name": app_cfg.get("name") or "maistep", "installed": app_installed, "recommended": app_rec,
@@ -369,7 +545,7 @@ def status(refresh=False, deep=False):
         "python": {"path": info["path"], "source": info["source"], "is_venv": info["is_venv"],
                    "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
                    "requires": ((m.get("python") or {}).get("requires") or "")},
-        "deep": deep_status() if deep else None,
+        "deep": deep_status() if deep else None, "gpu": gpu,
         "components": rows, "summary": _summary(rows), "channel": m.get("channel") or "stable",
         "checked_at": cache.get("at"), "job": job_snapshot(),
         "errors": ver.get("errors") or {},
@@ -418,16 +594,26 @@ def install(ids=None, mode="recommended"):
         if _job and _job.state == "running":
             return {"error": "установка уже идёт", "job": _job.snap()}
         m = manifest()
-        comps = {c["id"]: c for c in m["python"]["components"]}
+        gpu = gpu_info()
+        comps = {c["id"]: _resolve(c, gpu) for c in m["python"]["components"]}
         wanted = [i for i in (ids or []) if i in comps]
         if ids and len(wanted) != len(ids):
             return {"error": f"неизвестные компоненты: {', '.join(set(ids) - set(wanted))}"}
         info = python_info()
-        versions = (installed(info["path"]).get("versions") or {})
+        ver = installed(info["path"])
+        versions = ver.get("versions") or {}
         pypi = _cache().get("pypi") or {}
+        mismatch = lambda c: bool(c.get("variant") and versions.get(c["package"]) and
+                                  _installed_variant(versions[c["package"]]) != c["variant"])
         if not wanted:
-            wanted = [cid for cid, c in comps.items() if versions.get(c["package"]) is None or
+            wanted = [cid for cid, c in comps.items() if versions.get(c["package"]) is None or mismatch(c) or
                       _vcmp(_base(versions[c["package"]]), c.get("recommended") or "0") < 0]
+        for cid in wanted:
+            c = comps[cid]
+            if c.get("variant") == "rocm" and not gpu.get("gfx"):
+                return {"error": "не удалось определить архитектуру AMD — укажите её в карточке PyTorch (например gfx1201)"}
+            if not _py_ok(c, ver.get("python")):
+                return {"error": f"{c['title']}: сборка не поддерживает Python {ver.get('python')} (нужен {c['python_lt']})"}
         if not wanted:
             _job = Job([], mode)
             _job.state = "done"
@@ -447,11 +633,10 @@ def install(ids=None, mode="recommended"):
                 target = (pypi.get(c["package"]) or {}).get("version") or rec
             if not target:
                 continue
-            if inst is not None and _vcmp(_base(inst), target) >= 0:
+            if inst is not None and _vcmp(_base(inst), target) >= 0 and not mismatch(c):
                 continue
             chosen.append(c)
-            spec = f"{c['package']}=={target}"
-            groups.setdefault(c.get("index_url"), []).append(spec)
+            groups.setdefault(c.get("index_url"), []).append(_spec(c, target))
         if not chosen:
             _job = Job(wanted, mode)
             _job.state = "done"

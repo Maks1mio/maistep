@@ -1,6 +1,8 @@
 # Релиз maistep: на каждый push в main, где "version" в package.json стал новым (нет релиза v<версия>),
-# собирает на Windows установщик + maistep.exe + manifest.json (scripts/release.mjs) и публикует GitHub Release.
-# Установленные копии видят релиз при старте / раз в час и докачивают только изменившиеся файлы (server/maistep/updater.py).
+# собирает установщики Windows и Linux (scripts/release.mjs build на своей ОС), из обоих бинарей — один файл
+# обновления maistep-<версия>-update.mai (pack) и публикует GitHub Release.
+# Установленные копии видят релиз при старте / раз в час и докачивают только изменившиеся куски .mai
+# (server/maistep/updater.py).
 name: release
 
 on:
@@ -16,19 +18,19 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
-  release:
-    runs-on: windows-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      new: ${{ steps.ver.outputs.new }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # release.mjs проверяет, что коммит есть в origin
-
       - name: Новая версия?
         id: ver
-        shell: bash
         run: |
           v=$(node -p "require('./package.json').version")
           echo "version=$v" >> "$GITHUB_OUTPUT"
@@ -39,20 +41,69 @@ jobs:
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
+  build:
+    needs: check
+    if: needs.check.outputs.new == 'true'
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            plat: windows-x86_64
+          # 22.04 — старый glibc: AppImage запустится и на более старых дистрибутивах
+          - os: ubuntu-22.04
+            plat: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        if: steps.ver.outputs.new == 'true'
         with:
           node-version: 22
-
       - uses: Swatinem/rust-cache@v2
-        if: steps.ver.outputs.new == 'true'
         with:
           workspaces: app/src-tauri
-
+          key: ${{ matrix.plat }}
+      - name: Библиотеки Tauri (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
       - name: Сборка
-        if: steps.ver.outputs.new == 'true'
         run: node scripts/release.mjs build
+      - name: Проверка установщика без окна (Linux)
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          setup=$(ls dist/maistep-*-setup-linux.AppImage)
+          "$setup" --silent --dir "$RUNNER_TEMP/inst"
+          test -x "$RUNNER_TEMP/inst/maistep.AppImage"
+          test -f "$RUNNER_TEMP/inst/server/main.py"
+          test -f "$RUNNER_TEMP/inst/manifest.json"
+          cmp <(head -c "$(stat -c %s "$RUNNER_TEMP/inst/maistep.AppImage")" "$setup") "$RUNNER_TEMP/inst/maistep.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.plat }}
+          path: |
+            dist/bin/
+            dist/maistep-*-setup-*
+          retention-days: 3
 
-      - name: Публикация v${{ steps.ver.outputs.version }}
-        if: steps.ver.outputs.new == 'true'
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # release.mjs проверяет, что коммит есть в origin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Файл обновления
+        run: node scripts/release.mjs pack
+      - name: Публикация v${{ needs.check.outputs.version }}
         run: node scripts/release.mjs publish

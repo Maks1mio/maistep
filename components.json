@@ -11,21 +11,55 @@
     "components": [
       {
         "id": "torch",
-        "title": "PyTorch (CUDA)",
+        "title": "PyTorch",
         "package": "torch",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "2.14.1",
-        "index_url": "https://download.pytorch.org/whl/cu130",
         "required": true,
         "pypi": false,
-        "size": "~3,5 ГБ",
-        "note": "CUDA-сборка с индекса PyTorch. Для CPU: --index-url https://download.pytorch.org/whl/cpu"
+        "note": "Сборка под видеокарту: CUDA — NVIDIA, ROCm — AMD (Radeon RX 6000–9000), CPU — без видеокарты (очень медленно)",
+        "variants": {
+          "cuda": {
+            "title": "CUDA (NVIDIA)",
+            "recommended": "2.14.1",
+            "local": "cu130",
+            "index_url": "https://download.pytorch.org/whl/cu130",
+            "size": "~3,5 ГБ"
+          },
+          "rocm": {
+            "title": "ROCm (AMD)",
+            "recommended": "2.14.0",
+            "local": "rocm10.1.0",
+            "extra": "device-{gfx}",
+            "index_url": "https://stable.repo.amd.com/rocm/whl-next/",
+            "python_lt": "<3.15",
+            "size": "~3 ГБ",
+            "note": "Сборка AMD под архитектуру карты (RX 9070 — gfx1201). Windows — нужен свежий драйвер Adrenalin; Python 3.10–3.14"
+          },
+          "cpu": {
+            "title": "CPU",
+            "recommended": "2.14.1",
+            "local": "cpu",
+            "index_url": "https://download.pytorch.org/whl/cpu",
+            "size": "~250 МБ"
+          }
+        }
       },
       {
         "id": "diffusers",
         "title": "Diffusers",
         "package": "diffusers",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "0.41.0",
         "required": true,
         "size": "~1 МБ",
@@ -36,6 +70,11 @@
         "title": "Transformers",
         "package": "transformers",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "5.20.2",
         "required": true,
         "size": "~10 МБ",
@@ -46,6 +85,11 @@
         "title": "Accelerate",
         "package": "accelerate",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "1.15.0",
         "required": true,
         "size": "~300 КБ",
@@ -56,6 +100,11 @@
         "title": "PEFT",
         "package": "peft",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "0.21.2",
         "required": true,
         "size": "~500 КБ",
@@ -66,6 +115,11 @@
         "title": "Safetensors",
         "package": "safetensors",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "0.8.0",
         "required": true,
         "size": "~1 МБ",
@@ -76,6 +130,11 @@
         "title": "TorchSDE",
         "package": "torchsde",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "0.2.6",
         "required": true,
         "size": "~200 КБ",
@@ -86,6 +145,11 @@
         "title": "Hugging Face Hub",
         "package": "huggingface-hub",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "1.33.0",
         "required": true,
         "pypi": false,
@@ -97,6 +161,12 @@
         "title": "Pillow",
         "package": "pillow",
         "group": "Генерация",
+        "tabs": [
+          "graph",
+          "naizer",
+          "tocolar",
+          "agent"
+        ],
         "recommended": "13.0.0",
         "required": true,
         "size": "~3 МБ",
@@ -107,10 +177,16 @@
         "title": "Anthropic SDK",
         "package": "anthropic",
         "group": "LLM",
+        "tabs": [
+          "agent",
+          "graph",
+          "naizer",
+          "tocolar"
+        ],
         "recommended": "2.1.0",
         "required": false,
         "size": "~1 МБ",
-        "note": "Нода LLM: Claude и CheapVibeCode через официальный SDK"
+        "note": "Claude и CheapVibeCode через официальный SDK: AI Agent, нода LLM, контекст сцены ImageNaizer, цвета ToColar, перевод промптов"
       }
     ]
   }

@@ -20,6 +20,7 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   GET  /api/library/preview?id=cat/name превью модели (только файлы-превью из индекса)
   GET  /api/components?refresh=1&deep=1  компоненты: установлено/рекомендуется/последняя стабильная, установка
   POST /api/components/install { ids?, mode: recommended|missing|latest }  установка в .venv (SSE comp-log)
+  POST /api/components/variant { variant: auto|cuda|rocm|cpu, gfx? }  сборка torch под видеокарту
   GET  /api/civitai/search?q=&types=&bases=&sort=&period=&nsfw=1&limit=&cursor=  поиск Civitai
   GET  /api/civitai/model?id= | resolve?q=ссылка | jobs | tags | settings | meta
   POST /api/civitai/download { items: [{ model, version, file? }], root? } | cancel | retry | clear | reveal | delete { id }
@@ -431,6 +432,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.json({"ok": True})
         if u.path == "/api/components/install":
             r = components.install(data.get("ids") or [], data.get("mode") or "recommended")
+            return self.json(r, 409 if r.get("error") else 200)
+        if u.path == "/api/components/variant":
+            r = components.set_variant(data.get("variant") or "auto", data.get("gfx"))
             return self.json(r, 409 if r.get("error") else 200)
         if u.path == "/api/update/download":
             r = updater.download()

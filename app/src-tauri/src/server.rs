@@ -1,5 +1,6 @@
 // Сервер исполнения графов: `python -u server/main.py --port N` (по умолчанию 3300).
-// Python: MAISTEP_PYTHON, иначе .venv проекта, иначе портативный python/ из установщика, иначе `python` / `py -3` из PATH.
+// Python: MAISTEP_PYTHON, иначе .venv проекта, иначе портативный python/ из установщика, иначе `python` / `python3` /
+// `py -3` из PATH.
 // Вывод сервера идёт в консоль редактора (событие "console"), смена состояния — событие "server".
 // Перед запуском порт освобождается: если его держит python (сервер прошлого запуска), процесс завершается;
 // чужой процесс не трогаем — команда вернёт ошибку с его именем.
@@ -34,6 +35,24 @@ pub struct Status {
 
 pub type Shared = Arc<Mutex<Server>>;
 
+// Портативный Python установщика (python-build-standalone в <папка>/python)
+pub fn portable_python(root: &Path) -> PathBuf {
+    if cfg!(windows) { root.join("python").join("python.exe") } else { root.join("python").join("bin").join("python3") }
+}
+
+// Системный Python из PATH: команда и аргументы
+fn system_python() -> Option<(&'static str, Vec<&'static str>)> {
+    if run_hidden("python", &["--version"]).is_some() {
+        Some(("python", vec![]))
+    } else if !cfg!(windows) && run_hidden("python3", &["--version"]).is_some() {
+        Some(("python3", vec![]))
+    } else if cfg!(windows) && run_hidden("py", &["-3", "--version"]).is_some() {
+        Some(("py", vec!["-3"]))
+    } else {
+        None
+    }
+}
+
 pub fn status(s: &Shared) -> Status {
     let mut g = s.lock().unwrap();
     if let Some(ch) = g.child.as_mut() {
@@ -52,19 +71,11 @@ fn ensure_venv(app: &AppHandle, root: &Path) {
         return;
     }
     // портативный Python установщика (<папка>/python) — приоритетнее системного
-    let portable = root.join("python").join("python.exe");
-    let portable = portable.to_string_lossy().into_owned();
-    let base: Option<(&str, Vec<&str>)> = if cfg!(windows) && Path::new(&portable).is_file() {
-        Some((portable.as_str(), vec![]))
-    } else if run_hidden("python", &["--version"]).is_some() {
-        Some(("python", vec![]))
-    } else if cfg!(windows) && run_hidden("py", &["-3", "--version"]).is_some() {
-        Some(("py", vec!["-3"]))
-    } else {
-        None
-    };
+    let portable = portable_python(root).to_string_lossy().into_owned();
+    let base: Option<(&str, Vec<&str>)> = if Path::new(&portable).is_file() { Some((portable.as_str(), vec![])) } else { system_python() };
     let Some((cmd, mut args)) = base else {
-        let _ = app.emit("console", json!({ "src": "editor", "level": "error", "text": "Python 3.10+ не найден — переустановите maistep с галочкой «Портативный Python» или поставьте Python с python.org (галочка «Add to PATH») и перезапустите" }));
+        let hint = if cfg!(windows) { "поставьте Python с python.org (галочка «Add to PATH»)" } else { "поставьте python3 и python3-venv из пакетов системы" };
+        let _ = app.emit("console", json!({ "src": "editor", "level": "error", "text": format!("Python 3.10+ не найден — переустановите maistep с галочкой «Портативный Python» или {hint} и перезапустите") }));
         return;
     };
     let _ = app.emit("console", json!({ "src": "editor", "level": "info", "text": "первый запуск: создаётся .venv…" }));
@@ -89,17 +100,14 @@ fn python(root: &Path) -> (PathBuf, Vec<String>) {
             return (p, vec![]);
         }
     }
-    let portable = root.join("python").join("python.exe");
-    if cfg!(windows) && portable.is_file() {
+    let portable = portable_python(root);
+    if portable.is_file() {
         return (portable, vec![]);
     }
-    if run_hidden("python", &["--version"]).is_some() {
-        return (PathBuf::from("python"), vec![]);
+    match system_python() {
+        Some((cmd, args)) => (PathBuf::from(cmd), args.into_iter().map(String::from).collect()),
+        None => (PathBuf::from("python3"), vec![]),
     }
-    if cfg!(windows) && run_hidden("py", &["-3", "--version"]).is_some() {
-        return (PathBuf::from("py"), vec!["-3".into()]);
-    }
-    (PathBuf::from("python3"), vec![])
 }
 
 // ---------- освобождение порта ----------
@@ -135,6 +143,17 @@ fn port_pids(port: u16) -> Vec<u32> {
     if let Some(out) = run_hidden("lsof", &["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"]) {
         for line in out.lines() {
             if let Ok(pid) = line.trim().parse::<u32>() { pids.push(pid); }
+        }
+    }
+    // lsof есть не везде — тогда ss: … users:(("python3",pid=1234,fd=3))
+    #[cfg(not(windows))]
+    if pids.is_empty() {
+        if let Some(out) = run_hidden("ss", &["-ltnpH", &format!("sport = :{port}")]) {
+            for part in out.split("pid=").skip(1) {
+                if let Ok(pid) = part.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("").parse::<u32>() {
+                    if !pids.contains(&pid) { pids.push(pid); }
+                }
+            }
         }
     }
     pids

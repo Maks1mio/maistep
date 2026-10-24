@@ -24,6 +24,10 @@ VAE — по образцу ComfyUI (comfy/sd.py, model_management.py): dtype au
 места мало — UNet временно уходит на CPU (на Windows нехватка не даёт OOM, а уводит память в sysmem: секунды
 превращаются в минуты). Если места мало и без UNet — тайлы; NaN → повтор в fp32. Старое vae_fp16=false = fp32.
 keep=false — выгружать модель после каждого VAE Decode.
+
+AMD (ROCm-сборка torch, тот же API torch.cuda) — как в ComfyUI: на RDNA3+ MIOpen выключен (cudnn.enabled=False,
+свёртки так быстрее; MAISTEP_ENABLE_MIOPEN=1 — вернуть), в VAE внимание без SDPA (на AMD оно падает на больших
+разрешениях), на RDNA2 и старше нет bf16 — VAE в fp32.
 """
 import gc
 import os
@@ -33,6 +37,11 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")  # flash-внимание на RDNA3/4 (ROCm)
+
+# AMD до RDNA3: bf16 нет (у ComfyUI — тот же список)
+AMD_OLD = ("gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036", "gfx1010", "gfx1011", "gfx1012",
+           "gfx906", "gfx900", "gfx803")
 
 
 def _dbg(*args):
@@ -232,14 +241,45 @@ def _dtype(torch, opts, device):
     return {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}.get(opts["dtype"], torch.float16)
 
 
+def _amd_arch(torch):
+    """Архитектура AMD (gfx1201) в ROCm-сборке torch, иначе None."""
+    if not getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+        return None
+    try:
+        return (torch.cuda.get_device_properties(0).gcnArchName or "").split(":")[0] or None
+    except Exception:
+        return None
+
+
+def _gpu_setup(torch, device):
+    """Настройки бэкенда под карту (один раз на загрузку модели)."""
+    arch = _amd_arch(torch) if device == "cuda" else None
+    if arch and arch not in AMD_OLD and os.environ.get("MAISTEP_ENABLE_MIOPEN") != "1":
+        torch.backends.cudnn.enabled = False  # без MIOpen на RDNA3+ заметно быстрее (замеры ComfyUI)
+    return arch
+
+
+def _vae_attn(torch, vae):
+    """На AMD — внимание VAE без SDPA (как pytorch_attention_enabled_vae в ComfyUI)."""
+    if not _amd_arch(torch):
+        return
+    try:
+        from diffusers.models.attention_processor import AttnProcessor
+        vae.set_attn_processor(AttnProcessor())
+    except Exception:
+        pass
+
+
 def _vae_dtype(torch, opts, device):
     """Как vae_dtype в ComfyUI: bf16, если карта умеет (диапазон fp32 — у SDXL-VAE нет NaN и не нужен
-    перекаст в fp32), иначе fp16; fp32 — по настройке или на CPU."""
+    перекаст в fp32), иначе fp16; fp32 — по настройке, на CPU и на AMD без bf16 (RDNA2 и старше)."""
     v = opts["vae"]
     if device == "cpu" or v == "fp32":
         return torch.float32
     if v == "fp16":
         return torch.float16
+    if _amd_arch(torch) in AMD_OLD:
+        return torch.float32
     if v == "bf16" or torch.cuda.is_bf16_supported():
         return torch.bfloat16
     return torch.float16
@@ -302,9 +342,14 @@ def _pipe(path, opts, torch, diffusers, ctx=None):
     if st["key"] == key and st["pipe"] is not None:
         return st["pipe"]
     arch = _check_ckpt(path)
+    if ctx and (amd := _amd_arch(torch)):
+        ctx.log(f"AMD {amd}, ROCm {torch.version.hip}")
     _drop()
     device = "cuda" if opts["device"] in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
+    amd = _gpu_setup(torch, device)
     dt = _dtype(torch, opts, device)
+    if amd in AMD_OLD and dt == torch.bfloat16:
+        dt = torch.float16
     pipe = i2i_cls = None
     errors = []
     t0 = time.time()
@@ -339,6 +384,7 @@ def _pipe(path, opts, torch, diffusers, ctx=None):
     else:
         pipe.to(device)
     _vae_flags(pipe.vae, slicing=True)
+    _vae_attn(torch, pipe.vae)
     # cudnn.benchmark на новых картах подбирает свёртки минутами (VAE decode) — включаем только по флагу
     try:
         torch.backends.cudnn.benchmark = os.environ.get("MAISTEP_CUDNN_BENCHMARK") == "1"
@@ -711,6 +757,7 @@ def _vae_module(ctx, vae, torch, diffusers):
         m.config.force_upcast = False
         m.to(device)
         _vae_flags(m, slicing=True)
+        _vae_attn(torch, m)
         st["vaes"][str(vae.path)] = m
         if ctx:
             ctx.log(f"VAE loaded: {vae.path.name}")

@@ -47,6 +47,7 @@ export function addView(id, title, onShow, ic = null) {
   const el = document.getElementById(`v-${id}`);
   panels.set(id, { id, title, icon: WS.find(w => w[0] === id)?.[2] || ic || 'layout', el, view: true, onShow });
 }
+export const viewTitle = id => panels.get(id)?.title || id;
 function addPanel(id, title, ic, el) { panels.set(id, { id, title, icon: ic, el, view: false }); }
 
 export function initDock() {

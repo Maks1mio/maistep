@@ -2,12 +2,13 @@
 // недостающих пакетов в .venv с живым логом pip. Данные — /api/components сервера; события SSE — components, comp-log.
 // Обновления приложения — /api/update (server/maistep/updater.py): изменившиеся файлы релиза качаются в фоне,
 // применяются при перезапуске окна (команда app_restart). События SSE — update.
+// У компонента — вкладки, которым он нужен (tabs в components.json); у torch — сборка под видеокарту (CUDA/ROCm/CPU).
 import { h } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector } from './inspector.js';
 import { icon } from './icons.js';
-import { isShown, openWorkspace } from './dock.js';
-import { componentsStatus, installComponents, cancelComponents, updateStatus, downloadUpdate } from './backend.js';
+import { isShown, openWorkspace, viewTitle } from './dock.js';
+import { componentsStatus, installComponents, cancelComponents, updateStatus, downloadUpdate, setComponentsVariant } from './backend.js';
 import { messageBox } from './kit.js';
 import { openExternal, invoke, isTauri } from './api.js';
 
@@ -20,10 +21,16 @@ let rechecking = new Set(); // пакеты только что поставле
 let viewEl = null, bodyEl = null, logEl = null;
 const log = (level, text) => emit('log', { src: 'editor', level, text });
 
-const CHIP = { checking: ['info', 'проверка…'], ok: ['ok', 'установлено'], update: ['warn', 'обновите'], missing: ['bad', 'не установлено'], newer: ['info', 'новее рекомендованной'] };
+const CHIP = { checking: ['info', 'проверка…'], ok: ['ok', 'установлено'], update: ['warn', 'обновите'], missing: ['bad', 'не установлено'], newer: ['info', 'новее рекомендованной'], variant: ['warn', 'другая сборка'] };
+const VARIANT = { cuda: 'CUDA', rocm: 'ROCm', cpu: 'CPU' };
+// стоит сборка torch под другую видеокарту
+const wrongBuild = c => !!(c.installed_variant && c.variant && c.installed_variant !== c.variant);
+// фильтр слева: группа или вкладка ('tab:naizer')
+const matches = c => !group || (group.startsWith('tab:') ? (c.tabs || []).includes(group.slice(4)) : c.group === group);
+const tabsLine = c => (c.tabs?.length ? `нужен для: ${c.tabs.map(viewTitle).join(', ')}` : '');
 
-function statusChip(st) {
-  const [cls, text] = CHIP[st] || ['info', st || '—'];
+function statusChip(st, c = null) {
+  const [cls, text] = CHIP[c && wrongBuild(c) ? 'variant' : st] || ['info', st || '—'];
   return h(`span.cmp-chip.${cls}`, {}, text);
 }
 
@@ -110,7 +117,7 @@ function appCard() {
   const a = data?.app, u = upd;
   if (!a) return null;
   const st = u?.status || 'idle', ver = u?.version;
-  const size = u ? `${u.files || 0} файл(ов)${u.exe ? ' + maistep.exe' : ''}, ${mb(u.bytes || 0)}` : '';
+  const size = u ? `${u.files || 0} файл(ов)${u.exe ? ` + ${u.bin || 'maistep.exe'}` : ''}, ${mb(u.bytes || 0)}` : '';
   let text = 'Установлена последняя версия.', action = statusChip('ok');
   if (u?.dev) {
     text = `git-копия — обновление через git pull${ver ? ` (в релизах есть ${ver})` : ''}.`;
@@ -146,25 +153,27 @@ function appCard() {
 function componentRow(c) {
   const busy = job?.state === 'running';
   let action = null;
-  if (c.status === 'missing') action = h('button.primary', { disabled: busy, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), 'Установить');
-  else if (c.status === 'update') action = h('button.primary', { disabled: busy, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), `Обновить до ${c.recommended}`);
+  if (c.status === 'missing') action = h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), 'Установить');
+  else if (c.status === 'update') action = h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), wrongBuild(c) ? `Поставить ${VARIANT[c.variant]}` : `Обновить до ${c.recommended}`);
   else if (c.latest_newer) action = h('button', { disabled: busy, 'data-tip': `Последняя стабильная версия ${c.latest}. Рекомендуется ${c.recommended} (проверена).`, onclick: () => install([c.id], 'latest') }, icon('download', { size: 14 }), `До ${c.latest}`);
   if (rechecking.has(c.id)) action = h('span.dim', {}, 'проверка…');
   const sel = S.sel?.kind === 'component' && S.sel.id === c.id;
   return h(`tr${sel ? '.sel' : ''}`, { 'data-id': c.id, onclick: e => { if (!e.target.closest('button')) select({ kind: 'component', id: c.id }); } },
     h('td.cmp-name', {},
       h('div', {}, h('b', {}, c.title), c.required ? null : h('span.mbadge', { style: { marginLeft: '6px' } }, 'опционально')),
-      h('div.dim.mono', { style: { fontSize: '11px' } }, c.package + (c.size ? ` · ${c.size}` : '')),
-      c.note ? h('div.dim', { style: { fontSize: '11px' } }, c.note) : null),
+      h('div.dim.mono', { style: { fontSize: '11px' } }, c.package + (c.variant ? ` · ${VARIANT[c.variant] || c.variant}` : '') + (c.size ? ` · ${c.size}` : '')),
+      c.note ? h('div.dim', { style: { fontSize: '11px' } }, c.note) : null,
+      c.tabs?.length ? h('div.dim', { style: { fontSize: '11px' } }, tabsLine(c)) : null,
+      c.problem ? h('div', { style: { fontSize: '11px', color: 'var(--err)' } }, c.problem) : null),
     h('td.mono', {}, c.installed || h('span.dim', {}, '—')),
     h('td.mono', {}, c.recommended || '—'),
     h('td.mono', {}, c.latest || h('span.dim', {}, '—'), c.latest_newer ? h('span.mbadge', { style: { marginLeft: '6px' }, 'data-tip': 'Есть более новая стабильная версия; рекомендуется сначала проверенная из манифеста' }, 'new') : null),
-    h('td', {}, rechecking.has(c.id) ? statusChip('checking') : statusChip(c.status)),
+    h('td', {}, rechecking.has(c.id) ? statusChip('checking') : statusChip(c.status, c)),
     h('td.cmp-act', {}, action || h('span.dim', {}, '—')));
 }
 
 function table() {
-  const rows = (data?.components || []).filter(c => !group || c.group === group);
+  const rows = (data?.components || []).filter(matches);
   const groups = [...new Set(rows.map(c => c.group))];
   return h('div.cmp-tablewrap', {}, h('table.cmp-table', {},
     h('thead', {}, h('tr', {}, h('th', {}, 'Компонент'), h('th', {}, 'Установлено'), h('th', {}, 'Рекомендуется'), h('th', {}, 'Последняя стабильная'), h('th', {}, 'Статус'), h('th', {}, ''))),
@@ -219,6 +228,12 @@ export function componentsTreeItems() {
     const bad = list.filter(c => c.status !== 'ok' && c.status !== 'newer').length;
     rows.push({ depth: 1, ic: bad ? 'warning' : 'success', label: g, tag: bad ? `требуют внимания: ${bad}` : `${list.length} · ок`, sel: group === g, onClick: pick(g) });
   }
+  rows.push({ grp: 'Вкладки' });
+  for (const t of [...new Set(all.flatMap(c => c.tabs || []))]) {
+    const list = all.filter(c => (c.tabs || []).includes(t));
+    const bad = list.filter(c => c.required && c.status !== 'ok' && c.status !== 'newer').length;
+    rows.push({ depth: 1, ic: bad ? 'warning' : 'success', label: viewTitle(t), tag: bad ? `не готово: ${bad}` : `${list.length} · ок`, sel: group === `tab:${t}`, onClick: pick(`tab:${t}`) });
+  }
   rows.push({ grp: 'Сводка' });
   rows.push({ ic: 'success', label: 'Установлено', tag: String(sum.ok || 0) });
   rows.push({ ic: 'upload', label: 'Можно обновить', tag: String(sum.update || 0) });
@@ -227,12 +242,34 @@ export function componentsTreeItems() {
   const py = data.python || {}, deep = data.deep || {};
   rows.push({ grp: 'Среда' });
   rows.push({ ic: 'python', label: `Python ${py.version || '?'}`, tag: py.is_venv ? '.venv' : 'не .venv!', title: py.path || '' });
-  const cuda = !data.deep ? (loading ? 'CUDA: проверка…' : 'CUDA: не проверялась') : deep.cuda ? `CUDA · ${deep.device || 'GPU'}` : 'CUDA недоступна';
-  rows.push({ ic: 'lightning', label: cuda, tag: deep.vram_gb ? `${deep.vram_gb} ГБ` : '', title: deep.error || '' });
+  const api = deep.hip ? 'ROCm' : 'CUDA';
+  const cuda = !data.deep ? (loading ? 'GPU: проверка…' : 'GPU: не проверялась') : deep.cuda ? `${api} · ${deep.device || 'GPU'}` : 'GPU недоступна для torch';
+  rows.push({ ic: 'lightning', label: cuda, tag: deep.vram_gb ? `${deep.vram_gb} ГБ` : '', title: deep.error || deep.arch || '' });
+  const gpu = data.gpu || {};
+  for (const g of gpu.gpus || []) rows.push({ ic: 'image', label: g.name, tag: g.gfx || (g.vendor === 'nvidia' ? 'NVIDIA' : '') });
+  if (gpu.variant) rows.push({ ic: 'download', label: `Сборка torch: ${VARIANT[gpu.variant]}`, tag: gpu.manual ? 'вручную' : 'авто' });
   return rows;
 }
 
 // ---------- Inspector: карточка пакета ----------
+async function setVariant(variant, gfx) {
+  try { const d = await setComponentsVariant(variant, gfx); data = { ...d, deep: d.deep || data?.deep }; setBadge(badgeCount()); render(); emit('change', { kind: null }); }
+  catch (e) { log('error', `сборка torch: ${e.message}`); }
+}
+
+// Сборка torch: авто (по видеокарте) или вручную; для ROCm — архитектура карты
+function variantPicker(c) {
+  const gpu = data?.gpu || {};
+  const btn = (v, label) => h(`button${(v === 'auto' ? !gpu.manual : gpu.manual && gpu.variant === v) ? '.primary' : ''}`, { onclick: () => setVariant(v) }, label);
+  const gfx = h('input.mono', { value: gpu.gfx || '', placeholder: 'gfx1201', style: { width: '90px' },
+    onchange: e => setVariant(gpu.manual ? gpu.variant : 'auto', e.target.value.trim()) });
+  return h('div', {},
+    h('div.f', {}, h('label', {}, 'Сборка'), h('div.row', { style: { flexWrap: 'wrap', gap: '4px' } },
+      btn('auto', `Авто (${VARIANT[gpu.auto] || '?'})`), ...c.variants.map(v => btn(v.id, v.title)))),
+    c.variant === 'rocm' ? h('div.f', {}, h('label', {}, 'Архитектура AMD'), gfx) : null,
+    wrongBuild(c) ? h('div.hint', {}, `Сейчас стоит сборка ${VARIANT[c.installed_variant]} — «Поставить ${VARIANT[c.variant]}» заменит её.`) : null);
+}
+
 function compInspector(s) {
   const c = (data?.components || []).find(x => x.id === s.id);
   if (!c) return [h('div.dim', {}, 'компонент не найден')];
@@ -242,15 +279,18 @@ function compInspector(s) {
     h('h3', {}, icon('download', { size: 16 }), c.title),
     h('div.hint.mono', {}, c.package),
     c.note ? h('div.hint', {}, c.note) : null,
-    h('div.row', { style: { margin: '6px 0' } }, statusChip(c.status), c.required ? null : h('span.mbadge', {}, 'опционально')),
+    h('div.row', { style: { margin: '6px 0' } }, statusChip(c.status, c), c.required ? null : h('span.mbadge', {}, 'опционально')),
+    c.problem ? h('div.hint', { style: { color: 'var(--err)' } }, c.problem) : null,
+    c.variants ? variantPicker(c) : null,
+    kv('Нужен для', (c.tabs || []).map(viewTitle).join(', ')),
     kv('Установлено', c.installed || '—'),
     kv('Рекомендуется', c.recommended),
     kv('Последняя стабильная', c.latest),
     kv('Группа', c.group),
     kv('Размер', c.size),
     h('div.row', { style: { margin: '8px 0', flexWrap: 'wrap' } },
-      c.status === 'missing' ? h('button.primary', { disabled: busy, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), 'Установить') : null,
-      c.status === 'update' ? h('button.primary', { disabled: busy, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), `Обновить до ${c.recommended}`) : null,
+      c.status === 'missing' ? h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), 'Установить') : null,
+      c.status === 'update' ? h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), wrongBuild(c) ? `Поставить ${VARIANT[c.variant]}` : `Обновить до ${c.recommended}`) : null,
       c.latest_newer ? h('button', { disabled: busy, onclick: () => install([c.id], 'latest') }, icon('download', { size: 14 }), `До ${c.latest}`) : null,
       h('button', { onclick: () => openExternal(`https://pypi.org/project/${c.package}/`) }, icon('externalLink', { size: 14 }), 'PyPI')),
   ];

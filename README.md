@@ -44,36 +44,42 @@ user/            ключи API, история, кэши (не в git)
 
 ## Установка и обновления
 
-Установщик — `maistep-<версия>-setup.exe` из GitHub Releases: окно в стиле UI Kit, выбор папки, ярлыки на рабочем
-столе / в «Пуске» по галочке, портативный Python 3.12 (~22 МБ) по галочке. Это тот же `maistep.exe` с архивом
-приложения в конце — без прав администратора и сторонних инсталляторов.
+Установщики в GitHub Releases: Windows — `maistep-<версия>-setup-win.exe`, Linux — `maistep-<версия>-setup-linux.AppImage`
+(`chmod +x` и запустить). Окно в стиле UI Kit, выбор папки, ярлыки на рабочем столе / в меню («Пуск» или `.desktop`)
+по галочке, портативный Python 3.12 по галочке. Это тот же бинарь приложения (`maistep.exe` / `maistep.AppImage`)
+с архивом приложения в конце — без прав администратора и сторонних инсталляторов. AppImage несёт WebKitGTK и прочие
+библиотеки окна; нужен FUSE (`libfuse2`), без него — `APPIMAGE_EXTRACT_AND_RUN=1`.
 
 maistep — **portable**: всё живёт в выбранной папке — файлы приложения, `.venv` и `python/`, данные окна
 (`user/webview`), графы, ключи, картинки. Реестр и AppData не используются; вне папки — только ярлыки, если их
-выбрать. Папку можно перенести или удалить целиком. Удаление — `uninstall.cmd` (или `maistep.exe --uninstall`):
-убирает файлы приложения, `.venv`, `python/` и ярлыки, данные (`workflows user input output`) — по выбору; другие
-файлы в папке не трогает. Без окна: `maistep-setup.exe --silent --dir <папка> [--desktop] [--start-menu] [--python]`,
-`maistep.exe --uninstall --silent [--keep-data]`. Без портативного Python при первом запуске `.venv` создаётся из
+выбрать. Папку можно перенести или удалить целиком. Удаление — `uninstall.cmd` / `uninstall.sh` (или `maistep.exe
+--uninstall`): убирает файлы приложения, `.venv`, `python/` и ярлыки, данные (`workflows user input output`) — по
+выбору; другие файлы в папке не трогает. Без окна: `maistep-…-setup-win.exe --silent --dir <папка> [--desktop]
+[--start-menu] [--python]`, `maistep.exe --uninstall --silent [--keep-data]` (на Linux — то же с AppImage). Без портативного Python при первом запуске `.venv` создаётся из
 системного Python 3.10+; пакеты генерации и LLM ставятся в «Компонентах».
 
-Обновления приходят сами: сервер при старте и раз в час смотрит последний стабильный релиз, сверяет его `manifest.json`
-(sha256 каждого файла) с диском и в фоне качает **только изменившиеся файлы** (с raw.githubusercontent.com по тегу
-релиза) в `update/staging/` — прерванная загрузка продолжается. `maistep.exe` (~14 МБ) качается, только если изменился
-код Rust; правки UI, сервера и нод — килобайты. Скачанное применяется при перезапуске окна («Компоненты» →
+Обновления приходят сами: сервер при старте и раз в час смотрит последний стабильный релиз. В релизе один файл
+обновления для всех систем — `maistep-<версия>-update.mai`: оглавление (sha256 каждого файла приложения и бинари
+по платформам) и сжатые данные. Сервер читает только оглавление (HTTP Range), сверяет с диском и в фоне качает
+**только нужные куски**: изменившиеся файлы и бинарь своей системы (`maistep.exe` или `maistep.AppImage`) — его
+только если изменился код Rust; правки UI, сервера и нод — килобайты. Всё складывается в `update/staging/`, уже
+скачанное повторно не качается. Скачанное применяется при перезапуске окна («Компоненты» →
 «Перезапустить») или при следующем запуске; `workflows/ user/ input/ output/ .venv` не трогаются никогда. UI грузится
 с диска (`app/ui`), вшитый в exe — запасной. В git-копии (есть `.git`) обновлятор только показывает версию.
 Пока репозиторий приватный, нужен токен: `user/settings.json` → `"update": {"token": "…"}` (`"auto": false` —
 не качать самому).
 
 Релиз собирает GitHub Actions (`.github/workflows/release.yml`): поднимите `"version"` в `package.json` и запушьте
-в main — на Windows-раннере соберутся установщик, `maistep.exe` и `manifest.json`, и выйдет релиз `v<версия>` со
-списком изменений. Если релиз с этой версией уже есть, сборка пропускается; вручную — Actions → release → Run workflow.
+в main — на Windows и Ubuntu соберутся установщики, из обоих бинарей — `maistep-<версия>-update.mai`, и выйдет
+релиз `v<версия>` со списком изменений (в 0.1.2 ещё `manifest.json` + `maistep.exe` — чтобы обновились копии 0.1.1;
+`LEGACY` в `scripts/release.mjs`). Если релиз с этой версией уже есть, сборка пропускается; вручную — Actions → release → Run workflow.
 Вручную, без CI:
 
 ```
 node scripts/release.mjs version 0.2.0   # номер ещё и в tauri.conf.json, Cargo.toml, components.json (необязательно)
-node scripts/release.mjs build           # dist/: установщик, maistep.exe, manifest.json (из HEAD; --dirty — из рабочей копии)
-node scripts/release.mjs publish         # gh release create v0.2.0 (--notes "текст" вместо автосписка)
+node scripts/release.mjs build           # установщик и бинарь под текущую ОС в dist/ (из HEAD; --dirty — из рабочей копии)
+node scripts/release.mjs pack            # dist/maistep-<версия>-update.mai из всех собранных бинарей (dist/bin/*)
+node scripts/release.mjs publish         # gh release create v0.2.0 (нужны обе ОС; --notes "текст" вместо автосписка)
 ```
 
 ## Рабочие области
@@ -169,6 +175,11 @@ SDXL, SD1.5, реалистичные миксы). В Inspector — откуда
 - Установка (один раз, ~3 ГБ) — вкладка «Компоненты» → «Установить недостающее», или вручную:
   `.venv\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cu130`, затем
   `.venv\Scripts\python -m pip install -r requirements.txt`.
+- Видеокарты: NVIDIA — CUDA-сборка torch; AMD (Radeon RX 6000–9000, Windows и Linux) — ROCm-сборка с индекса AMD
+  под архитектуру карты (`torch[device-gfx1201]==2.14.0+rocm10.1.0` для RX 9070; Python 3.10–3.14, на Windows — свежий
+  Adrenalin); без видеокарты — CPU. «Компоненты» определяют карту сами, сборку можно выбрать вручную в карточке
+  PyTorch. На AMD генерация идёт через тот же API (`torch.cuda`), а по образцу ComfyUI на RDNA3+ выключен MIOpen
+  (`MAISTEP_ENABLE_MIOPEN=1` — вернуть), VAE считает внимание без SDPA, на RDNA2 VAE — в fp32.
 - Настройки в `user/settings.json`: `"gen": {"device": "cuda|cpu|auto", "dtype": "fp16|bf16|fp32",
   "offload": "auto|true|false", "keep": true, "vae_dtype": "auto|bf16|fp16|fp32"}` — `offload` экономит VRAM
   (медленнее), `keep: false` выгружает модель после каждого VAE Decode. Сервер → «Освободить память» выгружает модели
@@ -201,14 +212,19 @@ SDXL, SD1.5, реалистичные миксы). В Inspector — откуда
 
 ## Компоненты и обновления
 
-Рабочая область **Компоненты** (клавиша 6, кнопка в шапке, меню Вид / Сервер): в Hierarchy — группы, сводка и среда
-(Python, CUDA/GPU), по центру — таблица «установлено / рекомендуется / последняя стабильная» для пакетов из
-`components.json` (группы «Генерация», «LLM»; torch — с CUDA-индексом), в Inspector — карточка пакета; лог pip —
-в Console.
+Рабочая область **Компоненты** (клавиша 6, кнопка в шапке, меню Вид / Сервер): в Hierarchy — группы, вкладки, сводка
+и среда (Python, видеокарты, CUDA/ROCm, сборка torch), по центру — таблица «установлено / рекомендуется / последняя
+стабильная» для пакетов из `components.json`, в Inspector — карточка пакета; лог pip — в Console. У каждого
+компонента `tabs` — вкладки, которым он нужен («нужен для: Workflow, ImageNaizer, ToColar»); фильтр «Вкладки» слева
+показывает, чего не хватает конкретной вкладке. У torch — `variants` (cuda / rocm / cpu: свой индекс, локальная
+версия, `extra` с архитектурой AMD); выбор — по видеокарте или вручную (`user/settings.json` → `"components":
+{"torch_variant": "rocm", "gfx": "gfx1201"}`). Стоит сборка под другую карту — статус «другая сборка» и кнопка
+«Поставить ROCm/CUDA».
 «Установить недостающее», «Обновить рекомендованные», «До последней стабильной» ставят пакеты в `.venv` через pip;
 лог идёт вживую, «Прервать» останавливает установку. При старте один раз предлагаются недостающие пакеты и их
 стабильные обновления. Карточка maistep сверху — обновление приложения (см. «Установка и обновления»).
 API: `GET /api/components?refresh=1&deep=1`, `POST /api/components/install`, `POST /api/components/cancel`,
+`POST /api/components/variant`,
 `GET /api/update?check=1`, `POST /api/update/download`.
 
 ## MCP
