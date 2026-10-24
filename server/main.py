@@ -18,6 +18,7 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   GET  /api/library?refresh=1   библиотека моделей (только чтение): корни, категории, модели
   GET  /api/library/model?id=cat/name   карточка модели (заголовок safetensors, .cminfo.json, …)
   GET  /api/library/preview?id=cat/name превью модели (только файлы-превью из индекса)
+  POST /api/library/roots { add?: путь, remove?: путь }  добавить папку моделей / убрать из списка
   GET  /api/components?refresh=1&deep=1  компоненты: установлено/рекомендуется/последняя стабильная, установка
   POST /api/components/install { ids?, mode: recommended|missing|latest }  установка в .venv (SSE comp-log)
   POST /api/components/variant { variant: auto|cuda|rocm|cpu, gfx? }  сборка torch под видеокарту
@@ -433,6 +434,13 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/components/install":
             r = components.install(data.get("ids") or [], data.get("mode") or "recommended")
             return self.json(r, 409 if r.get("error") else 200)
+        if u.path == "/api/library/roots":
+            try:
+                r = library.edit_roots(data.get("add"), data.get("remove"))
+            except ValueError as e:
+                return self.json({"error": str(e)}, 400)
+            HUB.emit("library-changed", {})
+            return self.json(r)
         if u.path == "/api/components/variant":
             r = components.set_variant(data.get("variant") or "auto", data.get("gfx"))
             return self.json(r, 409 if r.get("error") else 200)

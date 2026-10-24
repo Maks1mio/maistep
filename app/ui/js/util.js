@@ -9,6 +9,7 @@ export function h(tag, attrs = {}, ...kids) {
   if (cls.length) e.className = cls.join(' ');
   if (id) e.id = id;
   for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'draggable' && v === false) { e.draggable = false; continue; } // у img по умолчанию true — false тут значим
     if (v == null || v === false) continue;
     if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
     else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);

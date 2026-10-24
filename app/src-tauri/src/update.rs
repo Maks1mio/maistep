@@ -12,7 +12,7 @@ use tauri::utils::assets::{AssetKey, AssetsIter, CspHash};
 use tauri::{Assets, Wry};
 
 // Пользовательские данные: обновление сюда не пишет никогда
-const USER_DIRS: [&str; 8] = ["workflows", "user", "input", "output", ".venv", "venv", "update", ".git"];
+const USER_DIRS: [&str; 9] = ["workflows", "user", "input", "output", "models", ".venv", "venv", "update", ".git"];
 
 pub fn safe_rel(rel: &str) -> Option<PathBuf> {
     let p = Path::new(rel);

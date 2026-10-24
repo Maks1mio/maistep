@@ -123,7 +123,7 @@ function doneScreen(dir) {
 
 // ---------- удаление ----------
 function uninstallScreen() {
-  const keep = check('Сохранить мои данные', `${(info.data || []).join(', ') || 'workflows, user, input, output'} — графы, ключи API, картинки`, true);
+  const keep = check('Сохранить мои данные', `${(info.data || []).join(', ') || 'workflows, user, input, output, models'} — графы, ключи API, картинки, модели`, true);
   show(
     head(`Удаление maistep ${info.version}`, info.dir),
     h('div.st-body', {},

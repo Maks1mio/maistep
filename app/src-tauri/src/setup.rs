@@ -18,7 +18,7 @@ use crate::commands::no_window;
 
 const MAGIC: &[u8; 16] = b"MAISTEP-PAYLOAD1";
 // Данные пользователя: при обновлении/переустановке не трогаются, при удалении — по выбору
-pub const DATA_DIRS: [&str; 4] = ["workflows", "user", "input", "output"];
+pub const DATA_DIRS: [&str; 5] = ["workflows", "user", "input", "output", "models"];
 // Всё, что кладут в папку установщик, обновлятор и первый запуск
 const APP_ITEMS: [&str; 19] = ["app", "server", "mcp", "custom_nodes", "defaults", "python", ".venv", "update", "manifest.json",
     "install.json", "uninstall.cmd", "uninstall.sh", "requirements.txt", "components.json", "maistep.exe.old",
@@ -435,6 +435,11 @@ pub fn run(context: tauri::Context, uninstall_root: Option<PathBuf>) {
             WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup.html".into()))
                 .title(title)
                 .inner_size(640.0, 460.0)
+                // тайловые менеджеры (Hyprland, Sway…) растягивают окно на всю область, если оно не плавающее;
+                // плавающим Hyprland делает окно фиксированного размера — min = max (одного resizable(false) мало)
+                .min_inner_size(640.0, 460.0)
+                .max_inner_size(640.0, 460.0)
+                .center()
                 .resizable(false)
                 .maximizable(false)
                 .data_directory(tmp.clone())

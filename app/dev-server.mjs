@@ -117,8 +117,16 @@ const CMD = {
   },
   fs_list: ({ path: rel }) => fs.readdirSync(projPath(rel), { withFileTypes: true })
     .filter(e => !(e.isDirectory() && FS_SKIP.includes(e.name)))
-    .map(e => ({ name: e.name, dir: e.isDirectory(), size: e.isDirectory() ? 0 : fs.statSync(path.join(projPath(rel), e.name)).size }))
+    .map(e => { const s = fs.statSync(path.join(projPath(rel), e.name)); return { name: e.name, dir: e.isDirectory(), size: e.isDirectory() ? 0 : s.size, mtime: Math.floor(s.mtimeMs) }; })
     .sort((a, b) => b.dir - a.dir || a.name.toLowerCase().localeCompare(b.name.toLowerCase())),
+  fs_reveal: ({ path: p }) => {
+    const abs = path.isAbsolute(p) ? p : projPath(p);
+    if (!fs.existsSync(abs)) throw new Error(`нет такого пути: ${abs}`);
+    const file = fs.statSync(abs).isFile();
+    if (process.platform === 'win32') spawn('explorer', file ? [`/select,${abs}`] : [abs], { detached: true, stdio: 'ignore' }).unref();
+    else spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', process.platform === 'darwin' ? ['-R', abs] : [file ? path.dirname(abs) : abs], { detached: true, stdio: 'ignore' }).unref();
+    return null;
+  },
   fs_search: ({ path: rel, query, limit = 2000 }) => {
     const words = String(query).toLowerCase().split(/\s+/).filter(Boolean), out = [];
     const walk = d => {

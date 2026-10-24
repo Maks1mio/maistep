@@ -3,6 +3,8 @@
 // (или список загрузок); Inspector — карточка модели: версии, файлы, картинки с промптами, триггер-слова, метки,
 // «Скачать». Ctrl/Shift+щелчок по плитке — выбор нескольких моделей (скачать / пометить пачкой).
 // Сервер — /api/civitai/* (server/maistep/civitai.py), прогресс — SSE «civitai». Фильтры помнит localStorage.
+// NSFW — один режим: скрыт (модели и картинки NSFW не показываются нигде, в том числе в карточке — полная карточка
+// с Civitai приходит со всеми картинками), размыт, открыт.
 import { h, debounce, prompt, confirmBox } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector } from './inspector.js';
@@ -10,8 +12,10 @@ import { icon } from './icons.js';
 import { api } from './backend.js';
 import { openExternal } from './api.js';
 import { isShown } from './dock.js';
-import { dropdown, onOff } from './kit.js';
+import { dropdown } from './kit.js';
 import { fmtSize, loadLibrary } from './library.js';
+import { openViewer } from './viewer.js';
+import { onContextMenu } from './ctxmenu.js';
 
 const LS = 'maistep-civitai';
 const DEF = { q: '', types: ['Checkpoint'], bases: [], sort: 'Most Downloaded', period: 'Month', nsfw: false, limit: 50, size: 170, blur: true, mode: 'search', tag: '', root: '' };
@@ -24,21 +28,29 @@ const models = new Map();     // id → карточка (из поиска ил
 const picked = new Set();     // множественный выбор
 const jobs = new Map();       // id → задание
 const pickVer = new Map();    // id модели → id выбранной версии
-let gridEl = null, countEl = null, moreEl = null, bulkEl = null;
+let gridEl = null, countEl = null, moreEl = null, bulkEl = null, scrollEl = null;
 const log = (level, text) => emit('log', { src: 'civitai', level, text });
 
 // уменьшенная картинка с CDN Civitai вместо оригинала (original=true — мегабайты на плитку)
 const thumb = (url, w = 450) => (url || '').replace(/\/(?:original=true|width=\d+)(?:,[^/]*)?\//, `/width=${w}/`);
 const fmtNum = n => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n || 0));
+// nsfwLevel Civitai: 1 PG, 2 PG-13, 4 R, 8 X, 16 XXX, 32 — заблокировано
+const isNsfwImg = i => i && (i.nsfw === true || (typeof i.nsfw === 'number' && i.nsfw >= 4) || ['Mature', 'X', 'R'].includes(i.nsfw));
+const NSFW = [['off', 'NSFW скрыт'], ['blur', 'NSFW размыт'], ['show', 'NSFW открыт']];
+const nsfwMode = () => (!st.nsfw ? 'off' : st.blur ? 'blur' : 'show');
+// картинки, которые можно показывать: при «скрыт» — только безопасные
+const visible = imgs => (imgs || []).filter(i => i.url && (st.nsfw || !isNsfwImg(i)));
+const blurred = i => st.nsfw && st.blur && isNsfwImg(i);
 const coverOf = (m, vid) => {
   const vs = m.versions || [];
   const v = vs.find(x => x.id === vid) || vs[0];
   // у версии может не быть картинок (NSFW скрыты фильтром) — берём из соседних версий
-  return [v, ...vs].flatMap(x => x?.images || []).find(i => i.type === 'image') || null;
+  return visible([v, ...vs].flatMap(x => x?.images || [])).find(i => i.type === 'image') || null;
 };
-// nsfwLevel Civitai: 1 PG, 2 PG-13, 4 R, 8 X, 16 XXX
-const isNsfwImg = i => i && (i.nsfw === true || (typeof i.nsfw === 'number' && i.nsfw >= 4) || ['Mature', 'X', 'R'].includes(i.nsfw));
-const activeJobs = () => [...jobs.values()].filter(j => ['queued', 'running', 'verifying'].includes(j.state));
+const LIVE = ['queued', 'running', 'verifying'];
+const activeJobs = () => [...jobs.values()].filter(j => LIVE.includes(j.state));
+const jobsOf = id => [...jobs.values()].filter(j => j.model?.id === id && LIVE.includes(j.state));
+const pctOf = j => (j.state === 'done' ? 100 : j.total ? Math.min(100, Math.floor(100 * j.done / j.total)) : 0);
 
 // ---------- данные ----------
 async function loadMeta() {
@@ -60,8 +72,7 @@ async function search(more = false) {
   if (st.mode !== 'search') { st.mode = 'search'; keep(); }
   const my = ++seq;
   busy = true; error = '';
-  if (!more) { items = []; next = null; }
-  redraw();
+  if (!more) { items = []; next = null; if (scrollEl) scrollEl.scrollTop = 0; update(); } else footer();
   const q = new URLSearchParams({ q: st.q, types: st.types.join(','), bases: st.bases.join(','), sort: st.sort, period: st.period, nsfw: st.nsfw ? '1' : '0', limit: st.limit });
   if (more && next) q.set('cursor', next);
   try {
@@ -78,15 +89,26 @@ async function search(more = false) {
       if (my !== seq) return;
       for (const m of r.items) models.set(m.id, m);
       const seen = new Set(items.map(m => m.id));
-      items.push(...r.items.filter(m => !seen.has(m.id)));
+      const fresh = r.items.filter(m => !seen.has(m.id));
+      items.push(...fresh);
       next = r.next; took = r.took;
+      // «Показать ещё» — новые плитки дописываются снизу, прокрутка остаётся на месте
+      if (more && gridEl && st.mode === 'search') { busy = false; gridEl.append(...fresh.map(tile)); footer(); return; }
     }
   } catch (e) {
     if (my !== seq) return;
     error = e.message; log('error', `поиск: ${e.message}`);
   }
   busy = false;
-  redraw();
+  update();
+}
+
+// Обновить галерею, не пересобирая вкладку (пересборка сбрасывала прокрутку наверх)
+function update() {
+  if (gridEl && st.mode !== 'downloads') {
+    fill();
+    if (S.ctx === 'civitai') emit('change', { kind: null });
+  } else redraw();
 }
 
 async function fullModel(id) {
@@ -100,13 +122,34 @@ async function fullModel(id) {
 }
 
 export async function download(list) {
-  if (!list.length) return;
+  if (!list.length) return [];
   try {
     const r = await api('/api/civitai/download', { items: list, root: st.root });
     for (const j of r.jobs) jobs.set(j.id, j);
-    log('info', `в очереди: ${r.jobs.map(j => j.name).join(', ')} → ${st.root}`);
+    log('ok', `скачивание началось: ${r.jobs.map(j => j.name).join(', ')} → ${st.root}`);
+    toast(r.jobs.length === 1 ? `Скачивание: ${r.jobs[0].model?.name || r.jobs[0].name}` : `Скачивание: ${r.jobs.length} моделей`);
     redraw();
-  } catch (e) { log('error', `загрузка: ${e.message}`); }
+    return r.jobs;
+  } catch (e) {
+    log('error', `загрузка: ${e.message}`);
+    toast(`Не удалось начать: ${e.message}`, true);
+    return [];
+  }
+}
+
+// Короткое уведомление в углу вкладки со ссылкой на «Загрузки» (в body: вкладка пересобирается и стёрла бы его)
+let toastEl = null, toastT = 0;
+function toast(text, bad = false) {
+  toastEl?.remove();
+  toastEl = h(`div.cv-toast${bad ? '.bad' : ''}`, {}, icon(bad ? 'error' : 'download', { size: 16 }), h('span', {}, text),
+    bad ? null : h('button', { onclick: () => { st.mode = 'downloads'; keep(); redraw(); toastEl?.remove(); } }, 'Загрузки'));
+  const r = document.getElementById('v-civitai')?.getBoundingClientRect();
+  if (r?.width) Object.assign(toastEl.style, { right: `${innerWidth - r.right + 14}px`, bottom: `${innerHeight - r.bottom + 14}px` });
+  document.body.append(toastEl);
+  clearTimeout(toastT);
+  const el = toastEl;
+  toastT = setTimeout(() => el.classList.add('out'), 3500);
+  setTimeout(() => el.remove(), 4000);
 }
 
 async function jobOp(op, id) {
@@ -180,7 +223,8 @@ function tile(m) {
   const vid = pickVer.get(m.id);
   const v = (m.versions || []).find(x => x.id === vid) || m.versions?.[0];
   const img = coverOf(m, vid);
-  const blur = st.blur && (m.nsfw || isNsfwImg(img));
+  const blur = img ? blurred(img) : false;
+  const job = jobsOf(m.id)[0];
   const th = img?.url
     ? h('img', { src: thumb(img.url, Math.max(320, st.size * 2)), loading: 'lazy', alt: '', draggable: false, referrerpolicy: 'no-referrer' })
     : h('div.lph', {}, icon('image', { size: 32 }), h('span', {}, m.type));
@@ -196,9 +240,16 @@ function tile(m) {
   h('div.lth', {}, th,
     v?.base ? h('span.lbase', {}, v.base) : null,
     m.installed ? h('span.cv-inst', { 'data-tip': 'Уже есть в библиотеке' }, icon('success', { size: 14 })) : null,
-    h('span.cv-pick', {}, icon('check', { size: 12 }))),
+    h('span.cv-pick', {}, icon('check', { size: 12 })),
+    job ? tileProg(job) : null),
   h('div.lnm', {}, h('span.n', {}, m.name),
     h('span.dim', {}, `${m.type} · ⬇ ${fmtNum(m.stats?.downloads)} · 👍 ${fmtNum(m.stats?.likes)}`)));
+}
+
+// полоса загрузки на плитке модели
+function tileProg(j) {
+  const [, label] = STATE[j.state] || ['', j.state];
+  return h('div.cv-tprog', {}, h('span', {}, j.state === 'running' ? `${pctOf(j)}%` : label), h('div', {}, h('i', { style: { width: `${pctOf(j)}%` } })));
 }
 
 function bulkBar() {
@@ -206,7 +257,7 @@ function bulkBar() {
   const list = [...picked].map(id => models.get(id)).filter(Boolean);
   bulkEl.replaceChildren(...(list.length ? [
     h('span.dim', {}, `выбрано: ${list.length}`),
-    h('button.primary', { onclick: () => { download(list.map(m => ({ model: m.id, version: pickVer.get(m.id) || m.versions[0]?.id }))); picked.clear(); fill(); bulkBar(); } }, icon('download', { size: 14 }), 'Скачать'),
+    h('button.primary', { onclick: e => { busyBtn(e.currentTarget); download(list.map(m => ({ model: m.id, version: pickVer.get(m.id) || m.versions[0]?.id }))).then(() => { picked.clear(); fill(); bulkBar(); }); } }, icon('download', { size: 14 }), 'Скачать'),
     h('button', { onclick: () => askTag(list) }, icon('pin', { size: 14 }), 'Метка…'),
     h('button.icon', { 'data-tip': 'Снять выбор', onclick: () => { picked.clear(); fill(); bulkBar(); } }, icon('closeSmall', { size: 14 })),
   ] : []));
@@ -222,14 +273,21 @@ function searchBar() {
   const period = dropdown(st.period, meta.periods.map(p => [p, { AllTime: 'За всё время', Year: 'Год', Month: 'Месяц', Week: 'Неделя', Day: 'День' }[p]]),
     v => { st.period = v; keep(); search(); }, { width: 120 });
   const limit = dropdown(String(st.limit), [['20', '20'], ['50', '50'], ['100', '100']], v => { st.limit = +v; keep(); search(); }, { width: 64 });
-  const nsfw = h('span.row.cv-sw', { 'data-tip': 'Показывать NSFW-модели' }, onOff(st.nsfw, v => { st.nsfw = v; keep(); search(); }), h('span.dim', {}, 'NSFW'));
-  const blur = h(`button${st.blur ? '.on' : ''}`, { 'data-tip': 'Размывать NSFW-превью', onclick: e => { st.blur = !st.blur; keep(); e.currentTarget.classList.toggle('on', st.blur); fill(); } }, icon('hide', { size: 14 }));
+  // скрыт → в поиске нет NSFW-моделей, картинки NSFW не показываются; размыт / открыт — показываются
+  const nsfw = dropdown(nsfwMode(), NSFW, v => {
+    const was = st.nsfw;
+    st.nsfw = v !== 'off';
+    if (v !== 'off') st.blur = v === 'blur';
+    keep();
+    if (was !== st.nsfw) search(); else fill();
+    if (S.sel?.kind === 'civmodel') emit('civitai-sel');
+  }, { width: 120 });
   const size = h('input.ui-range', { type: 'range', min: 120, max: 300, step: 10, value: st.size, 'data-tip': 'Размер плиток' });
   size.addEventListener('input', () => { st.size = +size.value; keep(); gridEl?.style.setProperty('--lsz', `${st.size}px`); });
   countEl = h('span.dim');
   return h('div.bar', {}, q,
     h('button.primary', { onclick: () => { st.q = q.value; keep(); search(); } }, icon('search', { size: 14 }), 'Найти'),
-    sort, period, limit, nsfw, blur, size, h('span.grow'), countEl,
+    sort, period, limit, nsfw, size, h('span.grow'), countEl,
     h('button.icon', { 'data-tip': 'Настройки Civitai (ключ API, соединения)', onclick: settingsDialog }, icon('settings', { size: 14 })));
 }
 
@@ -238,7 +296,8 @@ function render() {
   if (!v || !isShown('civitai')) return;
   if (!S.server.running) { v.replaceChildren(h('div.msg', {}, 'Сервер не запущен — Civitai ищет через него')); gridEl = null; return; }
   if (!meta) { v.replaceChildren(h('div.msg', {}, error || 'Загрузка…')); loadMeta(); gridEl = null; return; }
-  if (st.mode === 'downloads') { gridEl = null; v.replaceChildren(downloadsView()); return; }
+  const top = scrollEl?.isConnected ? scrollEl.scrollTop : 0;
+  if (st.mode === 'downloads') { gridEl = scrollEl = null; v.replaceChildren(downloadsView()); return; }
   gridEl = h('div.lgrid.cv-grid');
   gridEl.style.setProperty('--lsz', `${st.size}px`);
   bulkEl = h('div.bar.cv-bulk', { style: { display: 'none' } });
@@ -247,8 +306,10 @@ function render() {
     ? h('div.bar', {}, icon('pin', { size: 14 }), h('b', {}, st.tag), h('span.dim', {}, '— моя метка (сохранено локально)'), h('span.grow'),
       h('button', { onclick: () => { st.mode = 'search'; keep(); redraw(); } }, icon('left', { size: 14 }), 'К поиску'))
     : searchBar();
-  v.replaceChildren(head, bulkEl, h('div.cv-scroll', {}, gridEl, moreEl));
+  scrollEl = h('div.cv-scroll', {}, gridEl, moreEl);
+  v.replaceChildren(head, bulkEl, scrollEl);
   fill();
+  scrollEl.scrollTop = top;
   bulkBar();
   if (st.mode === 'search' && !items.length && !busy && !error) search();
 }
@@ -258,45 +319,86 @@ function fill() {
   const list = st.mode === 'tag'
     ? (tagsData.tags[st.tag] || []).map(id => models.get(+id) || { ...tagsData.models[id], versions: tagsData.models[id]?.image ? [{ id: 0, base: tagsData.models[id].base, images: [tagsData.models[id].image], files: [] }] : [] }).filter(m => m?.id)
     : items;
-  if (countEl) countEl.textContent = busy ? 'поиск…' : `${list.length}${took != null ? ` · ${took} с` : ''}`;
   gridEl.replaceChildren(...(list.length ? list.map(tile) : [h('div.msg', {}, busy ? 'Поиск…' : error || 'Ничего не найдено')]));
+  footer();
+}
+
+function footer() {
+  const n = st.mode === 'tag' ? (tagsData.tags[st.tag] || []).length : items.length;
+  if (countEl) countEl.textContent = busy ? 'поиск…' : `${n}${took != null ? ` · ${took} с` : ''}`;
   if (moreEl) moreEl.replaceChildren(st.mode === 'search' && next ? h('button', { disabled: busy, onclick: () => search(true) }, busy ? 'Загрузка…' : 'Показать ещё') : '');
 }
 
 // ---------- загрузки ----------
 const STATE = { queued: ['info', 'в очереди'], running: ['warn', 'качается'], verifying: ['warn', 'проверка SHA256'], done: ['ok', 'готово'], error: ['bad', 'ошибка'], cancelled: ['info', 'отменено'] };
+const SPEEDS = [['0', 'без ограничения'], ['1', '1 МБ/с'], ['2', '2 МБ/с'], ['5', '5 МБ/с'], ['10', '10 МБ/с'], ['20', '20 МБ/с'], ['50', '50 МБ/с'], ['100', '100 МБ/с']];
+const fmtEta = s => (s == null ? '' : s >= 3600 ? `${Math.floor(s / 3600)} ч ${Math.round(s % 3600 / 60)} мин` : s > 90 ? `${Math.round(s / 60)} мин` : `${s} с`);
+const etaOf = j => (j.state === 'running' && j.speed > 0 && j.total ? Math.max(0, Math.round((j.total - j.done) / j.speed)) : null);
+const fileOf = p => String(p || '').split(/[\\/]/).pop();
+
 function jobRow(j) {
-  const pct = j.total ? Math.min(100, Math.round(100 * j.done / j.total)) : 0;
   const [cls, label] = STATE[j.state] || ['info', j.state];
-  const live = ['queued', 'running', 'verifying'].includes(j.state);
-  const eta = j.speed > 0 && j.total ? Math.max(0, Math.round((j.total - j.done) / j.speed)) : null;
-  return h('div.cv-job', { 'data-job': j.id },
-    j.image ? h('img.cv-jimg', { src: thumb(j.image, 120), alt: '', referrerpolicy: 'no-referrer' }) : h('div.cv-jimg', {}, icon('download', { size: 18 })),
+  const live = LIVE.includes(j.state), pct = pctOf(j);
+  const sizes = j.state === 'done' ? fmtSize(j.total || j.done || 0) : `${fmtSize(j.done || 0)} из ${j.total ? fmtSize(j.total) : '?'}`;
+  return h(`div.cv-job.${j.state}`, { 'data-job': j.id },
+    j.image && (st.nsfw || j.image_nsfw === false)
+      ? h(`img.cv-jimg${st.blur && j.image_nsfw !== false ? '.nsfw' : ''}`, { src: thumb(j.image, 120), alt: '', referrerpolicy: 'no-referrer' })
+      : h('div.cv-jimg', {}, icon('download', { size: 18 })),
     h('div.cv-jtx', {},
-      h('div', {}, h('b', {}, j.model?.name || j.name), h('span.dim', {}, ` · ${j.version?.name || ''}${j.version?.base ? ` · ${j.version.base}` : ''}`)),
-      h('div.dim.mono', { style: { fontSize: '11px' } }, j.dest),
-      h('div.cv-prog', {}, h('div', { style: { width: `${j.state === 'done' ? 100 : pct}%` } })),
-      h('div.dim', { style: { fontSize: '11px' } },
-        `${fmtSize(j.done || 0)} / ${j.total ? fmtSize(j.total) : '?'}`,
-        j.state === 'running' && j.speed ? ` · ${fmtSize(j.speed)}/с${eta != null ? ` · ~${eta > 90 ? `${Math.round(eta / 60)} мин` : `${eta} с`}` : ''}` : '',
-        j.error ? h('span', { style: { color: 'var(--err)' } }, ` · ${j.error}`) : '')),
-    h(`span.cmp-chip.${cls}`, {}, label),
+      h('div.cv-jname', {}, h('b', {}, j.model?.name || j.name), h(`span.cmp-chip.${cls}`, {}, label)),
+      h('div.dim', {}, [j.version?.name, j.version?.base, j.model?.type].filter(Boolean).join(' · ')),
+      h('div.dim.mono.cv-jpath', { 'data-tip': j.dest }, fileOf(j.dest)),
+      live || j.state === 'done' ? h('div.cv-prog', {}, h('div', { style: { width: `${pct}%` } })) : null,
+      h('div.cv-jstat', {},
+        h('span', {}, sizes),
+        live && j.state === 'running' ? h('span', {}, `${pct}%`) : null,
+        j.state === 'running' && j.speed ? h('span', {}, `${fmtSize(j.speed)}/с`) : null,
+        etaOf(j) != null ? h('span', {}, `осталось ~${fmtEta(etaOf(j))}`) : null,
+        j.error ? h('span.err', {}, j.error) : null)),
     h('div.cv-jact', {},
       live ? h('button', { onclick: () => jobOp('cancel', j.id) }, icon('stop', { size: 14 }), 'Отмена') : null,
       ['error', 'cancelled'].includes(j.state) ? h('button', { onclick: () => jobOp('retry', j.id) }, icon('restart', { size: 14 }), 'Повторить') : null,
       j.state === 'done' ? h('button.icon', { 'data-tip': 'Показать в папке', onclick: () => jobOp('reveal', j.id) }, icon('folder', { size: 14 })) : null,
-      !live ? h('button.icon', { 'data-tip': j.state === 'done' ? 'Удалить файл с диска' : 'Убрать из истории', onclick: () => deleteJob(j) }, icon('delete', { size: 14 })) : null,
-      j.model?.id ? h('button.icon', { 'data-tip': 'Карточка модели', onclick: () => { fullModel(j.model.id).then(() => select({ kind: 'civmodel', id: j.model.id })); } }, icon('properties', { size: 14 })) : null));
+      j.model?.id ? h('button.icon', { 'data-tip': 'Карточка модели', onclick: () => { fullModel(j.model.id).then(() => select({ kind: 'civmodel', id: j.model.id })); } }, icon('properties', { size: 14 })) : null,
+      !live ? h('button.icon', { 'data-tip': j.state === 'done' ? 'Удалить файл с диска' : 'Убрать из истории', onclick: () => deleteJob(j) }, icon('delete', { size: 14 })) : null));
+}
+
+async function saveConf(body) {
+  try { conf = await api('/api/civitai/settings', body); } catch (e) { log('error', e.message); }
+  redraw();
+}
+
+// сводка активных: общая скорость, объём, время до конца очереди
+function dlSummary() {
+  const act = activeJobs();
+  const speed = act.reduce((s, j) => s + (j.state === 'running' ? j.speed || 0 : 0), 0);
+  const left = act.reduce((s, j) => s + Math.max(0, (j.total || 0) - (j.done || 0)), 0);
+  const eta = speed > 0 && left ? Math.round(left / speed) : null;
+  return h('div.cv-dlsum', {},
+    h('div', {}, h('b', {}, String(act.length)), h('span.dim', {}, 'активных')),
+    h('div', {}, h('b', {}, speed ? `${fmtSize(speed)}/с` : '—'), h('span.dim', {}, conf?.speed_limit ? `скорость (предел ${conf.speed_limit} МБ/с)` : 'скорость')),
+    h('div', {}, h('b', {}, left ? fmtSize(left) : '—'), h('span.dim', {}, 'осталось')),
+    h('div', {}, h('b', {}, eta != null ? fmtEta(eta) : '—'), h('span.dim', {}, 'до конца очереди')));
 }
 
 function downloadsView() {
   const list = [...jobs.values()].reverse();
-  const done = list.filter(j => !['queued', 'running', 'verifying'].includes(j.state));
+  const live = list.filter(j => LIVE.includes(j.state)), past = list.filter(j => !LIVE.includes(j.state));
+  const limit = dropdown(String(conf?.speed_limit || 0), SPEEDS.some(([v]) => +v === +(conf?.speed_limit || 0)) ? SPEEDS : [...SPEEDS, [String(conf.speed_limit), `${conf.speed_limit} МБ/с`]],
+    v => saveConf({ speed_limit: +v }), { width: 140 });
+  const conc = dropdown(String(conf?.concurrent || 1), [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], v => saveConf({ concurrent: +v }), { width: 54 });
+  const section = (title, rows, extra = null) => rows.length ? [h('div.cv-jsec', {}, h('span', {}, `${title} · ${rows.length}`), h('span.grow'), extra), ...rows.map(jobRow)] : [];
   return h('div.cv-dl', {},
-    h('div.bar', {}, icon('download', { size: 14 }), h('b', {}, 'Загрузки'), h('span.dim', {}, `· активных ${activeJobs().length} · в папку ${st.root || '—'}`), h('span.grow'),
-      h('button', { disabled: !done.length, 'data-tip': 'Только список; файлы на диске остаются', onclick: () => jobOp('clear') }, icon('delete', { size: 14 }), 'Очистить историю'),
-      h('button.icon', { 'data-tip': 'Настройки Civitai', onclick: settingsDialog }, icon('settings', { size: 14 }))),
-    h('div.cv-jobs', {}, ...(list.length ? list.map(jobRow) : [h('div.msg', {}, 'Загрузок ещё не было — найдите модель и нажмите «Скачать»')])));
+    h('div.bar.cv-dlbar', {}, icon('download', { size: 14 }), h('b', {}, 'Загрузки'),
+      h('span.dim.cv-root', { 'data-tip': st.root || '' }, `→ ${(st.root || '—').split(/[\\/]/).slice(-2).join('/')}`), h('span.grow'),
+      h('label.cv-opt', {}, h('span.dim', {}, 'Скорость'), limit),
+      h('label.cv-opt', { 'data-tip': 'Сколько моделей качается одновременно' }, h('span.dim', {}, 'Одновременно'), conc),
+      h('button.icon', { 'data-tip': 'Настройки Civitai (ключ API, соединения, SHA256)', onclick: settingsDialog }, icon('settings', { size: 14 }))),
+    live.length ? dlSummary() : null,
+    h('div.cv-jobs', {}, ...(list.length
+      ? [...section('Качаются', live),
+        ...section('История', past, h('button', { 'data-tip': 'Только список; файлы на диске остаются', onclick: () => jobOp('clear') }, icon('delete', { size: 14 }), 'Очистить'))]
+      : [h('div.msg', {}, 'Загрузок ещё не было — найдите модель и нажмите «Скачать»')])));
 }
 
 function onJob(j) {
@@ -309,8 +411,12 @@ function onJob(j) {
     return;
   }
   // только прогресс — точечно, без перерисовки всего
-  const row = document.querySelector(`.cv-job[data-job="${j.id}"]`);
-  if (row && st.mode === 'downloads') row.replaceWith(jobRow(j));
+  if (st.mode === 'downloads') {
+    document.querySelector(`.cv-job[data-job="${j.id}"]`)?.replaceWith(jobRow(j));
+    document.querySelector('.cv-dlsum')?.replaceWith(dlSummary());
+  }
+  const t = gridEl?.querySelector(`.ltile[data-id="${j.model?.id}"] .lth`);
+  if (t) { t.querySelector('.cv-tprog')?.remove(); t.append(tileProg(j)); }
   if (S.ctx === 'civitai') emit('change', { kind: null });
   if (S.sel?.kind === 'civmodel' && S.sel.id === j.model?.id) emit('civitai-sel');
 }
@@ -322,13 +428,22 @@ async function settingsDialog() {
     { key: 'api_key', label: `Ключ API${c.has_key ? ` (сейчас ${c.api_key})` : ''} — civitai.com → Account → API Keys`, value: '' },
     { key: 'connections', label: 'Соединений на файл (1–16)', value: String(c.connections || 4) },
     { key: 'concurrent', label: 'Одновременных загрузок (1–4)', value: String(c.concurrent || 1) },
+    { key: 'speed_limit', label: 'Предел скорости, МБ/с (0 — без ограничения; на все загрузки вместе)', value: String(c.speed_limit || 0) },
     { key: 'verify', label: 'Проверять SHA256 после загрузки', type: 'select', value: c.verify === false ? '0' : '1', options: [['1', 'да'], ['0', 'нет']] },
     { key: 'preview', label: 'Сохранять превью рядом с моделью', type: 'select', value: c.preview === false ? '0' : '1', options: [['1', 'да'], ['0', 'нет']] },
   ], 'Сохранить');
   if (!r) return;
-  const body = { connections: +r.connections || 4, concurrent: +r.concurrent || 1, verify: r.verify === '1', preview: r.preview === '1' };
+  const body = { connections: +r.connections || 4, concurrent: +r.concurrent || 1, speed_limit: Math.max(0, +String(r.speed_limit).replace(',', '.') || 0), verify: r.verify === '1', preview: r.preview === '1' };
   if (r.api_key) body.api_key = r.api_key;
   try { conf = await api('/api/civitai/settings', body); log('ok', 'настройки Civitai сохранены'); } catch (e) { log('error', e.message); }
+  redraw();
+}
+
+// кнопка ждёт ответа сервера: сразу видно, что нажатие принято
+function busyBtn(b, text = 'Добавляю…') {
+  b.disabled = true;
+  b.classList.add('busy');
+  b.replaceChildren(h('span.cv-spin'), text);
 }
 
 // ---------- Inspector ----------
@@ -339,7 +454,8 @@ function civInspector(s) {
   const vid = pickVer.get(m.id) || m.versions?.[0]?.id;
   const v = (m.versions || []).find(x => x.id === vid) || m.versions?.[0];
   const copy = t => navigator.clipboard?.writeText(t);
-  const imgs = (v?.images || []).filter(i => i.url);
+  const all = (v?.images || []).filter(i => i.url), imgs = visible(all);
+  const hidden = all.length - imgs.length;
   let at = 0;
   const big = h('img', { referrerpolicy: 'no-referrer' });
   const metaBox = h('div.cv-imeta');
@@ -348,7 +464,7 @@ function civInspector(s) {
     const i = imgs[at];
     if (!i) return;
     big.src = thumb(i.url, 768);
-    pv.classList.toggle('nsfw', st.blur && isNsfwImg(i));
+    pv.classList.toggle('nsfw', blurred(i));
     const mm = i.meta || {};
     metaBox.replaceChildren(...[
       mm.prompt ? h('div.cv-prompt', { 'data-tip': 'Копировать промпт', onclick: () => copy(mm.prompt) }, h('span.dim', {}, 'prompt '), mm.prompt) : null,
@@ -357,7 +473,13 @@ function civInspector(s) {
         ? h('div.dim', { style: { fontSize: '11px' } }, ['sampler', 'steps', 'cfgScale', 'seed', 'Size', 'clipSkip'].filter(k => mm[k] != null).map(k => `${k} ${mm[k]}`).join(' · ')) : null,
     ].filter(Boolean));
   };
-  const pv = h('div.preview.cv-pv', { onclick: e => { if (e.target === big) pv.classList.remove('nsfw'); } }, big,
+  // щелчок по размытой — показать, по открытой — просмотр всех картинок версии
+  const pv = h('div.preview.cv-pv', { onclick: e => {
+    if (e.target !== big) return;
+    e.stopPropagation();
+    if (pv.classList.contains('nsfw')) pv.classList.remove('nsfw');
+    else openViewer(imgs.map(i => ({ src: thumb(i.url, 2048), name: `${m.name} · ${v?.name || ''}` })), at);
+  } }, big,
     imgs.length > 1 ? h('button.icon.cv-nav.l', { onclick: e => { e.stopPropagation(); showImg(at - 1); } }, icon('left', { size: 16 })) : null,
     imgs.length > 1 ? h('button.icon.cv-nav.r', { onclick: e => { e.stopPropagation(); showImg(at + 1); } }, icon('right', { size: 16 })) : null);
   if (imgs.length) showImg(0);
@@ -367,6 +489,21 @@ function civInspector(s) {
     h('input', { type: 'radio', name: 'cvf', checked: f.id === fileId, onchange: e => { fileId = f.id; e.target.closest('.cv-files').querySelectorAll('.cv-file').forEach(x => x.classList.toggle('on', x === e.target.closest('.cv-file'))); } }),
     h('span.n', {}, f.name), h('span.dim', {}, [fmtSize(f.size), f.fp, f.pruned, f.format].filter(Boolean).join(' · ')),
     f.installed ? h('span.mbadge', { style: { marginLeft: '4px' } }, 'есть') : null));
+  // загрузки этой модели: прогресс прямо в карточке
+  const mine = jobsOf(m.id);
+  const sameFile = j => j.version?.id === v?.id && (!fileId || j.file?.id === fileId);
+  const jobBox = mine.length ? h('div.cv-ijobs', {}, ...mine.map(j => {
+    const [cls, label] = STATE[j.state] || ['info', j.state];
+    return h('div.cv-ijob', {},
+      h('div.row', {}, h(`span.cmp-chip.${cls}`, {}, label), h('span.n', {}, fileOf(j.dest)), h('span.grow'),
+        h('button.icon', { 'data-tip': 'Отменить', onclick: () => jobOp('cancel', j.id) }, icon('stop', { size: 14 }))),
+      h('div.cv-prog', {}, h('div', { style: { width: `${pctOf(j)}%` } })),
+      h('div.dim', {}, [`${fmtSize(j.done || 0)} из ${j.total ? fmtSize(j.total) : '?'}`, j.state === 'running' ? `${pctOf(j)}%` : '',
+        j.state === 'running' && j.speed ? `${fmtSize(j.speed)}/с` : '', etaOf(j) != null ? `~${fmtEta(etaOf(j))}` : ''].filter(Boolean).join(' · ')));
+  }), h('a.cv-link', { href: '#', onclick: e => { e.preventDefault(); st.mode = 'downloads'; keep(); redraw(); } }, 'Все загрузки →')) : null;
+  const dlBtn = mine.some(sameFile)
+    ? h('button.primary', { disabled: true }, h('span.cv-spin'), 'Качается…')
+    : h('button.primary', { disabled: !files.length, onclick: e => { busyBtn(e.currentTarget); download([{ model: m.id, version: v.id, file: fileId }]).then(() => emit('civitai-sel')); } }, icon('download', { size: 14 }), 'Скачать');
   const tagsOf = Object.entries(tagsData.tags).filter(([, ids]) => ids.includes(String(m.id))).map(([t]) => t);
   const kv = (k, val) => (val == null || val === '' ? null : h('div.f', {}, h('label', {}, k), h('div.v', { style: { userSelect: 'text' } }, String(val))));
   return [
@@ -374,6 +511,7 @@ function civInspector(s) {
     h('div.hint', {}, `${m.type} · ${m.creator || '—'} · ⬇ ${fmtNum(m.stats?.downloads)} · 👍 ${fmtNum(m.stats?.likes)}`, m.installed ? h('span.mbadge', { style: { marginLeft: '6px' } }, 'в библиотеке') : null),
     imgs.length ? pv : null,
     imgs.length ? metaBox : null,
+    hidden ? h('div.hint', {}, `Скрыто NSFW-картинок: ${hidden} (режим «NSFW скрыт»)`) : null,
     m.versions?.length > 1 ? h('div.f', {}, h('label', {}, 'Версия'), dropdown(String(v.id), m.versions.map(x => [String(x.id), `${x.name}${x.base ? ` · ${x.base}` : ''}${x.installed ? ' ✓' : ''}`]), val => { pickVer.set(m.id, +val); emit('civitai-sel'); fill(); }, { width: 220 })) : null,
     kv('База', v?.base),
     kv('Опубликована', v?.published?.slice(0, 10)),
@@ -381,9 +519,10 @@ function civInspector(s) {
     files.length ? h('h4', {}, 'Файлы') : null,
     files.length ? h('div.cv-files', {}, ...fileRows) : h('div.dim', {}, 'нет файлов'),
     h('div.row', { style: { margin: '8px 0', flexWrap: 'wrap' } },
-      h('button.primary', { disabled: !files.length, onclick: () => download([{ model: m.id, version: v.id, file: fileId }]) }, icon('download', { size: 14 }), 'Скачать'),
+      dlBtn,
       h('button', { onclick: () => openExternal(`${m.url}${v ? `?modelVersionId=${v.id}` : ''}`) }, icon('externalLink', { size: 14 }), 'Civitai'),
       h('button', { onclick: () => askTag([m]) }, icon('pin', { size: 14 }), 'Метка…')),
+    jobBox,
     tagsOf.length ? h('div.ltags', {}, ...tagsOf.map(t => h('span.mbadge', { 'data-tip': 'Снять метку', onclick: () => setTags([m], [], [t]) }, `${t} ×`))) : null,
     v?.trained?.length ? h('h4', {}, 'Триггер-слова (щёлкните — копировать)') : null,
     ...(v?.trained || []).map(w => h('div.ltrig', { onclick: () => copy(w), 'data-tip': 'Копировать' }, w)),
@@ -405,7 +544,27 @@ function sanitize(html) {
   return doc.body.innerHTML;
 }
 
+// ПКМ по плитке модели
+function tileMenu(t) {
+  const el = t.closest('#v-civitai .ltile.civ');
+  const m = el && models.get(+el.dataset.id);
+  if (!m) return null;
+  const v = (m.versions || []).find(x => x.id === pickVer.get(m.id)) || m.versions?.[0];
+  const busy = jobsOf(m.id).length > 0;
+  select({ kind: 'civmodel', id: m.id });
+  return [
+    { ic: 'download', label: busy ? 'Уже качается' : 'Скачать', disabled: busy || !v, fn: () => download([{ model: m.id, version: v.id }]) },
+    { ic: 'properties', label: 'Карточка в Inspector', fn: () => select({ kind: 'civmodel', id: m.id }) },
+    { ic: 'externalLink', label: 'Открыть на Civitai', fn: () => openExternal(`${m.url}${v ? `?modelVersionId=${v.id}` : ''}`) },
+    { ic: 'pin', label: 'Метка…', fn: () => askTag([m]) },
+    '-',
+    { ic: 'copy', label: 'Копировать название', fn: () => navigator.clipboard?.writeText(m.name) },
+    { ic: 'link', label: 'Копировать ссылку', fn: () => navigator.clipboard?.writeText(m.url) },
+  ];
+}
+
 export function initCivitai() {
+  onContextMenu(tileMenu);
   registerInspector('civmodel', civInspector);
   on('civitai', d => { if (d.job) onJob(d.job); if (d.jobs) { jobs.clear(); for (const j of d.jobs) jobs.set(j.id, j); redraw(); } });
   on('civitai-sel', () => emit('select', S.sel));

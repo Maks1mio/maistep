@@ -1,17 +1,25 @@
 // Models: библиотека моделей из папок ComfyUI (только чтение) — /api/library сервера. Hierarchy (контекст library) —
-// категории и корни; вид v-library — галерея с превью, поиском и сортировкой; Inspector — карточка модели (база,
+// категории и папки: своя <maistep>/models есть всегда, найденные ComfyUI и добавленные — можно убрать, «Добавить
+// папку…» — выбор папки (в окне — системный диалог, в веб-режиме — путь текстом); вид v-library — галерея с превью, поиском и сортировкой; Inspector — карточка модели (база,
 // архитектура, триггер-слова, теги, ссылка Civitai, метаданные safetensors). NSFW-превью размыты (переключатель в баре).
 // libraryPicker — выбор модели категории для ноды «Модель из библиотеки».
-import { h, debounce } from './util.js';
+import { h, debounce, prompt } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector } from './inspector.js';
 import { icon } from './icons.js';
+import { dropdown } from './kit.js';
 import { api } from './backend.js';
-import { openExternal } from './api.js';
+import { openExternal, invoke, isTauri } from './api.js';
 import { isShown } from './dock.js';
+import { onContextMenu } from './ctxmenu.js';
 
 const LS = 'maistep-library';
 const st = (() => { try { return { cat: '', q: '', sort: 'name', blur: true, size: 150, ...JSON.parse(localStorage.getItem(LS)) }; } catch { return { cat: '', q: '', sort: 'name', blur: true, size: 150 }; } })();
+// NSFW-превью (по .cminfo.json): скрыт — вместо картинки значок (модели остаются в списке), размыт, открыт
+st.nsfw ??= st.blur ? 'blur' : 'show';
+const NSFW = [['off', 'NSFW скрыт'], ['blur', 'NSFW размыт'], ['show', 'NSFW открыт']];
+const showPv = it => it.has_preview && !(it.nsfw && st.nsfw === 'off');
+const blurPv = it => it.nsfw && st.nsfw === 'blur';
 const keep = () => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch {} };
 let lib = null, loading = null;
 const details = new Map(); // id → карточка
@@ -53,21 +61,60 @@ export function libraryTreeItems() {
   const rows = [{ grp: 'Категории' }];
   const all = lib.items.reduce((a, it) => a + it.size, 0);
   const pick = cat => () => { st.cat = cat; keep(); render(); emit('change', { kind: null }); };
-  rows.push({ ic: 'projectStructure', label: 'Все модели', tag: `${lib.items.length} · ${fmtSize(all)}`, sel: !st.cat, onClick: pick('') });
+  rows.push({ ic: 'projectStructure', label: 'Все модели', tag: `${lib.items.length} · ${fmtSize(all)}`, sel: !st.cat, onClick: pick(''),
+    menu: () => [{ ic: 'refresh', label: 'Пересканировать папки', fn: () => loadLibrary(true).then(() => { render(); emit('change', { kind: null }); }) }] });
   for (const [cat, c] of Object.entries(lib.categories).sort((a, b) => b[1].size - a[1].size)) {
     rows.push({ depth: 1, ic: CAT_IC[cat] || 'folder', label: cat, tag: `${c.count} · ${fmtSize(c.size)}`, sel: st.cat === cat, onClick: pick(cat) });
   }
-  rows.push({ grp: 'Папки (только чтение)' });
-  for (const r of lib.roots) rows.push({ ic: r.exists ? 'folder' : 'warning', label: r.path, tag: r.from, title: r.path });
+  rows.push({ grp: 'Папки моделей (только чтение)' });
+  for (const r of lib.roots) {
+    const drop = () => editRoots({ remove: r.path });
+    rows.push({ ic: r.exists ? 'folder' : 'warning', label: r.path, tag: r.from, title: r.exists ? r.path : `${r.path} — папки нет`,
+      act: r.removable ? { ic: 'closeSmall', tip: 'Убрать из списка (файлы не трогаются)', onClick: drop } : null,
+      menu: () => [
+        { ic: 'folder', label: 'Показать в проводнике', disabled: !r.exists, fn: () => reveal(r.path) },
+        { ic: 'copy', label: 'Копировать путь', fn: () => navigator.clipboard?.writeText(r.path) },
+        '-',
+        { ic: 'add', label: 'Добавить папку…', fn: addRoot },
+        r.removable ? { ic: 'closeSmall', label: 'Убрать из списка', fn: drop } : { ic: 'closeSmall', label: 'Своя папка — убрать нельзя', disabled: true },
+      ] });
+  }
+  rows.push({ ic: 'add', label: 'Добавить папку…', title: 'Папка с моделями: подпапки — категории (checkpoints, loras, vae…), как models/ в ComfyUI', onClick: addRoot });
   return rows;
+}
+
+const reveal = p => invoke('fs_reveal', { path: p }).catch(e => emit('log', { src: 'editor', level: 'error', text: `проводник: ${e}` }));
+
+async function editRoots(body) {
+  try {
+    lib = await api('/api/library/roots', body);
+    details.clear();
+    emit('library', lib);
+    render();
+    emit('change', { kind: null });
+  } catch (e) { emit('log', { src: 'editor', level: 'error', text: `папки моделей: ${e.message}` }); }
+}
+
+async function addRoot() {
+  let dir; // null — диалог отменили, undefined — спросить путь текстом
+  if (isTauri) {
+    try { dir = await invoke('pick_folder', { title: 'Папка с моделями' }); }
+    catch { dir = undefined; } // старое ядро без команды — путь текстом
+  }
+  if (dir === null) return;
+  if (dir === undefined) {
+    const r = await prompt('Добавить папку моделей', [{ key: 'p', label: 'Полный путь к папке (подпапки — checkpoints, loras, vae…)', value: '' }], 'Добавить');
+    dir = r?.p?.trim();
+  }
+  if (dir) editRoots({ add: dir });
 }
 
 // ---------- галерея ----------
 function tile(it) {
-  const th = it.has_preview
+  const th = showPv(it)
     ? h('img', { src: previewUrl(it.id), loading: 'lazy', alt: '', draggable: false })
-    : h('div.lph', {}, icon(CAT_IC[it.cat] || 'folder', { size: 32 }), h('span', {}, it.ext));
-  return h(`div.ltile${it.nsfw && st.blur ? '.nsfw' : ''}${S.sel?.kind === 'libmodel' && S.sel.id === it.id ? '.sel' : ''}`, {
+    : h('div.lph', {}, icon(it.has_preview ? 'eye' : CAT_IC[it.cat] || 'folder', { size: 32 }), h('span', {}, it.has_preview ? 'NSFW' : it.ext));
+  return h(`div.ltile${blurPv(it) ? '.nsfw' : ''}${S.sel?.kind === 'libmodel' && S.sel.id === it.id ? '.sel' : ''}`, {
     'data-id': it.id, onclick: () => select({ kind: 'libmodel', id: it.id }),
     ondblclick: () => emit('library-insert', it),
     'data-tip': `${it.cat}/${it.name}\n${fmtSize(it.size)}${it.base ? ` · ${it.base}` : ''}\nДвойной щелчок — нода «Модель из библиотеки»`,
@@ -86,7 +133,8 @@ function render() {
     q.addEventListener('input', debounce(() => { st.q = q.value; keep(); fill(); }, 120));
     q.addEventListener('keydown', e => e.stopPropagation());
     const sortBtn = (k, t) => h(`button${st.sort === k ? '.on' : ''}`, { 'data-s': k, onclick: e => { st.sort = k; keep(); e.currentTarget.parentNode.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.s === k)); fill(); } }, t);
-    const blur = h(`button${st.blur ? '.on' : ''}`, { 'data-tip': 'Размывать NSFW-превью (по .cminfo.json)', onclick: e => { st.blur = !st.blur; keep(); e.currentTarget.classList.toggle('on', st.blur); fill(); } }, icon('hide', { size: 14 }), 'NSFW');
+    const blur = dropdown(st.nsfw, NSFW, val => { st.nsfw = val; keep(); fill(); if (S.sel?.kind === 'libmodel') emit('select', S.sel); }, { width: 120 });
+    blur.dataset.tip = 'NSFW-превью моделей (по .cminfo.json): скрыт — модели в списке, превью не показывается';
     const size = h('input.ui-range', { type: 'range', min: 100, max: 260, step: 10, value: st.size, 'data-tip': 'Размер плиток' });
     size.addEventListener('input', () => { st.size = +size.value; keep(); gridEl.style.setProperty('--lsz', `${st.size}px`); });
     countEl = h('span.dim');
@@ -113,7 +161,8 @@ function libInspector(s) {
   const head = [
     h('h3', {}, icon(CAT_IC[it.cat] || 'folder', { size: 16 }), it.title || it.file),
     h('div.hint.mono', { style: { userSelect: 'text', wordBreak: 'break-all' } }, `${it.cat}/${it.name}`),
-    it.has_preview ? h(`div.preview${it.nsfw && st.blur ? '.nsfw' : ''}`, { onclick: e => e.currentTarget.classList.remove('nsfw') }, h('img', { src: previewUrl(it.id) })) : null,
+    showPv(it) ? h(`div.preview${blurPv(it) ? '.nsfw' : ''}`, { onclick: e => { if (e.currentTarget.classList.contains('nsfw')) { e.stopPropagation(); e.currentTarget.classList.remove('nsfw'); } } }, h('img', { src: previewUrl(it.id), alt: it.name })) : null,
+    it.has_preview && !showPv(it) ? h('div.hint', {}, 'Превью скрыто (NSFW скрыт)') : null,
     h('div.row', { style: { margin: '6px 0', flexWrap: 'wrap' } },
       h('button.primary', { onclick: () => emit('library-insert', it) }, icon('add', { size: 14 }), 'Нода в граф'),
       h('button', { onclick: () => copy(it.name) }, icon('copy', { size: 14 }), 'Имя'),
@@ -191,7 +240,26 @@ export async function libraryPicker(at, { cat, value, onPick }) {
   setTimeout(() => addEventListener('pointerdown', off, true));
 }
 
+// ПКМ по плитке модели
+function tileMenu(t) {
+  const el = t.closest('#v-library .ltile');
+  const it = el && lib?.items.find(x => x.id === el.dataset.id);
+  if (!it) return null;
+  const copy = s => navigator.clipboard?.writeText(s);
+  select({ kind: 'libmodel', id: it.id });
+  return [
+    { ic: 'add', label: 'Вставить ноду «Модель из библиотеки»', fn: () => emit('library-insert', it) },
+    { ic: 'properties', label: 'Карточка в Inspector', fn: () => select({ kind: 'libmodel', id: it.id }) },
+    '-',
+    it.path ? { ic: 'folder', label: 'Показать в проводнике', fn: () => reveal(it.path) } : null,
+    { ic: 'copy', label: 'Копировать имя', fn: () => copy(it.name) },
+    it.path ? { ic: 'copy', label: 'Копировать полный путь', fn: () => copy(it.path) } : null,
+    it.trained?.length ? { ic: 'copy', label: 'Копировать триггер-слова', fn: () => copy(it.trained.join(', ')) } : null,
+  ];
+}
+
 export function initLibrary() {
+  onContextMenu(tileMenu);
   registerInspector('libmodel', libInspector);
   on('library', render);
   on('select', s => { if (gridEl) gridEl.querySelectorAll('.ltile').forEach(t => t.classList.toggle('sel', s?.kind === 'libmodel' && t.dataset.id === s.id)); });

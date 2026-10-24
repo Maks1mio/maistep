@@ -1,6 +1,7 @@
 """Images: load from input/, save to output/, preview. IMAGE = {"file": "input|output/<name>"}."""
 import base64
 import json
+import re
 import shutil
 import time
 import urllib.request
@@ -71,24 +72,33 @@ def image_fit(image, megapixels, multiple, ctx):
 @node("image.keep_lines", title="Keep Lines (Recolor)", cat="Image",
       inputs={"lines": ("IMAGE", {"hint": "the original black-and-white page"}),
               "colors": ("IMAGE", {"hint": "the colored version (any size — it is stretched to the original)"}),
-              "strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 1.5, "step": 0.05, "hint": "color amount; >1 — more saturated"}),
+              "strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 1.6, "step": 0.05, "hint": "color amount; >1 — more saturated"}),
               "shading": ("FLOAT", {"default": 0.6, "min": 0, "max": 1, "step": 0.05,
                                     "hint": "shadows from the generated image: 0 — flat color, 1 — all its shading (lines stay from the original)"}),
+              "smooth": ("INT", {"default": 5, "min": 0, "max": 32, "hint": "chroma smoothing, px at 1 MP: color regions blend, "
+                                                                           "speckles and misaligned details fade; 0 — as generated"}),
+              "balance": ("BOOLEAN", {"default": True, "hint": "boost faint colors of the generation to a readable saturation"}),
               "prefix": ("STRING", {"default": "colored"})},
       outputs={"image": "IMAGE"},
       hint="Takes lightness from the original and color from the generated image (Lab): lines, screentones and "
-           "lettering stay exactly as drawn, only the color (and, with shading, its shadows) is added. Saves a PNG to output/ at the original size.")
-def image_keep_lines(lines, colors, strength, shading, prefix, ctx):
-    from PIL import Image, ImageChops
+           "lettering stay exactly as drawn, only the color (and, with shading, its shadows) is added. Chroma is smoothed "
+           "and faint colors are balanced, so a shy generation still gives a colored page. Saves a PNG to output/ at the original size.")
+def image_keep_lines(lines, colors, strength, shading, prefix, ctx, smooth=5, balance=True):
+    from PIL import Image, ImageChops, ImageFilter
     base = _open(ctx, lines)
-    col = _open(ctx, colors).resize(base.size, Image.LANCZOS).convert("LAB")
+    W, H = base.size
+    col = _open(ctx, colors).resize((W, H), Image.LANCZOS).convert("LAB")
     L = base.convert("LAB").getchannel("L")  # светлота оригинала: линии, тон, текст
     Lg, a, b = col.split()
     if shading > 0:  # тени генерации только темнее оригинала: тёмные линии и тон не светлеют
-        L = ImageChops.darker(L, Image.blend(L, Lg, shading))
-    if strength != 1:
-        a, b = (ch.point(lambda v: max(0, min(255, round(128 + (v - 128) * strength)))) for ch in (a, b))
+        lg = Lg.filter(ImageFilter.GaussianBlur(1.0 * max(0.5, (W * H / 1e6) ** 0.5)))  # своя штриховка генерации не задваивает линии
+        L = ImageChops.darker(L, Image.blend(L, lg, shading))
+    _gain, a, b = _chroma_gain(a, b, smooth, balance)
+    if abs(strength - 1) > 0.001:  # насыщенность — вокруг нейтрального, поверх авто-баланса
+        lut = [max(0, min(255, round(128 + (v - 128) * strength))) for v in range(256)]
+        a, b = a.point(lut), b.point(lut)
     out = Image.merge("LAB", (L, a, b)).convert("RGB")
+    prefix = re.sub(r"[^\w.-]+", "_", prefix or "colored").lstrip(".")[:60] or "colored"
     p = ctx.output_dir / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.png"
     n = 1
     while p.exists():
@@ -96,6 +106,52 @@ def image_keep_lines(lines, colors, strength, shading, prefix, ctx):
     out.save(p)
     rel = p.relative_to(ctx.root).as_posix()
     return {"image": {"file": rel}, "ui": {"images": [rel]}}
+
+
+def _pct(ch, p):
+    """Перцентиль яркости канала по гистограмме (без NumPy)."""
+    h = ch.histogram()
+    total = sum(h)
+    if not total:
+        return 128
+    acc, target = 0, total * p
+    for i, c in enumerate(h):
+        acc += c
+        if acc >= target:
+            return i
+    return 255
+
+
+def _chroma_gain(a, b, smooth, balance):
+    """Сглаживает цвет (крупные области, без крапа и цветного шума) и считает множитель для бледного цвета.
+    Работаем не больше ~2 Мп: размытие дешевле, и шум не размазывается по всей странице."""
+    from PIL import Image, ImageFilter
+    W, H = a.size
+    k = (W * H / 1e6) ** 0.5          # 1 px при 1 Мп = k px здесь
+    radius = max(0.0, float(smooth)) * k
+    s = min(1.0, (2_000_000 / (W * H)) ** 0.5)
+    w2, h2 = max(1, round(W * s)), max(1, round(H * s))
+    aw = a.resize((w2, h2), Image.BOX) if (w2, h2) != (W, H) else a.copy()
+    bw = b.resize((w2, h2), Image.BOX) if (w2, h2) != (W, H) else b.copy()
+    if radius * s >= 0.3:
+        r = radius * s
+        aw = aw.filter(ImageFilter.GaussianBlur(r))
+        bw = bw.filter(ImageFilter.GaussianBlur(r))
+    gain = 1.0
+    if balance:
+        # баланс — вокруг медианы страницы (обычно это бумага): общий цветовой оттенок генерации не раздуваем,
+        # подтягиваем только отклонения от него, т.е. сами цветные области
+        ma, mb = _pct(aw, 0.5), _pct(bw, 0.5)
+        dev = max(_pct(aw, 0.99) - ma, ma - _pct(aw, 0.01),
+                  _pct(bw, 0.99) - mb, mb - _pct(bw, 0.01))
+        gain = min(3.0, max(1.0, 30.0 / max(dev, 1.0)))  # сильный цвет не трогаем, бледный подтягиваем
+        if gain > 1.001:
+            aw = aw.point([max(0, min(255, round(128 + (ma - 128) + (v - ma) * gain))) for v in range(256)])
+            bw = bw.point([max(0, min(255, round(128 + (mb - 128) + (v - mb) * gain))) for v in range(256)])
+    if (w2, h2) != (W, H):  # цвет — низкочастотный, обратно бикубически
+        aw = aw.resize((W, H), Image.BICUBIC)
+        bw = bw.resize((W, H), Image.BICUBIC)
+    return gain, aw, bw
 
 
 @node("image.generate_openai", title="Generate Image (OpenAI)", cat="Image",

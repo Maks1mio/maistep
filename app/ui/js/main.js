@@ -21,11 +21,12 @@ import { initNaizer, showNaizer } from './naizer.js';
 import { initTocolar, showTocolar } from './tocolar.js';
 import { initPersist, restore, autosaveOn, setAutosave } from './persist.js';
 import { initTooltips, messageBox } from './kit.js';
-import { initBackend, queuePrompt, interrupt, clearQueue, reloadNodes, api } from './backend.js';
+import { initBackend, queuePrompt, interrupt, clearQueue, reloadNodes, api, updateStatus } from './backend.js';
 import { providersDialog } from './providers.js';
 import { initMagic } from './magic.js';
 import { initImages } from './images.js';
 import { initPromptWeights } from './promptedit.js';
+import { initContextMenu } from './ctxmenu.js';
 
 const $ = id => document.getElementById(id);
 const log = (level, text, src = 'editor') => emit('log', { src, level, text });
@@ -100,7 +101,8 @@ const MENU = [
   ['Вид', [
     ['Workflow', '1', () => openWorkspace('graph')], ['Results', '2', () => openWorkspace('results')],
     ['Models', '3', () => openWorkspace('library')], ['Civitai', '4', () => openWorkspace('civitai')], ['CodeEditor', '5', () => openWorkspace('code')],
-    ['Компоненты и обновления', '6', () => openWorkspace('components')], ['ImageNaizer', '7', () => openWorkspace('naizer')], ['UI Kit', '8', () => openWorkspace('uikit')], '-',
+    ['Компоненты и обновления', '6', () => openWorkspace('components')], ['ImageNaizer', '7', () => openWorkspace('naizer')],
+    ['ToColar', '8', () => openWorkspace('tocolar')], ['UI Kit', '9', () => openWorkspace('uikit')], '-',
     ['Вписать граф', 'F', fit],
     ['Сбросить раскладку рабочей области', '', () => resetLayout()],
   ]],
@@ -116,7 +118,7 @@ const MENU = [
     ['Открыть API в браузере', '', () => openExternal(`http://localhost:${S.server.port}/api/nodes`)],
   ]],
   ['Справка', [
-    ['О программе', '', () => messageBox({ img: 'icons/maistep.svg', title: 'maistep', text: 'Версия 0.1 · Tauri v2 + Python\nНодовый редактор AI-пайплайнов: графы из нод (LLM, текст, картинки, логика), очередь запусков на Python-сервере, стриминг ответов прямо на ноды, свои ноды на Python в custom_nodes/.', ok: 'Закрыть', cancel: null })],
+    ['О программе', '', () => about()],
   ]],
 ];
 
@@ -193,6 +195,16 @@ function updateDirty() {
   if (S.project?.root) $('tb-project-name').textContent = projectName();
 }
 
+// версия — как в «Компонентах»: manifest.json установленной копии, в git-копии — package.json (сервер);
+// без сервера — версия ядра (она отстаёт, если обновление не меняло Rust)
+async function about() {
+  let v = '';
+  try { v = (await updateStatus()).installed || ''; } catch {}
+  if (!v && isTauri) { try { v = await window.__TAURI__.app.getVersion(); } catch {} }
+  messageBox({ img: 'icons/maistep.svg', title: 'maistep', ok: 'Закрыть', cancel: null,
+    text: `Версия ${v || '—'} · Tauri v2 + Python\nНодовый редактор AI-пайплайнов: графы из нод (LLM, текст, картинки, логика), очередь запусков на Python-сервере, стриминг ответов прямо на ноды, свои ноды на Python в custom_nodes/.` });
+}
+
 function keys(e) {
   const k = e.key.toLowerCase(), typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
   if (e.ctrlKey && k === 's') { e.preventDefault(); saveAll(); return; }
@@ -202,7 +214,7 @@ function keys(e) {
   if (e.ctrlKey && !typing && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
   if (e.key === 'F5') { e.preventDefault(); if (e.ctrlKey) restartServer(); else if (e.shiftKey) stopServer(); else startServer(); return; }
   if (e.key === 'F7') { e.preventDefault(); checkGraph(); return; }
-  if (!typing && !e.ctrlKey && !e.altKey && /^[1-8]$/.test(e.key)) { openWorkspace(['graph', 'results', 'library', 'civitai', 'code', 'components', 'naizer', 'uikit'][+e.key - 1]); return; }
+  if (!typing && !e.ctrlKey && !e.altKey && /^[1-9]$/.test(e.key)) { openWorkspace(['graph', 'results', 'library', 'civitai', 'code', 'components', 'naizer', 'tocolar', 'uikit'][+e.key - 1]); return; }
   if (!typing && graphKeys(e)) { e.preventDefault(); return; }
   if (e.key === 'Escape' && !typing) select(null);
 }
@@ -216,6 +228,7 @@ async function boot() {
   initHierarchy();
   initInspector();
   initNodeInspector();
+  initContextMenu();
   initProject();
   initGraph();
   initMagic();

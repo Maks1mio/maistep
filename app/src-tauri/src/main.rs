@@ -133,6 +133,8 @@ fn main() {
             commands::server_stop,
             commands::server_status,
             commands::open_external,
+            commands::pick_folder,
+            commands::fs_reveal,
             commands::app_restart,
         ])
         .setup(|app| {

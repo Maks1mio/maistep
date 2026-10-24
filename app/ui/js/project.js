@@ -1,7 +1,8 @@
 // Project: проводник проекта maistep (workflows, input, output, custom_nodes, server, …). Хлебные крошки, папки,
 // плитки или список, поиск по папке и вложенным, размер плиток (ползунок, Ctrl+колесо), подгрузка при прокрутке,
-// превью картинок при наведении. Щелчок — Inspector; двойной щелчок по воркфлоу — открыть граф, по .py — CodeEditor;
-// картинку можно перетащить на граф (нода «Загрузить картинку»); ПКМ — меню.
+// превью картинок при наведении, сортировка (имя / размер / дата / тип). Щелчок — Inspector; двойной щелчок или Enter:
+// воркфлоу — граф, .py — CodeEditor, картинка — просмотр (viewer.js, листаются картинки папки); пробел — просмотр;
+// стрелки — выбор; картинку можно перетащить на граф (нода «Загрузить картинку»); ПКМ — меню (ctxmenu.js).
 import { h, debounce } from './util.js';
 import { S, emit, select } from './store.js';
 import { invoke, assetUrl } from './api.js';
@@ -9,9 +10,23 @@ import { icon } from './icons.js';
 import { search, dropdown } from './kit.js';
 import { registerInspector } from './inspector.js';
 import { showView } from './dock.js';
+import { popup } from './ctxmenu.js';
+import { openViewer, copyImage } from './viewer.js';
 
 const LS = 'maistep-project';
-const st = (() => { try { return { dir: '', view: 'grid', size: 84, ...JSON.parse(localStorage.getItem(LS)), mode: 'fs' }; } catch { return { mode: 'fs', dir: '', view: 'grid', size: 84 }; } })();
+const st = (() => { try { return { dir: '', view: 'grid', size: 84, sort: 'name', ...JSON.parse(localStorage.getItem(LS)), mode: 'fs' }; } catch { return { mode: 'fs', dir: '', view: 'grid', size: 84, sort: 'name' }; } })();
+const SORTS = [{ value: 'name', label: 'По имени' }, { value: 'date', label: 'Сначала новые' }, { value: 'size', label: 'Сначала большие' }, { value: 'type', label: 'По типу' }];
+const ext = p => (p.includes('.') ? p.split('.').pop().toLowerCase() : '');
+// папки всегда сверху, внутри — по выбранному порядку
+function sorted(list) {
+  const by = {
+    name: (a, b) => base(a.path).toLowerCase().localeCompare(base(b.path).toLowerCase()),
+    date: (a, b) => (b.mtime || 0) - (a.mtime || 0),
+    size: (a, b) => (b.size || 0) - (a.size || 0),
+    type: (a, b) => ext(a.path).localeCompare(ext(b.path)) || base(a.path).localeCompare(base(b.path)),
+  }[st.sort] || (() => 0);
+  return [...list].sort((a, b) => (b.dir ? 1 : 0) - (a.dir ? 1 : 0) || by(a, b));
+}
 const keep = () => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch {} };
 const CHUNK = 160;
 const IMG = /\.(png|webp|jpe?g|gif|svg)$/i;
@@ -70,6 +85,30 @@ function gfxPath(item) {
   return IMG.test(item.path) && /^(input|output)\//.test(item.path) ? item.path : null;
 }
 const url = item => assetUrl(item.path, 'p');
+const fullPath = p => `${S.project?.root || ''}${S.project?.root ? '/' : ''}${p}`.replace(/\//g, S.project?.root?.includes('\\') ? '\\' : '/');
+const reveal = p => invoke('fs_reveal', { path: p }).catch(e => emit('log', { src: 'editor', level: 'error', text: `проводник: ${e}` }));
+// просмотр картинки: листаются все картинки текущего списка
+function preview(item) {
+  let imgs = items.filter(x => !x.dir && IMG.test(x.path));
+  if (!imgs.some(x => x.path === item.path)) imgs = [item]; // картинка не из текущего списка (Inspector)
+  openViewer(imgs.map(x => ({ src: url(x), name: x.path, path: x.path, info: x.size ? fmtSize(x.size) : '' })), Math.max(0, imgs.findIndex(x => x.path === item.path)), {
+    actions: it => [{ ic: 'folder', tip: 'Показать в проводнике', fn: () => reveal(it.path) }, { ic: 'locate', tip: 'Выбрать в Project', fn: () => { selectItem(items.find(x => x.path === it.path)); } }],
+  });
+}
+// Enter / двойной щелчок
+function activate(item) {
+  if (!item) return;
+  if (item.dir) return go(item.path);
+  const d = !item.gfx && docOf(item.path);
+  if (d) return openDoc(d);
+  if (IMG.test(item.path)) return preview(item);
+}
+function selectItem(item) {
+  if (!item) return;
+  select({ kind: 'file', id: item.path, size: item.size });
+  mark(item.path);
+  document.querySelector(`#assets .pj-it[data-path="${CSS.escape(item.path)}"]`)?.scrollIntoView({ block: 'nearest' });
+}
 // JSON данных проекта → документ редактора
 function docOf(path) {
   const m = path.match(/^workflows\/([^/]+)\.json$/);
@@ -121,10 +160,10 @@ function fileEl(item) {
     th = h('div.th.img', {}, im);
   } else th = h('div.th', {}, icon(d ? DOC_IC[d.kind] : fileIcon(name), { size: st.view === 'grid' ? Math.min(40, Math.round(st.size * 0.42)) : 16 }));
   const el = h(`div.pj-it.file${isSel(item) ? '.sel' : ''}`, {
-    'data-tip': `${item.path}${item.size ? `\n${fmtSize(item.size)}` : ''}${d ? '\nДвойной щелчок — открыть в редакторе' : ''}`,
+    'data-tip': `${item.path}${item.size ? `\n${fmtSize(item.size)}` : ''}${d ? '\nДвойной щелчок — открыть в редакторе' : img ? '\nДвойной щелчок или пробел — просмотр' : ''}`,
     'data-path': item.path, draggable: !!g,
     onclick: () => { select({ kind: 'file', id: item.path, size: item.size }); mark(item.path); },
-    ondblclick: () => d && openDoc(d),
+    ondblclick: () => activate(item),
     ondragstart: e => { if (!g) return; e.dataTransfer.setData('text/mai-file', g); e.dataTransfer.setData('text/plain', g); },
     oncontextmenu: e => ctxMenu(e, item, dir),
   }, th, h('div.nm', {}, h('span.n', {}, hl(name)), query && dir !== st.dir ? h('span.p', {}, dir.slice(st.dir ? st.dir.length + 1 : 0)) : null,
@@ -135,13 +174,14 @@ function fileEl(item) {
 
 function dirEl(item) {
   return h('div.pj-it.dir', {
+    'data-path': item.path,
     'data-tip': `${st.mode === 'gfx' ? 'graphics/' : ''}${item.path}${item.count ? `\n${item.count} файлов` : ''}`,
     onclick: () => go(item.path), oncontextmenu: e => ctxMenu(e, null, item.path),
   }, h('div.th', {}, icon('folder', { size: st.view === 'grid' ? Math.min(48, Math.round(st.size * 0.45)) : 16 })),
   h('div.nm', {}, h('span.n', {}, hl(base(item.path))), item.count ? h('span.c', {}, item.count) : null));
 }
 
-const mark = p => document.querySelectorAll('#assets .pj-it.file').forEach(x => x.classList.toggle('sel', x.dataset.path === p));
+const mark = p => document.querySelectorAll('#assets .pj-it').forEach(x => x.classList.toggle('sel', x.dataset.path === p));
 
 function more() {
   const box = $('assets');
@@ -159,7 +199,7 @@ function more() {
 }
 
 function render(list, status) {
-  items = list;
+  items = sorted(list);
   $('pj-count').textContent = status;
   const box = $('assets');
   box.className = `pj-grid ${st.view}`;
@@ -203,7 +243,7 @@ async function draw() {
     if (my !== token) return;
     const list = listing.get(st.dir).filter(e => !e.name.startsWith('.')); // служебные .git/.kilo/… не показываем
     const nd = list.filter(e => e.dir).length;
-    render(list.map(e => ({ dir: e.dir, path: join(st.dir, e.name), size: e.size })), `${nd ? `${nd} папок · ` : ''}${list.length - nd} файлов`);
+    render(list.map(e => ({ dir: e.dir, path: join(st.dir, e.name), size: e.size, mtime: e.mtime })), `${nd ? `${nd} папок · ` : ''}${list.length - nd} файлов`);
   } catch (e) {
     if (my !== token) return;
     if (st.dir) { listing.delete(st.dir); return go(''); } // папки больше нет — в корень
@@ -212,33 +252,78 @@ async function draw() {
 }
 
 function ctxMenu(e, item, dir) {
-  e.preventDefault();
-  document.querySelector('.pj-ctx')?.remove();
+  e.stopPropagation();
   const copy = t => navigator.clipboard?.writeText(t);
-  const it = (ic, label, fn) => h('div.item', { onclick: () => { m.remove(); fn(); } }, h('span.ic', {}, icon(ic, { size: 16 })), h('span', {}, label));
-  const g = item && gfxPath(item), d = item && !item.gfx && docOf(item.path);
-  const m = h('div.ui-menu.pj-ctx', {},
-    d ? it('open', 'Открыть в редакторе', () => openDoc(d)) : null,
-    item ? it('copy', 'Копировать путь', () => copy(item.path)) : null,
-        item && query ? it('folder', 'Показать в папке', () => { go(dir); setTimeout(() => mark(item.path), 50); }) : null,
-    !item ? it('open', 'Открыть папку', () => go(dir)) : null,
-    !item ? it('copy', 'Копировать путь папки', () => copy(dir)) : null);
-  document.body.append(m);
-  m.style.cssText = `position:fixed;z-index:500;min-width:220px;left:${Math.min(e.clientX, innerWidth - 240)}px;top:${Math.min(e.clientY, innerHeight - m.offsetHeight - 8)}px`;
-  const off = ev => { if (!m.contains(ev.target)) { m.remove(); removeEventListener('pointerdown', off, true); } };
-  addEventListener('pointerdown', off, true);
+  const d = item && !item.gfx && docOf(item.path), img = item && IMG.test(item.path);
+  if (item) { select({ kind: 'file', id: item.path, size: item.size }); mark(item.path); }
+  popup(e, item ? [
+    d ? { ic: 'open', label: 'Открыть в редакторе', sc: 'Enter', fn: () => openDoc(d) } : null,
+    img ? { ic: 'show', label: 'Просмотр', sc: 'Пробел', fn: () => preview(item) } : null,
+    img ? { ic: 'copy', label: 'Копировать изображение', fn: () => copyImage(url(item)) } : null,
+    '-',
+    query ? { ic: 'locate', label: 'Показать в папке', fn: () => { go(dir); setTimeout(() => selectItem(items.find(x => x.path === item.path)), 80); } } : null,
+    { ic: 'folder', label: 'Показать в проводнике', fn: () => reveal(item.path) },
+    { ic: 'copy', label: 'Копировать путь', fn: () => copy(item.path) },
+    { ic: 'copy', label: 'Копировать полный путь', fn: () => copy(fullPath(item.path)) },
+  ] : [
+    { ic: 'open', label: 'Открыть папку', fn: () => go(dir) },
+    { ic: 'folder', label: 'Показать в проводнике', fn: () => reveal(dir || '') },
+    { ic: 'copy', label: 'Копировать путь папки', fn: () => copy(dir) },
+  ]);
+}
+
+// меню пустого места: обновить, вид, сортировка
+function bgMenu(e) {
+  if (e.target.closest('.pj-it')) return;
+  const sort = s => ({ ic: st.sort === s.value ? 'check' : null, label: s.label, fn: () => { st.sort = s.value; keep(); sortDd.value = s.value; draw(); } });
+  popup(e, [
+    { ic: 'refresh', label: 'Обновить', fn: () => loadAssets(true) },
+    { ic: 'folder', label: 'Показать папку в проводнике', fn: () => reveal(st.dir || '') },
+    st.dir ? { ic: 'moveUp', label: 'Вверх', sc: 'Backspace', fn: up } : null,
+    '-',
+    { ic: st.view === 'grid' ? 'check' : 'grid', label: 'Плитки', fn: () => setView('grid') },
+    { ic: st.view === 'list' ? 'check' : 'general/listFiles', label: 'Список', fn: () => setView('list') },
+    '-',
+    ...SORTS.map(sort),
+  ]);
+}
+let sortDd = null, setView = () => {};
+
+// стрелки — выбор (в плитках ↑/↓ — на ряд), Enter — открыть, пробел — просмотр картинки
+function navKey(e) {
+  const els = [...document.querySelectorAll('#assets .pj-it')];
+  if (!els.length) return false;
+  const cur = els.findIndex(x => x.classList.contains('sel'));
+  let i = cur;
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) {
+    const cols = st.view === 'grid' ? Math.max(1, els.filter(x => x.offsetTop === els[0].offsetTop).length) : 1;
+    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols }[e.key];
+    i = e.key === 'Home' ? 0 : e.key === 'End' ? els.length - 1 : cur < 0 ? 0 : Math.max(0, Math.min(els.length - 1, cur + step));
+    const it = items.find(x => x.path === els[i].dataset.path);
+    if (it?.dir) { document.querySelectorAll('#assets .pj-it').forEach(x => x.classList.toggle('sel', x === els[i])); els[i].scrollIntoView({ block: 'nearest' }); }
+    else selectItem(it);
+    return true;
+  }
+  const it = cur >= 0 ? items.find(x => x.path === els[cur].dataset.path) : null;
+  if (e.key === 'Enter') { activate(it); return true; }
+  if (e.key === ' ' && it && IMG.test(it.path)) { preview(it); return true; }
+  return false;
 }
 
 // инспектор файла проекта (не картинки graphics)
 function fileInspector(s) {
-  const name = base(s.id), d = docOf(s.id), img = IMG.test(name);
+  const name = base(s.id), d = docOf(s.id), img = IMG.test(name), dims = h('div.hint');
   return [
     h('h3', {}, icon(d ? DOC_IC[d.kind] : fileIcon(name), { size: 16 }), name),
     h('div.hint.mono', { style: { userSelect: 'text' } }, s.id),
     s.size ? h('div.hint', {}, fmtSize(s.size)) : null,
-    img ? h('div.preview', {}, h('img', { src: assetUrl(s.id, 'p'), alt: '' })) : null,
+    img ? dims : null,
+    img ? h('div.preview', { 'data-tip': 'Щелчок — просмотр' }, h('img', { src: assetUrl(s.id, 'p'), alt: s.id,
+      onload: e => { dims.textContent = `${e.target.naturalWidth}×${e.target.naturalHeight} px`; } })) : null,
     h('div.row', { style: { marginTop: '8px', flexWrap: 'wrap' } },
       d ? h('button.primary', { onclick: () => openDoc(d) }, icon('open', { size: 14 }), 'Открыть в редакторе') : null,
+      img ? h('button.primary', { onclick: () => preview(items.find(x => x.path === s.id) || { path: s.id }) }, icon('show', { size: 14 }), 'Просмотр') : null,
+      h('button', { onclick: () => reveal(s.id) }, icon('folder', { size: 14 }), 'В проводнике'),
       h('button', { onclick: () => navigator.clipboard?.writeText(s.id) }, icon('copy', { size: 14 }), 'Копировать путь')),
   ];
 }
@@ -250,9 +335,13 @@ export function initProject() {
   const s = search({ placeholder: 'Поиск в папке…', onInput: debounce(v => { query = v; draw(); $('pj-body').scrollTop = 0; }, 200) });
   s.classList.add('grow');
   clearQuery = () => { s.input.value = ''; s.input.dispatchEvent(new Event('input')); query = ''; draw(); };
-  const viewBtn = (v, ic, tip) => h(`button${st.view === v ? '.on' : ''}`, { 'data-tip': tip, onclick: e => { st.view = v; keep(); e.currentTarget.parentNode.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === e.currentTarget)); draw(); } }, icon(ic, { size: 14 }));
-  $('pj-bar').replaceChildren(s,
-    h('div.ui-seg', {}, viewBtn('grid', 'grid', 'Плитки'), viewBtn('list', 'general/listFiles', 'Список')),
+  const seg = h('div.ui-seg');
+  setView = v => { st.view = v; keep(); seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); draw(); };
+  const viewBtn = (v, ic, tip) => h(`button${st.view === v ? '.on' : ''}`, { 'data-v': v, 'data-tip': tip, onclick: () => setView(v) }, icon(ic, { size: 14 }));
+  seg.append(viewBtn('grid', 'grid', 'Плитки'), viewBtn('list', 'general/listFiles', 'Список'));
+  sortDd = dropdown(st.sort, SORTS, v => { st.sort = v; keep(); draw(); }, { link: true, filter: false });
+  sortDd.dataset.tip = 'Сортировка (папки — всегда сверху)';
+  $('pj-bar').replaceChildren(s, sortDd, seg,
     h('button.icon', { 'data-tip': 'Обновить', onclick: () => loadAssets(true) }, icon('refresh', { size: 16 })));
   const range = h('input.ui-range', { type: 'range', min: 48, max: 160, step: 4, value: st.size, 'data-tip': 'Размер плиток (Ctrl+колесо)' });
   const resize = () => { $('assets').style.setProperty('--sz', `${st.size}px`); keep(); };
@@ -268,8 +357,13 @@ export function initProject() {
   }, { passive: false });
   body.tabIndex = 0;
   body.addEventListener('keydown', e => {
-    if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) { e.preventDefault(); up(); }
+    if (e.target.closest('input, textarea')) return;
+    // обработанные клавиши не уходят дальше (пробел открыл бы поиск нод графа, Backspace — удалил ноду)
+    if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) { e.preventDefault(); e.stopPropagation(); up(); return; }
+    if (navKey(e)) { e.preventDefault(); e.stopPropagation(); }
   });
+  body.addEventListener('contextmenu', bgMenu);
+  body.addEventListener('pointerdown', () => body.focus({ preventScroll: true }));
   registerInspector('file', fileInspector);
   draw();
 }

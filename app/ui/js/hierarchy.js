@@ -2,6 +2,7 @@
 // очередь и история запусков, Models — категории моделей, CodeEditor — файлы кода). Контекст задаёт рабочая область.
 import { h, prompt, confirmBox } from './util.js';
 import { icon } from './icons.js';
+import { popup } from './ctxmenu.js';
 import { S, on, emit, doc, select, addDoc, removeDoc, save } from './store.js';
 import { codeTreeItems } from './codeedit.js';
 import { resultsTreeItems } from './results.js';
@@ -62,10 +63,13 @@ function bar() {
   }
 }
 
-function item({ depth = 0, ic, label, tag, sel, dirty, title, onClick, twisty }) {
-  return h(`div.item${sel ? '.sel' : ''}${dirty ? '.dirty' : ''}`, { style: { paddingLeft: `${4 + depth * 16}px` }, title: title || '', onclick: onClick },
+// act — кнопка справа при наведении: { ic, tip, onClick }; menu() — пункты контекстного меню (ctxmenu.js)
+function item({ depth = 0, ic, label, tag, sel, dirty, title, onClick, twisty, act, menu }) {
+  return h(`div.item${sel ? '.sel' : ''}${dirty ? '.dirty' : ''}`, { style: { paddingLeft: `${4 + depth * 16}px` }, title: title || '', onclick: onClick,
+    oncontextmenu: menu ? e => popup(e, menu()) : null },
     h('span.tw', {}, twisty ? icon(twisty === 'open' ? 'down' : 'right', { size: 16 }) : null),
-    ic ? icon(ic, { size: 16 }) : null, h('span.nm', {}, label), tag ? h('span.tag', {}, tag) : null);
+    ic ? icon(ic, { size: 16 }) : null, h('span.nm', {}, label), tag ? h('span.tag', {}, tag) : null,
+    act ? h('button.icon.act', { 'data-tip': act.tip || '', onclick: e => { e.stopPropagation(); act.onClick(); } }, icon(act.ic, { size: 14 })) : null);
 }
 
 function wfTree(t) {

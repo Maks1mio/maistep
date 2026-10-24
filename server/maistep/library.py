@@ -1,10 +1,15 @@
 """Библиотека моделей из папок ComfyUI — ТОЛЬКО ЧТЕНИЕ (в папках моделей ничего не пишется, не переносится и не удаляется).
 
-Где искать:
-  1. yaml Comfy Desktop (%APPDATA%/Comfy Desktop/instance-model-paths/*.yaml) — base_path и категория → подпапки,
+Где искать (порядок = приоритет при совпадении категории и пути):
+  1. <папка maistep>/models — своя папка, есть всегда (создаётся пустой с основными подпапками); сюда же по умолчанию
+     качает Civitai;
+  2. yaml Comfy Desktop (%APPDATA%/Comfy Desktop/instance-model-paths/*.yaml) — base_path и категория → подпапки,
      ровно та раскладка, по которой ищет сам ComfyUI;
-  2. список корней `model_roots` из user/settings.json (подпапки = категории, как models/ в ComfyUI).
-Одна и та же категория/путь в нескольких корнях — побеждает первый (порядок yaml, затем model_roots).
+  3. папки пользователя `model_roots` из user/settings.json (добавляются в Models → «Добавить папку»; подпапки =
+     категории, как models/ в ComfyUI);
+  4. найденные сами установки ComfyUI (AUTO_ROOTS — только существующие); убранные пользователем —
+     `model_roots_hidden`.
+Папки только читаются: maistep создаёт лишь свою models/.
 
 О модели (веса не загружаются): размер и дата; заголовок safetensors (JSON в начале файла) — архитектура по именам
 тензоров и __metadata__ (ss_*, modelspec.*); файлы рядом — .preview.(jpeg|png|webp), .cminfo.json (Civitai: название,
@@ -24,11 +29,20 @@ META_CACHE = ROOT / "user" / "library_meta.json"
 
 MODEL_EXT = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx", ".sft"}
 PREVIEW_EXT = (".preview.jpeg", ".preview.jpg", ".preview.png", ".preview.webp", ".jpeg", ".jpg", ".png", ".webp")
-DEFAULT_ROOTS = [
-    r"D:\ComfyUI\models",
-    os.path.expandvars(r"%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Shared\models"),
-    *sorted(str(p) for p in Path(os.path.expandvars(r"%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs")).glob("*/ComfyUI/models")),
-]
+APP_MODELS = ROOT / "models"
+APP_SUBDIRS = ("checkpoints", "loras", "vae", "embeddings", "upscale_models", "controlnet")
+
+
+def _auto_roots():
+    """Установки ComfyUI в обычных местах — только те, что есть на этом компьютере."""
+    home = Path.home()
+    cands = [home / "ComfyUI" / "models", home / "comfy" / "ComfyUI" / "models", Path("/opt/ComfyUI/models")]
+    if os.name == "nt":
+        local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        cands = [local / "Comfy-Desktop" / "ComfyUI-Shared" / "models",
+                 *sorted((local / "Comfy-Desktop" / "ComfyUI-Installs").glob("*/ComfyUI/models")),
+                 *[Path(f"{d}:/ComfyUI/models") for d in "CDEF"], home / "ComfyUI" / "models"]
+    return [str(p) for p in cands if p.is_dir()]
 HEADER_MAX = 64 * 1024 * 1024  # заголовок safetensors длиннее — только в экзотике
 
 _lock = threading.Lock()
@@ -80,10 +94,38 @@ def _settings():
         return {}
 
 
+def _norm(p):
+    return os.path.normcase(os.path.normpath(str(p)))
+
+
+def app_models():
+    """Своя папка моделей: есть всегда."""
+    for d in ("", *APP_SUBDIRS):
+        try:
+            (APP_MODELS / d).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+    return APP_MODELS
+
+
+def _add_dir(roots, pairs, base, src, removable):
+    if any(_norm(x["path"]) == _norm(base) for x in roots):
+        return
+    roots.append({"path": str(base), "from": src, "exists": base.is_dir(), "removable": removable})
+    if base.is_dir():
+        for d in sorted(base.iterdir()):
+            if d.is_dir() and not d.name.startswith("."):
+                pairs.append((str(base), d.name, d))
+
+
 def sources():
     """Пары (корень, категория, папка) для сканирования и описание корней для UI."""
     roots, pairs, seen = [], [], set()
-    ydir = Path(os.path.expandvars(r"%APPDATA%")) / "Comfy Desktop" / "instance-model-paths"
+    s = _settings()
+    hidden = {_norm(p) for p in s.get("model_roots_hidden") or []}
+    _add_dir(roots, pairs, app_models(), "maistep", None)
+    appdata = os.environ.get("APPDATA")
+    ydir = Path(appdata) / "Comfy Desktop" / "instance-model-paths" if appdata else Path("/nonexistent")
     for y in sorted(ydir.glob("*.yaml")) if ydir.is_dir() else []:
         try:
             secs = _parse_desktop_yaml(y.read_text("utf-8", errors="replace"))
@@ -93,20 +135,17 @@ def sources():
             if not sec["base"]:
                 continue
             base = Path(sec["base"])
-            roots.append({"path": str(base), "from": f"Comfy Desktop ({y.name})", "exists": base.is_dir()})
+            if _norm(base) in hidden or any(_norm(x["path"]) == _norm(base) for x in roots):
+                continue
+            roots.append({"path": str(base), "from": f"Comfy Desktop ({y.name})", "exists": base.is_dir(), "removable": "hide"})
             for cat, subs in sec["cats"].items():
                 for sub in subs:
                     pairs.append((str(base), cat, base / sub.strip("/\\")))
-    extra = _settings().get("model_roots") or DEFAULT_ROOTS
-    for r in extra:
-        base = Path(r)
-        if any(Path(x["path"]) == base for x in roots):
-            continue
-        roots.append({"path": str(base), "from": "settings" if _settings().get("model_roots") else "default", "exists": base.is_dir()})
-        if base.is_dir():
-            for d in sorted(base.iterdir()):
-                if d.is_dir() and not d.name.startswith("."):
-                    pairs.append((str(base), d.name, d))
+    for r in s.get("model_roots") or []:
+        _add_dir(roots, pairs, Path(os.path.expanduser(os.path.expandvars(r))), "добавлена", "remove")
+    for r in _auto_roots():
+        if _norm(r) not in hidden:
+            _add_dir(roots, pairs, Path(r), "найдена", "hide")
     out = []
     for root, cat, folder in pairs:
         key = (cat, str(folder).lower())
@@ -193,6 +232,36 @@ def summary(refresh=False):
     for p in pub:
         p.pop("preview", None)
     return {"at": ix["at"], "took": ix["took"], "roots": ix["roots"], "categories": cats, "items": pub}
+
+
+def edit_roots(add=None, remove=None):
+    """Добавить папку моделей или убрать её из списка (сама папка не трогается). Найденные сами и из Comfy Desktop
+    убираются в model_roots_hidden; своя models/ maistep — всегда в списке."""
+    s = _settings()
+    roots = list(s.get("model_roots") or [])
+    hidden = list(s.get("model_roots_hidden") or [])
+    if add:
+        p = Path(os.path.expanduser(str(add).strip().strip('"')))
+        if not p.is_absolute():
+            raise ValueError("укажите полный путь к папке")
+        if not p.is_dir():
+            raise ValueError(f"папки нет: {p}")
+        if _norm(p) != _norm(APP_MODELS) and not any(_norm(r) == _norm(p) for r in roots):
+            roots.append(str(p))
+        hidden = [x for x in hidden if _norm(x) != _norm(p)]
+    if remove:
+        if _norm(remove) == _norm(APP_MODELS):
+            raise ValueError("своя папка maistep/models есть всегда")
+        if any(_norm(r) == _norm(remove) for r in roots):
+            roots = [r for r in roots if _norm(r) != _norm(remove)]
+        elif not any(_norm(x) == _norm(remove) for x in hidden):
+            hidden.append(str(remove))
+    s["model_roots"], s["model_roots_hidden"] = roots, hidden
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SETTINGS.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2), "utf-8")
+    os.replace(tmp, SETTINGS)
+    return summary(refresh=True)
 
 
 def names(cat):

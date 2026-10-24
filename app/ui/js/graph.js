@@ -8,6 +8,8 @@ import { h, clamp, debounce } from './util.js';
 import { S, on, emit, doc, edit, select, uniqueId } from './store.js';
 import { activeView, showView } from './dock.js';
 import { icon } from './icons.js';
+import { openViewer } from './viewer.js';
+import { popup } from './ctxmenu.js';
 import { fileUrl, queuePrompt, upload, getModels, modelMeta } from './backend.js';
 import { modelPicker } from './modelpick.js';
 import { libraryPicker } from './library.js';
@@ -774,23 +776,10 @@ function inlineEdit(t) {
   ed.focus(); ed.select?.();
 }
 
-// просмотр картинок превью во весь экран: ←/→ — листать, Esc / щелчок — закрыть
+// просмотр картинок превью — общий просмотрщик (viewer.js)
 export function lightbox(urls, i = 0) {
   closeFloat();
-  const img = h('img', { draggable: false }), cap = h('div.cap');
-  const show = () => { img.src = urls[i]; cap.textContent = urls.length > 1 ? `${i + 1} / ${urls.length}` : ''; };
-  const close = () => { el.remove(); removeEventListener('keydown', key, true); };
-  const key = ev => {
-    if (ev.key === 'Escape') close();
-    else if (ev.key === 'ArrowRight' && urls.length > 1) { i = (i + 1) % urls.length; show(); }
-    else if (ev.key === 'ArrowLeft' && urls.length > 1) { i = (i - 1 + urls.length) % urls.length; show(); }
-    else return;
-    ev.preventDefault(); ev.stopPropagation();
-  };
-  const el = h('div.glight', { onclick: close }, img, cap);
-  addEventListener('keydown', key, true);
-  document.body.append(el);
-  show();
+  openViewer(urls, i);
 }
 
 function comboMenu(e, id, k, inp, v) {
@@ -900,6 +889,13 @@ function palette() {
       return vis.length ? [h('div.grp', {}, cat), ...vis.map(([t, def]) => h('div.it', {
         'data-tip': `${def.title}\n${t}${def.hint ? `\n${def.hint}` : ''}`, onclick: () => addNode(t), draggable: true,
         ondragstart: e => e.dataTransfer.setData('text/mai-node', t),
+        oncontextmenu: e => popup(e, [
+          { ic: 'add', label: 'Добавить на граф', fn: () => addNode(t) },
+          '-',
+          { ic: 'copy', label: 'Копировать название', fn: () => navigator.clipboard?.writeText(def.title) },
+          { ic: 'copy', label: `Копировать тип (${t})`, fn: () => navigator.clipboard?.writeText(t) },
+          def.source && def.source !== 'builtin' ? { ic: 'code', label: 'Код ноды', fn: () => emit('open-code', def.source.startsWith('nodes/') ? `server/${def.source}` : def.source) } : null,
+        ]),
       }, h('i', { style: { background: catColor(cat) } }), def.title))] : [];
     }));
     if (!list.childElementCount) list.append(h('div.dim', { style: { padding: '8px 10px' } }, Object.keys(defs()).length ? 'ничего не найдено' : 'нет каталога нод — запустите сервер'));

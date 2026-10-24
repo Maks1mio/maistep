@@ -1,13 +1,16 @@
 // ToColar — раскраска чёрно-белых картинок (манга, комиксы, скетчи) пачкой. Каждая картинка — скрытый граф
 // (id "tocolar"): Fit Image → VAE Encode → KSampler (img2img, denoise) → VAE Decode → Keep Lines. Последняя нода
 // берёт светлоту из оригинала, а цвет — из генерации, поэтому линии, тон и текст остаются как нарисованы.
-// Состояние (список, настройки) — localStorage; результаты — PNG в output/ (colored_*).
-import { h } from './util.js';
+// Цвета придумывает vision-LLM (скрытый llm.chat): общие персонажи + подсказка страницы, всё можно править.
+// Состояние (список, настройки, подсказки) — localStorage; результаты — PNG в output/ (colored_*).
+import { h, check, clamp } from './util.js';
 import { S, on, emit } from './store.js';
 import { icon } from './icons.js';
-import { api, upload, fileUrl } from './backend.js';
+import { api, upload, fileUrl, getSettings, getModels } from './backend.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage, transferHasImage } from './images.js';
 import { libraryPicker } from './library.js';
+import { modelPicker } from './modelpick.js';
+import { dropdown } from './kit.js';
 import { fetchRec } from './magic.js';
 import { activeView } from './dock.js';
 
@@ -15,20 +18,55 @@ const LS = 'maistep-tocolar';
 const log = (level, text) => emit('log', { src: 'tocolar', level, text });
 const COLOR_POS = 'full color, colorized manga, vibrant colors, anime coloring, detailed shading';
 const COLOR_NEG = 'monochrome, greyscale, black and white, sepia, desaturated, lineart only';
-const DEF = { items: [], sel: 0, ckpt: '', prompt: '', negative: '', denoise: 0.6, strength: 1.0, shading: 0.6, megapixels: 1.0, seed: -1, steps: null, cfg: null, split: 0.5 };
-let st = (() => { try { return { ...DEF, ...JSON.parse(localStorage.getItem(LS)) }; } catch { return { ...DEF }; } })();
-let viewEl = null, rec = null, job = null, stopAll = false;
+const DEF = {
+  items: [], sel: 0, ckpt: '', prompt: '', cast: '', negative: '', auto: true, llmProvider: '', llmModel: '',
+  denoise: 0.7, strength: 1.1, shading: 0.55, megapixels: 1.0, seed: -1, steps: null, cfg: null, split: 0.5, v: 2,
+};
+
+// vision-LLM: две строки — повторяющиеся персонажи и цвета именно этой страницы
+const LLM_SYSTEM = 'You colorize black-and-white manga and comic pages. You infer plausible, natural colors and answer '
+  + 'with English comma-separated tags only.';
+const LLM_PROMPT = 'This is a black-and-white manga page. Decide the colors that should be applied to it.\n'
+  + 'Answer in exactly two lines:\n'
+  + 'CAST: characters who repeat on other pages — hair color, eye color, skin tone, main outfit colors\n'
+  + 'PAGE: everything on this page — each clothing item and its color, accessories, props, background, lighting\n'
+  + 'Use explicit color words in every tag (example: blonde hair, blue eyes, white shirt, red pleated skirt, '
+  + 'gray classroom). Invent natural colors where the drawing gives no clue. Do not mention black and white, '
+  + 'lineart, monochrome or the drawing style. No names, no sentences, no markdown.';
+
+let st = load();
+let viewEl = null, rec = null, job = null, stopAll = false, viewerRO = null;
+let llmProvs = null, llmLoading = false, llmPick = null, llmBusy = 0, llmWarned = false;
+const waits = new Map(); // pid запроса vision-LLM → { ок, ошибка }
+
+function load() {
+  let d = {};
+  try { d = JSON.parse(localStorage.getItem(LS)) || {}; } catch {}
+  const s = { ...DEF, ...d };
+  if (!d.v || d.v < 2) { // прежние умолчания давали бледный цвет
+    s.denoise = 0.7; s.strength = 1.1; s.shading = 0.55; s.auto = true; s.v = 2;
+  }
+  s.items = (Array.isArray(s.items) ? s.items : []).map(it => ({
+    src: it.src, out: it.out || null, outs: Array.isArray(it.outs) ? it.outs : (it.out ? [it.out] : []),
+    status: it.status === 'run' ? 'new' : it.status || 'new', prompt: it.prompt ?? null, zoom: it.zoom || 1,
+  })).filter(it => it.src);
+  s.sel = clamp(s.sel | 0, 0, Math.max(0, s.items.length - 1));
+  return s;
+}
 const keep = () => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch {} };
 const ckptName = () => st.ckpt || S.nodes['sd.checkpoint']?.inputs?.ckpt_name?.default || '';
 const cur = () => st.items[st.sel] || null;
-const name = f => f.split('/').pop();
+const name = f => String(f || '').split('/').pop();
+const stem = f => name(f).replace(/\.[^.]+$/, '').replace(/[^\w.-]+/g, '_').slice(0, 40) || 'page';
+const uid = () => crypto.randomUUID().replace(/-/g, '');
+const pagePrompt = it => [st.cast, st.prompt, it?.prompt].map(s => (s || '').trim()).filter(Boolean).join(', ');
 
 // ---------- список ----------
 function add(files) {
   const have = new Set(st.items.map(i => i.src));
   const fresh = files.filter(f => f && !have.has(f));
   if (!fresh.length) return;
-  st.items.push(...fresh.map(src => ({ src, out: null, status: 'new' })));
+  st.items.push(...fresh.map(src => ({ src, out: null, outs: [], status: 'new', prompt: null, zoom: 1 })));
   st.sel = st.items.length - fresh.length;
   keep(); render();
 }
@@ -55,25 +93,140 @@ async function loadRec() {
   render();
 }
 
+// ---------- vision-LLM: цвета сам ----------
+let defaultProvider = '';
+async function ensureLlm(force = false) {
+  if (!S.server.running) return null;
+  if (llmPick && !force) return llmPick;
+  if (llmLoading) return llmPick;
+  llmLoading = true;
+  try {
+    if (!llmProvs || force) {
+      const s = await getSettings();
+      llmProvs = s.providers || {};
+      defaultProvider = s.default_provider || '';
+    }
+    const hasKey = id => !!llmProvs[id]?.has_key;
+    const withKey = Object.keys(llmProvs).find(hasKey);
+    const usable = id => llmProvs[id] && (hasKey(id) || llmProvs[id].kind === 'ollama');
+    let p = st.llmProvider;
+    if (!p || !usable(p)) {
+      p = (defaultProvider && usable(defaultProvider) ? defaultProvider : '') || withKey
+        || Object.keys(llmProvs).find(usable) || Object.keys(llmProvs)[0] || '';
+    }
+    st.llmProvider = p;
+    if (!p) { llmPick = null; return null; }
+    await getModels(p, force);
+    const all = S.models[p]?.models || [];
+    const vision = m => m.vision || llmProvs[p]?.kind === 'ollama';
+    let m = all.find(x => x.id === st.llmModel && vision(x));
+    if (!m) m = all.find(vision);
+    st.llmModel = m?.id || '';
+    llmPick = m ? { provider: p, model: m.id } : null;
+    if (!m) log('warn', `vision-LLM: у ${llmProvs[p]?.name || p} нет модели с картинками`);
+    keep();
+    if (viewEl?.isConnected) render();
+  } catch (e) {
+    log('warn', `vision-LLM: ${e.message}`);
+    llmPick = null;
+  } finally { llmLoading = false; }
+  return llmPick;
+}
+
+function llmRun(src) {
+  const pick = llmPick;
+  if (!pick) return Promise.reject(new Error('нет vision-модели'));
+  const pid = uid();
+  const wf = {
+    id: 'tocolar_ctx', title: `ToColar: цвета ${name(src)}`,
+    nodes: [
+      { id: 'img', type: 'image.load', props: { file: src } },
+      { id: 'llm', type: 'llm.chat', props: { prompt: LLM_PROMPT, system: LLM_SYSTEM, provider: pick.provider, model: pick.model,
+        max_tokens: 500, effort: 'auto', temperature: 0.35, seed: Date.now() % 1000000 } },
+      { id: 'out', type: 'output.show', props: {} },
+    ],
+    links: [{ from: 'img', out: 'image', to: 'llm', in: 'image' }, { from: 'llm', out: 'text', to: 'out', in: 'value' }],
+    targets: ['out'],
+  };
+  return new Promise((resolve, reject) => {
+    const done = (fn, v) => { clearTimeout(timer); waits.delete(pid); fn(v); };
+    const timer = setTimeout(() => done(reject, new Error('vision-LLM не ответил за 4 мин (в очереди другая генерация?)')), 240000);
+    waits.set(pid, { ok: t => done(resolve, t), fail: e => done(reject, e) });
+    log('info', `цвета: спрашиваю ${pick.model}`);
+    api('/api/prompt', { id: pid, workflow: wf }).catch(e => done(reject, e));
+  });
+}
+
+const cleanTags = t => t.replace(/^(?:monochrome|greyscale|grayscale|black and white|lineart|line art|sketch|manga)$/i, '')
+  .replace(/\s+/g, ' ').replace(/^[,;\s]+|[,.;\s]+$/g, '').trim();
+function parseColors(text) {
+  const raw = String(text || '').replace(/```[a-z]*|```/gi, ' ').trim();
+  if (!raw) return { cast: '', page: '' };
+  const grab = re => { const m = re.exec(raw); return m ? cleanTags(m[1]) : ''; };
+  const cast = grab(/(?:^|\n)\s*[-*•]?\s*cas[ts]\s*[:\-–]\s*(.+)/i);
+  const page = grab(/(?:^|\n)\s*[-*•]?\s*(?:page|scene|colors?)\s*[:\-–]\s*(.+)/i);
+  if (cast || page) return { cast, page };
+  const line = raw.split('\n').map(s => s.trim()).filter(Boolean).join(', ');
+  return { cast: '', page: line.split(',').map(cleanTags).filter(Boolean).join(', ') };
+}
+
+async function describe(it, quiet = false) {
+  if (!it) return null;
+  if (!S.server.running) { if (!quiet) log('warn', 'сервер не запущен'); return null; }
+  const pick = await ensureLlm();
+  if (!pick) { if (!quiet) log('warn', 'автоцвета: выберите vision-модель (Файл → Провайдеры LLM…)'); return null; }
+  llmBusy++;
+  if (viewEl?.isConnected) render();
+  try {
+    const text = await llmRun(it.src);
+    const r = parseColors(text);
+    if (!r.page && !r.cast) throw new Error('модель не вернула цвета');
+    return r;
+  } catch (e) {
+    if (!quiet || !llmWarned) {
+      log('warn', `автоцвета: ${e.message}`);
+      llmWarned = true;
+    }
+    return null;
+  } finally {
+    llmBusy = Math.max(0, llmBusy - 1);
+    if (viewEl?.isConnected) render();
+  }
+}
+
+async function invent(it, quiet = false) {
+  if (!it) return false;
+  it.prompt = null; keep();
+  const r = await describe(it, quiet);
+  if (!r) { it.prompt = ''; keep(); return false; }
+  if (r.cast && !st.cast.trim()) st.cast = r.cast;
+  it.prompt = r.page || r.cast;
+  keep();
+  log('ok', `цвета страницы: ${it.prompt.slice(0, 140)}`);
+  if (viewEl?.isConnected) render();
+  return true;
+}
+
 // ---------- запуск ----------
-function graph(src) {
+function graph(it) {
   const q = rec?.ok ? rec.prompt : { positive: 'masterpiece, best quality', negative: 'lowres, worst quality, bad anatomy' };
   const p = rec?.ok ? rec.params : {};
   const L = (from, out, to, inn) => ({ from, out, to, in: inn });
   return {
-    id: 'tocolar', title: `ToColar: ${name(src)}`,
+    id: 'tocolar', title: `ToColar: ${name(it.src)}`,
     nodes: [
       { id: 'ckpt', type: 'sd.checkpoint', props: { ckpt_name: ckptName() } },
       { id: 'skip', type: 'sd.clip_skip', props: { stop_at_clip_layer: rec?.clip_skip || -2 } },
-      { id: 'pos', type: 'sd.text_encode', props: { text: [q.positive, COLOR_POS, st.prompt.trim()].filter(Boolean).join(', ') } },
+      { id: 'pos', type: 'sd.text_encode', props: { text: [q.positive, COLOR_POS, pagePrompt(it)].filter(Boolean).join(', ') } },
       { id: 'neg', type: 'sd.text_encode', props: { text: [st.negative.trim() || q.negative, COLOR_NEG].filter(Boolean).join(', ') } },
-      { id: 'img', type: 'image.load', props: { file: src } },
+      { id: 'img', type: 'image.load', props: { file: it.src } },
       { id: 'fit', type: 'image.fit', props: { megapixels: st.megapixels, multiple: 64 } },
       { id: 'enc', type: 'sd.vae_encode', props: {} },
       { id: 'ks', type: 'sd.ksampler', props: { seed: st.seed, steps: st.steps ?? p.steps ?? 25, cfg: st.cfg ?? p.cfg ?? 6,
         sampler_name: p.sampler_name || 'euler_ancestral', scheduler: p.scheduler || 'normal', denoise: st.denoise } },
       { id: 'dec', type: 'sd.vae_decode', props: {} },
-      { id: 'keep', type: 'image.keep_lines', props: { strength: st.strength, shading: st.shading ?? 0.6, prefix: 'colored' } },
+      { id: 'keep', type: 'image.keep_lines', props: { strength: st.strength, shading: st.shading ?? 0.55, smooth: 5,
+        prefix: `colored_${stem(it.src)}` } },
     ],
     links: [L('ckpt', 'clip', 'skip', 'clip'), L('skip', 'clip', 'pos', 'clip'), L('skip', 'clip', 'neg', 'clip'),
       L('img', 'image', 'fit', 'image'), L('fit', 'image', 'enc', 'pixels'), L('ckpt', 'vae', 'enc', 'vae'),
@@ -88,8 +241,8 @@ async function start(only = null) {
   if (job) return;
   if (!S.server.running) { log('warn', 'сервер не запущен'); emit('server-start'); return; }
   if (!ckptName()) return log('warn', 'выберите чекпоинт (лучше аниме: Illustrious, Pony, NoobAI)');
+  if (only == null) for (const it of st.items) if (it.status === 'err') it.status = 'new';
   if (!rec) await loadRec();
-  if (only == null) for (const it of st.items) if (it.status === 'err') it.status = 'new'; // ошибочные — ещё раз
   stopAll = false;
   next(only);
 }
@@ -98,15 +251,25 @@ async function next(only = null) {
   const index = only ?? st.items.findIndex(i => i.status === 'new');
   const it = st.items[index];
   if (index < 0 || !it || stopAll) { job = null; render(); return; }
-  const pid = crypto.randomUUID().replace(/-/g, '');
-  job = { pid, index, step: 0, max: 0, preview: null, single: only != null };
+  const me = job = { pid: null, index, phase: 'sd', step: 0, max: 0, single: only != null, posted: false, miss: 0 };
   it.status = 'run';
   st.sel = index;
   render();
+  if (st.auto && it.prompt == null) {
+    me.phase = 'prompt'; render();
+    const ok = await invent(it, true);
+    if (!ok) log('warn', 'автоцвета не сработали — раскрашиваю по общим подсказкам');
+    if (job !== me) return;
+    if (stopAll) { if (it.status === 'run') it.status = 'new'; keep(); job = null; render(); return; }
+  }
+  const pid = uid();
+  me.phase = 'sd';
+  me.pid = pid;
+  render();
   try {
-    await api('/api/prompt', { id: pid, workflow: graph(it.src) });
-    if (job?.pid === pid) job.posted = true;
-    log('info', `раскраска ${name(it.src)} · denoise ${st.denoise}`);
+    await api('/api/prompt', { id: pid, workflow: graph(it) });
+    if (job === me) me.posted = true;
+    log('info', `раскраска ${name(it.src)} · denoise ${st.denoise}${it.prompt ? ` · ${it.prompt.slice(0, 80)}` : ''}`);
   } catch (e) {
     it.status = 'err'; job = null;
     for (const is of e.data?.issues || []) log('error', `нода ${is.node}: ${is.message}`);
@@ -117,65 +280,129 @@ async function next(only = null) {
 
 // конец запуска картинки (событие done или сверка с историей сервера)
 function finish(d) {
+  if (!job) return;
   const it = st.items[job.index];
+  const pid = job.pid, index = job.index;
   const stopped = d.stopped || d.error?.message === 'прервано';
-  if (d.ok && it && !it.out) { const f = (d.outputs?.keep?._ui || d.outputs?.keep?.ui)?.images?.[0]; if (f) { it.out = f; it.status = 'done'; } }
+  if (d.ok && it) {
+    const f = (d.outputs?.keep?._ui || d.outputs?.keep?.ui)?.images?.[0];
+    if (f) setResult(it, f);
+  }
   if (!d.ok) {
     if (it) it.status = stopped ? 'new' : 'err';
     log(stopped ? 'warn' : 'error', `ToColar: ${stopped ? 'прервано' : d.error?.message?.split('\n')[0] || 'запуск не удался'}`);
-  } else if (it && it.status !== 'done') it.status = 'err';
+  } else if (it && it.status !== 'done') {
+    // результат ноды потерялся по дороге (обрыв SSE) — заберём его из истории сервера
+    it.status = 'run';
+    api('/api/history?limit=20').then(list => {
+      const e = list.find(x => x.prompt_id === pid);
+      const f = (e?.outputs?.keep?._ui || e?.outputs?.keep?.ui)?.images?.[0];
+      const item = st.items[index];
+      if (!item) return;
+      if (f) { setResult(item, f); keep(); render(); }
+      else { item.status = 'err'; keep(); render(); }
+    }).catch(() => { if (st.items[index]) st.items[index].status = 'err'; keep(); render(); });
+  }
   const single = job.single;
-  job = null; keep();
-  if (single || stopAll || stopped) { render(); return; }
+  job = null; keep(); render();
+  if (single || stopAll || stopped) return;
   next();
+}
+
+function setResult(it, f) {
+  it.out = f;
+  it.outs = [...(it.outs || []), f].filter((x, i, a) => a.indexOf(x) === i).slice(-8);
+  it.status = 'done';
 }
 
 // события SSE теряются при обрыве связи (долгая генерация, перезапуск сервера) — сверяемся с очередью и историей
 async function reconcile() {
-  if (!job?.posted || !S.server.running) return;
-  const pid = job.pid;
+  if (!job?.posted || !job.pid || !S.server.running) return;
+  const me = job, pid = me.pid;
   try {
     const q = await api('/api/queue');
-    if (q.running?.prompt_id === pid || q.pending?.some(p => p.prompt_id === pid)) return;
+    if (job !== me) return;
+    if (q.running?.prompt_id === pid || q.pending?.some(p => p.prompt_id === pid)) { me.miss = 0; return; }
     const h = (await api('/api/history?limit=20')).find(x => x.prompt_id === pid);
-    if (job?.pid === pid) finish(h ? { ok: h.ok, error: h.error, outputs: h.outputs } : { ok: false, error: { message: 'запуск потерялся (сервер перезапущен?)' } });
+    if (job !== me) return;
+    if (h) finish({ ok: h.ok, error: h.error, outputs: h.outputs });
+    else if (++me.miss >= 4) finish({ ok: false, error: { message: 'запуск потерялся (сервер перезапущен?)' } });
   } catch {}
 }
 
 function stop() {
   stopAll = true;
-  if (job) api('/api/interrupt', {}).catch(() => {});
+  if (job?.pid) api('/api/interrupt', {}).catch(() => {});
+  else if (job) { const it = st.items[job.index]; if (it?.status === 'run') { it.status = 'new'; } job = null; keep(); render(); }
 }
 
 // ---------- отрисовка ----------
 const field = (label, ctrl, hint) => h('div.tc-f', {}, h('label', {}, label), ctrl, hint ? h('div.tc-hint', {}, hint) : null);
-function num(key, { min, max, step, ph }) {
-  return h('input', { type: 'number', min, max, step, value: st[key] ?? '', placeholder: ph ?? '', onchange: e => {
+function num(key, opts) {
+  return h('input', { type: 'number', min: opts.min, max: opts.max, step: opts.step, value: st[key] ?? '', placeholder: opts.ph ?? '', onchange: e => {
     const v = e.target.value === '' ? null : Number(e.target.value);
     st[key] = v == null ? (DEF[key] ?? null) : v; keep(); render();
   } });
 }
+function textarea(value, oninput, ph, rows = 2) {
+  const t = h('textarea', { rows, spellcheck: false, placeholder: ph });
+  t.value = value ?? '';
+  t.addEventListener('input', () => oninput(t.value));
+  return t;
+}
 
-function settings() {
+function llmLine() {
+  if (!llmProvs) return h('div.tc-hint', {}, llmLoading ? 'ищу vision-модель…' : 'автоцвета: подключите провайдера LLM');
+  const provs = Object.entries(llmProvs).map(([id, p]) => [id, p.name || id]);
+  if (!provs.length) return h('div.tc-hint', {}, 'нет провайдеров — Файл → Провайдеры LLM…');
+  const prov = dropdown(st.llmProvider, provs, v => {
+    st.llmProvider = v; st.llmModel = ''; llmPick = null; keep();
+    ensureLlm(true).then(() => render());
+  }, { width: 112 });
+  const pick = h('button.tc-link', { type: 'button', 'data-tip': 'Модель, которая видит картинку (значок 👁)' }, st.llmModel || 'выбрать модель');
+  pick.addEventListener('click', async () => {
+    await getModels(st.llmProvider).catch(() => {});
+    modelPicker(pick, { provider: st.llmProvider, value: st.llmModel, onPick: id => {
+      st.llmModel = id; llmPick = { provider: st.llmProvider, model: id }; keep(); render();
+    } });
+  });
+  return h('div.tc-llm', {}, icon('eye', { size: 13 }), prov, pick);
+}
+
+function sidebar() {
   const ck = ckptName();
   const p = rec?.ok ? rec.params : {};
   const ckBtn = h('button.ui-dd.tc-ck', { type: 'button', 'data-tip': 'Чекпоинт для раскраски',
     onclick: () => libraryPicker(ckBtn, { cat: 'checkpoints', value: ck, onPick: n => { st.ckpt = n; rec = null; keep(); loadRec(); render(); } }) },
     icon('image', { size: 16 }), h(`span.t${ck ? '' : '.ph'}`, {}, ck ? name(ck).replace(/\.\w+$/, '') : 'выберите чекпоинт'), h('span.chev', {}, icon('down', { size: 16 })));
-  const ta = (key, ph) => h('textarea', { rows: 3, placeholder: ph, value: st[key], 'data-prompt-weight': '', oninput: e => { st[key] = e.target.value; keep(); } });
+  const it = cur();
+  const itemText = it ? textarea(it.prompt ?? '', v => { it.prompt = v; keep(); }, 'пусто — только общие подсказки', 2) : null;
+  if (itemText) itemText.disabled = !it;
   return h('div.tc-side', {},
     h('div.tc-sec', {}, 'Модель'),
     field('Чекпоинт', ckBtn, rec?.ok ? `Magic: ${rec.profile || 'рекомендация'}` : 'аниме-чекпоинт (SDXL Illustrious/Pony) — лучше всего для манги'),
     h('div.tc-sec', {}, 'Цвет'),
-    field('Подсказка', ta('prompt', 'например: blonde hair, blue eyes, red dress, sunset sky'), 'кто и какого цвета — по-русски тоже можно'),
-    field('Негатив', ta('negative', rec?.ok ? rec.prompt.negative : 'lowres, worst quality')),
-    field('Denoise', h('div.tc-rng', {}, h('input', { type: 'range', min: 0.3, max: 0.9, step: 0.05, value: st.denoise,
+    h('div.tc-auto', {}, h('label.tc-check', {}, check(st.auto, v => { st.auto = v; keep(); render(); }), 'придумывать цвета самому'), llmLine()),
+    field('Персонажи (все страницы)', textarea(st.cast, v => { st.cast = v; keep(); }, 'blonde hair, blue eyes, light skin, white shirt — повторяющиеся персонажи', 2)),
+    field('Подсказка (все страницы)', textarea(st.prompt, v => { st.prompt = v; keep(); }, 'краски сцены: красное платье, закат, зелёная трава', 2),
+      'по-русски тоже можно — промпт переведёт LLM'),
+    field('Цвета этой страницы', itemText,
+      it ? (it.prompt ? 'придумано для этой страницы; можно править' : 'кнопка «Придумать» или авто при раскраске') : 'сначала выберите картинку'),
+    h('div.tc-row', {},
+      h('button.ui-btn.secondary.slim', { type: 'button', disabled: !it || !S.server.running || llmBusy > 0,
+        title: 'vision-LLM опишет персонажей и цвета этой страницы',
+        onclick: () => { if (it && !llmBusy) invent(it); } }, icon('spark', { size: 14 }), llmBusy ? 'Думаю…' : 'Придумать цвета'),
+      h('button.ui-btn.secondary.slim', { type: 'button', disabled: !st.cast && !st.prompt, title: 'Очистить общие подсказки',
+        onclick: () => { st.cast = ''; st.prompt = ''; keep(); render(); } }, 'Очистить')),
+    field('Негатив', textarea(st.negative, v => { st.negative = v; keep(); }, rec?.ok ? rec.prompt.negative : 'lowres, worst quality')),
+    field('Denoise', h('div.tc-rng', {}, h('input', { type: 'range', min: 0.3, max: 0.95, step: 0.05, value: st.denoise,
       oninput: e => { st.denoise = Number(e.target.value); e.target.nextSibling.textContent = st.denoise.toFixed(2); keep(); } }), h('b', {}, st.denoise.toFixed(2))),
-      'меньше — ближе к исходной картинке, больше — смелее цвет (0.55–0.7)'),
-    field('Насыщенность', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1.5, step: 0.05, value: st.strength,
-      oninput: e => { st.strength = Number(e.target.value); e.target.nextSibling.textContent = st.strength.toFixed(2); keep(); } }), h('b', {}, st.strength.toFixed(2)))),
-    field('Тени', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: st.shading ?? 0.6,
-      oninput: e => { st.shading = Number(e.target.value); e.target.nextSibling.textContent = st.shading.toFixed(2); keep(); } }), h('b', {}, (st.shading ?? 0.6).toFixed(2))),
+      'меньше — ближе к исходнику и бледнее, больше — смелее цвет (рабочее 0.65–0.8)'),
+    field('Насыщенность', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1.6, step: 0.05, value: st.strength,
+      oninput: e => { st.strength = Number(e.target.value); e.target.nextSibling.textContent = st.strength.toFixed(2); keep(); } }), h('b', {}, st.strength.toFixed(2))),
+      'слабый цвет генерации подтягивается автоматически'),
+    field('Тени', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: st.shading ?? 0.55,
+      oninput: e => { st.shading = Number(e.target.value); e.target.nextSibling.textContent = st.shading.toFixed(2); keep(); } }), h('b', {}, (st.shading ?? 0.55).toFixed(2))),
       '0 — плоская заливка, 1 — вся светотень генерации; линии всегда из оригинала'),
     h('div.tc-sec', {}, 'Генерация'),
     h('div.tc-row', {},
@@ -189,44 +416,168 @@ function settings() {
 
 function listEl() {
   return h('div.tc-list', {},
-    ...st.items.map((it, i) => h(`div.tc-it${i === st.sel ? '.sel' : ''}`, { onclick: () => { st.sel = i; keep(); render(); } },
+    ...st.items.map((it, i) => h(`div.tc-it${i === st.sel ? '.sel' : ''}`, { onclick: () => { st.sel = i; keep(); render(); },
+      title: `${name(it.src)}${it.prompt ? '\n' + it.prompt : ''}`,
+      ondragover: e => { if (transferHasImage(e.dataTransfer)) e.preventDefault(); } },
       h('img', { src: fileUrl(it.out || it.src), loading: 'lazy', alt: '', draggable: false }),
       h('div.tc-nm', {}, h('span', {}, name(it.src)),
-        h(`span.tc-st.${it.status}`, {}, { new: 'ожидает', run: job?.index === i && job.max ? `шаг ${job.step}/${job.max}` : 'в работе…', done: 'готово', err: 'ошибка' }[it.status] || '')),
+        h(`span.tc-st.${it.status}`, {}, statusText(it, i))),
       h('span.ui-tb.tc-x', {}, h('button.b', { 'data-tip': 'Убрать из списка', onclick: e => { e.stopPropagation(); remove(i); } }, icon('closeSmall', { size: 16 }))))),
     st.items.length ? null : h('div.tc-hint', { style: { padding: '8px' } }, 'список пуст'));
 }
 
-// сравнение «до / после»: шторка перетаскивается мышью
+const statusText = (it, i) => {
+  if (it.status === 'run' && job?.index === i) {
+    if (job.phase === 'prompt') return 'цвета…';
+    return job.max ? `шаг ${job.step}/${job.max}` : 'в работе…';
+  }
+  return { new: 'ожидает', run: 'в работе…', done: 'готово', err: 'ошибка' }[it.status] || '';
+};
+
+const runText = () => {
+  if (!job) return '';
+  if (job.phase === 'prompt') return 'vision-LLM описывает страницу';
+  if (!job.max) return job.posted ? 'в очереди…' : 'запуск…';
+  return `шаг ${job.step} / ${job.max}`;
+};
+const runPct = () => (job?.max ? `${Math.round(100 * job.step / job.max)}%` : '0%');
+
+function updateRun() {
+  const s = viewEl?.querySelector('.tc-run-s'); if (s) s.textContent = runText();
+  const f = viewEl?.querySelector('.tc-run-fill'); if (f) f.style.width = runPct();
+  const t = viewEl?.querySelector('.tc-run-t'); if (t) t.textContent = job?.phase === 'prompt' ? 'придумываю цвета…' : 'раскрашиваю…';
+  if (!job) return;
+  const row = viewEl?.querySelectorAll('.tc-it')?.[job.index];
+  const stx = row?.querySelector('.tc-st');
+  if (stx) stx.textContent = statusText(st.items[job.index], job.index);
+}
+
+// ---------- сравнение «до / после» ----------
 function viewer() {
+  if (viewerRO) { viewerRO.disconnect(); viewerRO = null; }
   const it = cur();
   if (!it) {
     return h('div.tc-view.tc-empty', {}, icon('image', { size: 32 }), h('div.t-h2', {}, 'ToColar'),
       h('div.t-p', {}, 'Перетащите сюда чёрно-белые страницы манги или комикса, вставьте Ctrl+V или выберите кнопками сверху — ToColar их раскрасит.'));
   }
-  const after = job?.index === st.sel && job.preview ? job.preview : it.out ? fileUrl(it.out) : null;
-  const wrap = h('div.tc-cmp');
+  const after = it.out ? fileUrl(it.out) : null;
+  const zoom = () => it.zoom || 1;
+  const cmp = h('div.tc-cmp');
+  const stage = h('div.tc-stage');
   const before = h('img.tc-before', { src: fileUrl(it.src), alt: '', draggable: false });
-  if (!after) wrap.append(before);
-  else {
-    const top = h('img.tc-after', { src: after, alt: '', draggable: false });
-    const bar = h('div.tc-bar');
-    const set = x => { st.split = Math.max(0, Math.min(1, x)); top.style.clipPath = `inset(0 0 0 ${st.split * 100}%)`; bar.style.left = `${st.split * 100}%`; };
-    wrap.append(before, top, bar);
-    set(st.split);
-    wrap.ondragstart = e => e.preventDefault(); // своя картинка не должна «падать» обратно в список
-    wrap.onpointerdown = e => {
-      e.preventDefault();
-      wrap.setPointerCapture(e.pointerId);
-      const mv = ev => { const r = before.getBoundingClientRect(); set((ev.clientX - r.left) / r.width); };
-      mv(e);
-      wrap.onpointermove = mv;
-      wrap.onpointerup = () => { wrap.onpointermove = null; keep(); };
-    };
+  let top = null, bar = null;
+  stage.append(before);
+  if (after) {
+    top = h('img.tc-after', { src: after, alt: '', draggable: false });
+    bar = h('div.tc-bar', { title: 'Тяните шторку' }, h('div.tc-grip', {}, icon('split', { size: 13 })));
+    stage.append(top, bar);
   }
-  return h('div.tc-view', {}, wrap,
-    h('div.tc-cap', {}, after ? 'слева — оригинал, справа — цвет; тяните шторку' : job?.index === st.sel ? 'раскрашивается…' : 'ещё не раскрашено',
-      it.out ? h('a.ui-link', { href: fileUrl(it.out), target: '_blank', 'data-tip': it.out }, 'открыть результат') : null));
+  cmp.append(stage);
+
+  const setSplit = v => {
+    st.split = clamp(v, 0, 1);
+    if (top) top.style.clipPath = `inset(0 0 0 ${st.split * 100}%)`;
+    if (bar) bar.style.left = `${st.split * 100}%`;
+  };
+
+  const applyLayout = () => {
+    const w = before.naturalWidth || 3, hgt = before.naturalHeight || 4;
+    const cw = Math.max(40, cmp.clientWidth), ch = Math.max(40, cmp.clientHeight);
+    const k = Math.min(cw / w, ch / hgt) * zoom();
+    stage.style.width = `${Math.max(1, Math.round(w * k))}px`;
+    stage.style.height = `${Math.max(1, Math.round(hgt * k))}px`;
+  };
+
+  const pctEl = h('b.tc-z', {}, `${Math.round(zoom() * 100)}%`);
+  const setZoom = (z, focus = null) => {
+    const r = stage.getBoundingClientRect();
+    const cr = cmp.getBoundingClientRect();
+    const fx = focus ? focus.x : cr.left + cmp.clientWidth / 2;
+    const fy = focus ? focus.y : cr.top + cmp.clientHeight / 2;
+    const rx = clamp((fx - r.left) / (r.width || 1), 0, 1);
+    const ry = clamp((fy - r.top) / (r.height || 1), 0, 1);
+    it.zoom = clamp(z, 1, 6); keep(); applyLayout();
+    const nr = stage.getBoundingClientRect();
+    cmp.scrollLeft += (nr.left + rx * nr.width) - fx;
+    cmp.scrollTop += (nr.top + ry * nr.height) - fy;
+    pctEl.textContent = `${Math.round(zoom() * 100)}%`;
+    cmp.classList.toggle('zoomed', zoom() > 1.01);
+  };
+
+  applyLayout();
+  before.addEventListener('load', applyLayout);
+  if (before.complete) applyLayout();
+  if (after) {
+    setSplit(st.split);
+    top.addEventListener('load', applyLayout);
+  }
+  if (window.ResizeObserver) {
+    viewerRO = new ResizeObserver(() => requestAnimationFrame(applyLayout));
+    viewerRO.observe(cmp);
+  }
+
+  // шторка: в масштабе «по размеру» тянется в любом месте, в увеличении — за ручку; остальное — сдвиг картинки
+  let drag = null;
+  const moveSplit = e => { const r = stage.getBoundingClientRect(); if (r.width) setSplit((e.clientX - r.left) / r.width); };
+  cmp.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    const onBar = bar && (e.target === bar || bar.contains(e.target));
+    if (top && (onBar || zoom() <= 1.01)) {
+      cmp.setPointerCapture(e.pointerId);
+      drag = { kind: 'split' };
+      moveSplit(e);
+    } else if (zoom() > 1.01) {
+      cmp.setPointerCapture(e.pointerId);
+      drag = { kind: 'pan', x: e.clientX, y: e.clientY, sl: cmp.scrollLeft, st: cmp.scrollTop };
+      cmp.classList.add('grabbing');
+    }
+  });
+  cmp.addEventListener('pointermove', e => {
+    if (!drag) return;
+    if (drag.kind === 'split') moveSplit(e);
+    else { cmp.scrollLeft = drag.sl - (e.clientX - drag.x); cmp.scrollTop = drag.st - (e.clientY - drag.y); }
+  });
+  const endDrag = () => { if (!drag) return; drag = null; cmp.classList.remove('grabbing'); if (top) keep(); };
+  cmp.addEventListener('pointerup', endDrag);
+  cmp.addEventListener('pointercancel', endDrag);
+  cmp.addEventListener('wheel', e => {
+    if (!before.naturalWidth) return;
+    e.preventDefault();
+    const z = zoom() * (e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    if (z <= 1.005) { if (zoom() > 1) setZoom(1); return; }
+    if (z > 6) return;
+    setZoom(z, { x: e.clientX, y: e.clientY });
+  }, { passive: false });
+  cmp.classList.toggle('zoomed', zoom() > 1.01);
+
+  const zbtns = h('div.tc-zctl', {},
+    h('span.ui-tb', {}, h('button.b', { 'data-tip': 'Уменьшить', onclick: () => setZoom(zoom() / 1.25) }, icon('zoomOut', { size: 14 }))),
+    pctEl,
+    h('span.ui-tb', {}, h('button.b', { 'data-tip': 'Увеличить (или колесо мыши)', onclick: () => setZoom(zoom() * 1.25) }, icon('zoomIn', { size: 14 }))),
+    h('span.ui-tb', {}, h('button.b', { 'data-tip': 'По размеру', onclick: () => setZoom(1) }, icon('fit', { size: 14 }))));
+
+  const outs = it.outs?.length ? it.outs : (it.out ? [it.out] : []);
+  const vi = Math.max(0, outs.indexOf(it.out));
+  const vars = outs.length > 1 ? h('div.tc-zctl', {},
+    h('span.ui-tb', {}, h('button.b', { 'data-tip': 'Прошлый вариант', onclick: () => { it.out = outs[Math.max(0, vi - 1)]; keep(); render(); } }, icon('left', { size: 14 }))),
+    h('span.tc-vn', {}, `вариант ${vi + 1} / ${outs.length}`),
+    h('span.ui-tb', {}, h('button.b', { 'data-tip': 'Следующий вариант', onclick: () => { it.out = outs[Math.min(outs.length - 1, vi + 1)]; keep(); render(); } }, icon('right', { size: 14 })))) : null;
+
+  if (job?.index === st.sel) {
+    stage.append(h('div.tc-run', {},
+      h('div.tc-run-card', {},
+        h('div.tc-spin'),
+        h('div.tc-run-t', {}, job.phase === 'prompt' ? 'придумываю цвета…' : 'раскрашиваю…'),
+        h('div.tc-run-s', {}, runText()),
+        h('div.tc-run-bar', {}, h('div.tc-run-fill', { style: { width: runPct() } })))));
+  }
+
+  return h('div.tc-view', {}, cmp,
+    h('div.tc-cap', {},
+      h('span.tc-capt', {}, after ? 'слева — оригинал, справа — цвет; тяните шторку' : job?.index === st.sel ? 'раскрашивается…' : 'ещё не раскрашено'),
+      h('span.grow'),
+      vars, zbtns,
+      after ? h('a.ui-link', { href: fileUrl(it.out), target: '_blank', 'data-tip': it.out }, 'открыть результат') : null));
 }
 
 function render() {
@@ -243,7 +594,7 @@ function render() {
     cur() && !job ? h('button.ui-btn.secondary.slim', { onclick: () => start(st.sel), 'data-tip': 'Раскрасить выбранную ещё раз (новый вариант)' }, icon('refresh', { size: 16 }), 'Заново') : null,
     h('span.grow'),
     st.items.some(i => i.status === 'done') && !job ? h('div.ui-tb', {}, h('button.b', { 'data-tip': 'Убрать готовые из списка', onclick: () => { st.items = st.items.filter(i => i.status !== 'done'); st.sel = 0; keep(); render(); } }, icon('delete', { size: 16 }))) : null);
-  viewEl.replaceChildren(bar, h('div.tc-body', {}, listEl(), viewer(), settings()));
+  viewEl.replaceChildren(bar, h('div.tc-body', {}, listEl(), viewer(), sidebar()));
 }
 
 // ---------- регистрация ----------
@@ -251,30 +602,44 @@ export function showTocolar() {
   viewEl = document.getElementById('v-tocolar');
   render();
   if (!rec) loadRec();
+  if (st.auto) ensureLlm();
 }
 
 export function initTocolar() {
   viewEl = document.getElementById('v-tocolar');
   for (const it of st.items) if (it.status === 'run') it.status = 'new'; // запуск прервался вместе с окном
   on('run-progress', d => {
-    if (!job || d.prompt_id !== job.pid || d.node !== 'ks') return;
+    if (!job || !job.pid || d.prompt_id !== job.pid || d.node !== 'ks') return;
     job.step = d.value; job.max = d.max;
-    const el = viewEl?.querySelector('.tc-it.sel .tc-st'); if (el) el.textContent = `шаг ${job.step}/${job.max}`;
+    updateRun();
   });
   on('run-preview', d => {
-    if (!job || d.prompt_id !== job.pid) return;
-    job.preview = d.image;
-    const img = viewEl?.querySelector('.tc-after');
-    if (img) img.src = d.image; else render();
+    if (!job || !job.pid || d.prompt_id !== job.pid) return;
+    job.preview = d.image; // латент-превью для раскраски бесполезно (шум) — показываем только прогресс
   });
   on('run-output', d => {
-    if (!job || d.prompt_id !== job.pid || d.node !== 'keep') return;
+    const w = waits.get(d.prompt_id);
+    if (w && d.node === 'out') { w.ok((d.output?._ui?.text || '').trim()); return; }
+    if (!job || !job.pid || d.prompt_id !== job.pid || d.node !== 'keep') return;
     const it = st.items[job.index], f = d.output?._ui?.images?.[0];
-    if (it && f) { it.out = f; it.status = 'done'; job.preview = null; keep(); log('ok', `раскрашено: ${f}`); }
+    if (it && f) {
+      setResult(it, f); job.preview = null; keep(); log('ok', `раскрашено: ${f}`); updateRun();
+    }
   });
-  on('run-done', d => { if (job && (!d.prompt_id || d.prompt_id === job.pid)) finish(d); });
+  on('run-error', d => { const w = waits.get(d.prompt_id); if (w) w.fail(new Error(String(d.message || 'ошибка LLM'))); });
+  on('run-done', d => {
+    const w = waits.get(d.prompt_id);
+    if (w) w.fail(new Error(d.stopped ? 'прервано' : d.error?.message || 'пустой ответ'));
+    if (job && job.pid && (!d.prompt_id || d.prompt_id === job.pid)) finish(d);
+  });
   setInterval(reconcile, 4000);
-  on('server', s => { if (s.running) setTimeout(() => { rec = null; if (viewEl?.isConnected) loadRec(); }, 900); });
+  on('server', s => {
+    if (!s.running) return;
+    setTimeout(() => {
+      rec = null; llmPick = null; llmProvs = null; llmWarned = false;
+      if (viewEl?.isConnected) { loadRec(); if (st.auto) ensureLlm(true); }
+    }, 900);
+  });
   // перетаскивание и вставка картинок
   viewEl?.addEventListener('dragover', e => { if (transferHasImage(e.dataTransfer)) { e.preventDefault(); viewEl.classList.add('drop'); } });
   viewEl?.addEventListener('dragleave', e => { if (!viewEl.contains(e.relatedTarget)) viewEl.classList.remove('drop'); });

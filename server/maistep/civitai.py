@@ -72,6 +72,7 @@ def settings():
     s = (_read(SETTINGS, {}) or {}).get("civitai") or {}
     return {"api_key": s.get("api_key", ""), "root": s.get("root", ""), "connections": int(s.get("connections", 4)),
             "concurrent": int(s.get("concurrent", 1)), "nsfw": bool(s.get("nsfw", False)),
+            "speed_limit": float(s.get("speed_limit", 0) or 0),
             "verify": s.get("verify", True) is not False, "preview": s.get("preview", True) is not False}
 
 
@@ -85,15 +86,17 @@ def public_settings():
 def save_settings(data):
     full = _read(SETTINGS, {}) or {}
     cur = full.get("civitai") or {}
-    for k in ("root", "connections", "concurrent", "nsfw", "verify", "preview"):
+    for k in ("root", "connections", "concurrent", "nsfw", "verify", "preview", "speed_limit"):
         if k in data:
             cur[k] = data[k]
     if "api_key" in data and "…" not in str(data["api_key"]) and data["api_key"] != "•••":
         cur["api_key"] = str(data["api_key"]).strip()
     cur["connections"] = max(1, min(16, int(cur.get("connections", 4))))
     cur["concurrent"] = max(1, min(4, int(cur.get("concurrent", 1))))
+    cur["speed_limit"] = max(0.0, min(1000.0, float(cur.get("speed_limit", 0) or 0)))
     full["civitai"] = cur
     _write(SETTINGS, full)
+    _limit.rate = cur["speed_limit"] * 2**20
     _pump()
     return public_settings()
 
@@ -287,19 +290,25 @@ class Job:
         self.cancel = threading.Event()
 
     def snap(self):
+        # обложка — по возможности безопасная (nsfwLevel < 4); флаг — чтобы UI скрыл или размыл NSFW
+        imgs = [i for i in self.version.get("images") or [] if i.get("type") == "image" and i.get("url")]
+        adult = lambda i: isinstance(i.get("nsfw"), int) and i["nsfw"] >= 4 or i.get("nsfw") in ("Mature", "X", "R", True)
+        img = next((i for i in imgs if not adult(i)), imgs[0] if imgs else None)
         return {"id": self.id, "state": self.state, "error": self.error, "done": self.done, "total": self.total,
                 "speed": round(self.speed), "name": self.name, "dest": self.dest,
                 "model": {"id": self.model.get("id"), "name": self.model.get("name"), "type": self.model.get("type")},
                 "version": {"id": self.version.get("id"), "name": self.version.get("name"), "base": self.version.get("base")},
                 "file": {k: self.file.get(k) for k in ("id", "name", "size", "sha256", "url")},
-                "image": next((i["url"] for i in self.version.get("images") or [] if i.get("type") == "image"), None),
+                # None — неизвестно (записи истории до 0.1.4): UI считает такую обложку NSFW
+                "image": img and img["url"], "image_nsfw": None if img and img.get("nsfw") is None else bool(img and adult(img)),
                 "created": self.created, "started": self.started, "finished": self.finished}
 
 
 def _load_jobs():
     with _lock:
         for s in (_store().get("jobs") or [])[-200:]:
-            j = Job(s["model"], s["version"] | {"images": [{"url": s.get("image"), "type": "image"}] if s.get("image") else []},
+            img = {"url": s.get("image"), "type": "image", "nsfw": {True: 16, False: 1}.get(s.get("image_nsfw"))}
+            j = Job(s["model"], s["version"] | {"images": [img] if s.get("image") else []},
                     s["file"], s["dest"], s["name"])
             j.id, j.state, j.error = s["id"], s["state"], s.get("error", "")
             if j.state in ("queued", "running", "verifying"):
@@ -497,6 +506,35 @@ class _Cancelled(Exception):
     pass
 
 
+class _Limiter:
+    """Общий предел скорости всех загрузок и соединений (байт/с, 0 — без предела): ведро токенов с запасом
+    на 1 с. Меняется сразу, без перезапуска загрузок (settings → speed_limit, МБ/с)."""
+
+    def __init__(self):
+        self.rate, self.allow, self.at = 0.0, 0.0, time.monotonic()
+        self.lock = threading.Lock()
+
+    def take(self, n, cancel):
+        while self.rate > 0 and not cancel.is_set():
+            with self.lock:
+                now = time.monotonic()
+                self.allow = min(self.rate, self.allow + (now - self.at) * self.rate)
+                self.at = now
+                # кусок больше секундного запаса — в долг, следующие подождут
+                if self.allow >= min(n, self.rate):
+                    self.allow -= n
+                    return
+                wait = (min(n, self.rate) - self.allow) / self.rate
+            time.sleep(min(wait, 0.25))
+
+    def chunk(self):
+        """Размер чтения: при низком пределе — мелкими кусками, иначе скорость скачет рывками по 1 МБ."""
+        return 1 << 18 if 0 < self.rate < 8 * 2**20 else 1 << 20
+
+
+_limit = _Limiter()
+
+
 def _dl_url(url):
     key = settings()["api_key"]
     if key:
@@ -523,6 +561,7 @@ def _download(j):
         raise RuntimeError(f"file already exists: {dest}")
     part = dest.with_name(dest.name + ".part")
     s = settings()
+    _limit.rate = s["speed_limit"] * 2**20
     # первый запрос: узнаём итоговый URL (после редиректа на хранилище), размер и поддержку Range
     r = _open(_dl_url(j.file["url"]), 0, None)
     final = r.geturl()
@@ -534,6 +573,7 @@ def _download(j):
     last = [time.time(), 0]
 
     def tick(n):
+        _limit.take(n, j.cancel)
         with _lock:
             j.done += n
         now = time.time()
@@ -548,7 +588,7 @@ def _download(j):
         if not ranged:
             with open(part, "wb") as out:
                 while True:
-                    b = r.read(1 << 20)
+                    b = r.read(_limit.chunk())
                     if not b:
                         break
                     out.write(b)
@@ -570,7 +610,7 @@ def _download(j):
                         with open(part, "r+b") as out:
                             out.seek(pos)
                             while True:
-                                chunk = pr.read(1 << 20)
+                                chunk = pr.read(_limit.chunk())
                                 if not chunk:
                                     break
                                 out.write(chunk)

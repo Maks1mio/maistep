@@ -6,6 +6,7 @@ import { registerInspector } from './inspector.js';
 import { icon } from './icons.js';
 import { history, fileUrl, interrupt, clearQueue } from './backend.js';
 import { isShown } from './dock.js';
+import { openViewer } from './viewer.js';
 
 let items = [], filter = 'all';
 
@@ -18,6 +19,7 @@ export async function refresh() {
 
 const outsOf = it => Object.entries(it.outputs || {});
 const imagesOf = it => [...new Set(outsOf(it).flatMap(([, o]) => [...(o._ui?.images || []), ...Object.values(o).filter(v => v?.image).map(v => v.image)]))];
+const view = f => ({ src: fileUrl(f), name: f });
 const textsOf = it => outsOf(it).flatMap(([id, o]) => (o._ui?.text != null ? [[id, o._ui.text]] : []));
 
 export function resultsTreeItems() {
@@ -29,8 +31,16 @@ export function resultsTreeItems() {
   if (!q.running && !q.pending.length) rows.push({ ic: 'success', label: 'пусто' });
   rows.push({ grp: `История (${items.length})` });
   for (const it of items) {
+    const imgs = imagesOf(it);
     rows.push({ ic: it.ok ? 'success' : 'error', label: it.title, tag: `#${it.number} · ${it.time}s`, title: it.at,
-      sel: S.sel?.kind === 'run' && S.sel.id === it.prompt_id, onClick: () => select({ kind: 'run', id: it.prompt_id }) });
+      sel: S.sel?.kind === 'run' && S.sel.id === it.prompt_id, onClick: () => select({ kind: 'run', id: it.prompt_id }),
+      menu: () => [
+        { ic: 'properties', label: 'Показать в Inspector', fn: () => select({ kind: 'run', id: it.prompt_id }) },
+        { ic: 'blueprint', label: 'Открыть граф', fn: () => openAsWorkflow(it) },
+        imgs.length ? { ic: 'show', label: `Просмотр картинок (${imgs.length})`, fn: () => openViewer(imgs.map(view)) } : null,
+        '-',
+        { ic: 'copy', label: 'Копировать название', fn: () => navigator.clipboard?.writeText(it.title) },
+      ] });
   }
   return rows;
 }
@@ -49,7 +59,8 @@ function card(it) {
   const imgs = imagesOf(it), texts = textsOf(it);
   return h(`div.rcard${it.ok ? '' : '.bad'}${S.sel?.kind === 'run' && S.sel.id === it.prompt_id ? '.sel' : ''}`, { onclick: () => select({ kind: 'run', id: it.prompt_id }) },
     h('div.rh', {}, icon(it.ok ? 'success' : 'error', { size: 14 }), h('b', {}, it.title), h('span.dim', {}, `#${it.number} · ${it.time}s · ${it.at.slice(11)}`)),
-    imgs.length ? h('div.rimgs', {}, ...imgs.slice(0, 6).map(f => h('img', { src: fileUrl(f), loading: 'lazy', 'data-tip': f }))) : null,
+    imgs.length ? h('div.rimgs', {}, ...imgs.slice(0, 6).map((f, k) => h('img', { src: fileUrl(f), loading: 'lazy', alt: f, 'data-tip': `${f}\nЩелчок — просмотр`,
+      onclick: e => { e.stopPropagation(); select({ kind: 'run', id: it.prompt_id }); openViewer(imgs.map(view), k); } }))) : null,
     texts.length ? h('div.rtext', {}, texts[0][1].slice(0, 600)) : null,
     !it.ok ? h('div.rtext.err', {}, (it.error?.message || '').split('\n')[0]) : null);
 }
@@ -83,7 +94,7 @@ function runInspector(s) {
       const t = o._ui?.text ?? Object.values(o).find(v => v?.text != null)?.text;
       if (!imgs.length && t == null) return [];
       return [h('h4', {}, `${id}${o._time != null ? ` · ${o._time} с` : ''}`),
-        ...imgs.map(f => h('div.preview', {}, h('img', { src: fileUrl(f) }))),
+        ...imgs.map((f, k) => h('div.preview', {}, h('img', { src: fileUrl(f), alt: f, onclick: e => { e.stopPropagation(); openViewer(imgs.map(view), k); } }))),
         t != null ? h('pre.out', {}, t) : null];
     }),
   ];

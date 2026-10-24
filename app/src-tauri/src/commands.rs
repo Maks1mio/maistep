@@ -111,6 +111,7 @@ pub struct FsEntry {
     name: String,
     dir: bool,
     size: u64,
+    mtime: u64, // мс с 1970 — сортировка по дате в проводнике
 }
 
 fn project_dir(root: &std::path::Path, rel: &str) -> Result<PathBuf, String> {
@@ -131,7 +132,8 @@ pub fn fs_list(st: State<AppState>, path: String) -> Result<Vec<FsEntry>, String
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let md = e.metadata().ok()?;
-            Some(FsEntry { dir: md.is_dir(), size: if md.is_dir() { 0 } else { md.len() }, name })
+            let mtime = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+            Some(FsEntry { dir: md.is_dir(), size: if md.is_dir() { 0 } else { md.len() }, mtime, name })
         })
         .filter(|e| !(e.dir && FS_SKIP.contains(&e.name.as_str())))
         .collect();
@@ -205,6 +207,37 @@ pub fn server_status(st: State<AppState>) -> Status {
 pub fn app_restart(app: AppHandle, st: State<AppState>) {
     server::stop(&app, &st.server);
     app.restart();
+}
+
+// Показать файл или папку в системном проводнике: путь проекта (относительный) или абсолютный (папки моделей)
+#[tauri::command]
+pub fn fs_reveal(st: State<AppState>, path: String) -> Result<(), String> {
+    let p = if std::path::Path::new(&path).is_absolute() { PathBuf::from(&path) } else { project_dir(&st.root, &path)? };
+    if !p.exists() {
+        return Err(format!("нет такого пути: {}", p.display()));
+    }
+    let mut c = if cfg!(windows) {
+        let mut c = Command::new("explorer");
+        if p.is_file() { c.arg(format!("/select,{}", p.display())); } else { c.arg(&p); }
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.arg("-R").arg(&p);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(if p.is_file() { p.parent().unwrap_or(&p) } else { &p });
+        c
+    };
+    no_window(&mut c);
+    c.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+// Выбор папки системным диалогом (папки моделей); None — отменили
+#[tauri::command]
+pub async fn pick_folder(title: Option<String>) -> Option<String> {
+    let d = rfd::AsyncFileDialog::new().set_title(title.unwrap_or_else(|| "Папка".into()));
+    d.pick_folder().await.map(|f| f.path().display().to_string())
 }
 
 #[tauri::command]
