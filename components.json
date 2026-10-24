@@ -2,7 +2,7 @@
   "channel": "stable",
   "app": {
     "name": "maistep",
-    "stable": "0.1.0",
+    "stable": "0.1.2",
     "releases": "https://github.com/Maks1mio/maistep/releases",
     "repo": "Maks1mio/maistep"
   },

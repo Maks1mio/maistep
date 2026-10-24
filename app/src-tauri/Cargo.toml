@@ -1,6 +1,6 @@
 [package]
 name = "maistep"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "maistep — нодовый редактор AI-пайплайнов (Tauri v2): графы воркфлоу, Python-сервер исполнения, CodeEditor своих нод"
 
