@@ -105,7 +105,7 @@ UPSCALE = ["nearest-exact", "bilinear", "area", "bicubic"]
 _lock = threading.RLock()
 _state = {"key": None, "pipe": None, "i2i": None, "i2i_cls": None, "loras": {}, "layout": None, "device": None,
           "dtype": None, "vae_dtype": None, "unet_at": None, "ckpt": None, "sdxl": False, "vaes": {}, "cns": {},
-          "cn_pipes": {}}
+          "cn_pipes": {}, "vae_peak": {}}
 
 
 class NotInstalled(RuntimeError):
@@ -239,6 +239,26 @@ def _classes(arch, diffusers):
     ]
 
 
+def _vae_tile_size(vae, sample=512):
+    """Тайл VAE — 512 px: по умолчанию diffusers берёт config.sample_size (у SDXL-VAE 1024), а декод режет по
+    латенту (1024/8 = 128) и включает тайлы только если латент БОЛЬШЕ — то есть для 1024×1024 и меньше
+    enable_tiling ничего не делал, и повтор после OutOfMemory падал тем же куском. Меньше конфига — только
+    уменьшаем (у SD1.5 sample_size 512 и так)."""
+    cfg = getattr(vae, "config", None)
+    try:
+        factor = 2 ** (len(cfg.block_out_channels) - 1)
+    except Exception:
+        factor = 8
+    cur = getattr(vae, "tile_sample_min_size", None)
+    if isinstance(cur, int) and 0 < cur <= sample:
+        return
+    for attr, val in (("tile_sample_min_size", sample), ("tile_latent_min_size", max(1, sample // factor))):
+        try:
+            setattr(vae, attr, val)
+        except Exception:
+            pass
+
+
 def _vae_flags(vae, slicing=None, tiling=None):
     if vae is None:
         return
@@ -251,11 +271,13 @@ def _vae_flags(vae, slicing=None, tiling=None):
                 fn()
             except Exception:
                 pass
+    if tiling:
+        _vae_tile_size(vae)
 
 
 def _drop():
     _state.update(key=None, pipe=None, i2i=None, i2i_cls=None, loras={}, layout=None, device=None, dtype=None,
-                  vae_dtype=None, unet_at=None, ckpt=None, sdxl=False, vaes={}, cns={}, cn_pipes={})
+                  vae_dtype=None, unet_at=None, ckpt=None, sdxl=False, vaes={}, cns={}, cn_pipes={}, vae_peak={})
     gc.collect()
 
 
@@ -1063,28 +1085,92 @@ def _vae_module(ctx, vae, torch, diffusers):
     return m
 
 
-def _vae_run(torch, vae, need, fn, ctx=None):
+def _is_oom(torch, e):
+    cls = getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None)
+    return isinstance(e, cls) if isinstance(cls, type) else "out of memory" in str(e).lower()
+
+
+def _cap_note(torch, dev, need):
+    """Подсказка, если аллокацию отклонил потолок VRAM, а на карте место физически есть: torch не может занять
+    больше потолка, и вместо свопа (как на Windows) получается OutOfMemory."""
+    pct = sysmon.limits()["vram_max_pct"]
+    if not (0 < pct < 100):
+        return ""
+    try:
+        free, total = torch.cuda.mem_get_info(dev)
+    except Exception:
+        return ""
+    if free < need:
+        return ""
+    return (f" Потолок VRAM {pct:g}% = {total * pct / 100 / 2**30:.1f} ГБ: torch не может занять больше, хотя на карте"
+            f" свободно {free / 2**30:.1f} ГБ. Поднимите «Потолок VRAM» в строке состояния (100% — без потолка).")
+
+
+def _vae_run(torch, vae, need, fn, ctx=None, key=None):
     """VAE-операция с местом под неё: при нехватке UNet уходит на CPU, если и так мало — тайлы.
-    OOM → повтор тайлами; NaN (проблемный VAE в fp16) → повтор в fp32."""
+    Оценка из ComfyUI (см. _vae_need) — нижняя граница: фактический пик декода на больших разрешениях и на ROCm
+    выше, поэтому пик запоминается для этого разрешения и dtype и следующий раз считается от него.
+    OOM → кэш, UNet на CPU, тайлы; не влезло и так — VAE на CPU (медленно, но не ошибка).
+    NaN (проблемный VAE в fp16) → повтор в fp32."""
     st = _state
-    on_gpu = next(vae.parameters()).device.type == "cuda"
-    if not on_gpu or st.get("layout") == "offload":
-        out = fn()
-    else:
-        dev = next(vae.parameters()).device
-        if _free(torch, dev) < need:
-            _unet_to(torch, "cpu")
-        tiled = _free(torch, dev) < need
-        _vae_flags(vae, tiling=tiled)
-        _dbg("vae: нужно", round(need / 2**30, 2), "ГБ, свободно", round(_free(torch, dev) / 2**30, 2), "ГБ, тайлы", tiled)
-        try:
-            out = fn()
-        except Exception as e:
-            if "out of memory" not in str(e).lower() or tiled:
-                raise
+    dev = next(vae.parameters()).device
+    if dev.type != "cuda" or st.get("layout") == "offload":
+        return fn()
+    peaks = st["vae_peak"]
+    peak_key = (key, str(vae.dtype).replace("torch.", ""))
+    need = max(int(need), peaks.get(peak_key, 0))
+    # Кэш аллокатора — не гарантия: нужный блок из обрывков не собрать («reserved but unallocated»), а с потолком
+    # VRAM новый кусок может уже не влезть. Отдаём кэш драйверу — тогда _free считает по-честному.
+    try:
+        total = torch.cuda.mem_get_info(dev)[1]
+        pct = sysmon.limits()["vram_max_pct"]
+        cap = total * (pct / 100 if 0 < pct < 100 else 1.0)
+        if torch.cuda.memory_reserved(dev) + need > cap:
             torch.cuda.empty_cache()
-            _vae_flags(vae, tiling=True)
-            out = fn()
+    except Exception:
+        pass
+    if _free(torch, dev) < need:
+        _unet_to(torch, "cpu")
+    tiled = _free(torch, dev) < need
+    _vae_flags(vae, tiling=tiled)
+    _dbg("vae: нужно", round(need / 2**30, 2), "ГБ, свободно", round(_free(torch, dev) / 2**30, 2), "ГБ, тайлы", tiled)
+
+    def measure():
+        torch.cuda.reset_peak_memory_stats(dev)
+        base = torch.cuda.memory_allocated(dev)
+        out = fn()
+        peaks[peak_key] = max(need, torch.cuda.max_memory_allocated(dev) - base)
+        return out
+
+    try:
+        out = measure()
+    except Exception as e:
+        if not _is_oom(torch, e):
+            raise
+        note = _cap_note(torch, dev, need)
+        if ctx:
+            ctx.log("VAE: не хватило VRAM — освобождаю UNet и включаю тайлы")
+        torch.cuda.empty_cache()
+        _unet_to(torch, "cpu")
+        torch.cuda.empty_cache()
+        _vae_flags(vae, tiling=True)
+        try:
+            out = measure()
+        except Exception as e2:
+            if not _is_oom(torch, e2):
+                raise
+            if ctx:
+                ctx.log("VAE: и с тайлами не влезло — считаю на CPU (медленно)")
+            with torch.inference_mode(False), torch.no_grad():
+                vae.to("cpu")
+            torch.cuda.empty_cache()
+            try:
+                out = fn()
+            except Exception as e3:
+                raise RuntimeError(f"{e3}{note}") from e3
+            finally:
+                with torch.inference_mode(False), torch.no_grad():
+                    vae.to(dev)
     if torch.isnan(out).any() and vae.dtype != torch.float32:
         if ctx:
             ctx.log("VAE produced NaN — retrying in fp32")
@@ -1127,7 +1213,8 @@ def encode_pil(ctx, vae, pil):
         with torch.inference_mode():
             logs.watchdog(STALL)
             try:
-                lat = _vae_run(torch, m, _vae_need("encode", h, w, m.dtype), run, ctx).float()
+                lat = _vae_run(torch, m, _vae_need("encode", h, w, m.dtype), run, ctx,
+                               key=("encode", w, h)).float()
             finally:
                 logs.stop_watchdog()
         _dbg("vae encode", round(time.time() - t0, 2), "с")
@@ -1187,7 +1274,7 @@ def decode_pils(ctx, vae, latent):
         with torch.inference_mode():
             logs.watchdog(STALL)
             try:
-                img = _vae_run(torch, m, _vae_need("decode", h, w, m.dtype), run, ctx)
+                img = _vae_run(torch, m, _vae_need("decode", h, w, m.dtype), run, ctx, key=("decode", w, h))
             finally:
                 logs.stop_watchdog()
         _dbg("vae decode", round(time.time() - t0, 2), "с")

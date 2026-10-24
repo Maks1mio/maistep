@@ -209,8 +209,24 @@ def _gfx_from_target(v):
     return f"gfx{major}{minor:x}{step:x}"
 
 
+def _drm_amd_name():
+    """Название карты из DRM (amdgpu: /sys/class/drm/card0/device/product_name): в kfd у части ядер вместо имени
+    лежит имя IP-блока («ip discovery» — так карта и попадала в отчёты)."""
+    for card in sorted(Path("/sys/class/drm").glob("card[0-9]*/device/vendor")):
+        try:
+            if card.read_text().strip() != "0x1002":
+                continue
+            name = (card.parent / "product_name").read_text().strip()
+        except OSError:
+            continue
+        if name and name.lower() not in ("ip discovery", "0x0000"):
+            return name
+    return ""
+
+
 def _gpus_linux():
     out = []
+    drm = _drm_amd_name()
     for node in sorted(Path("/sys/class/kfd/kfd/topology/nodes").glob("*/properties")):
         try:
             props = dict(line.split(None, 1) for line in node.read_text().splitlines() if " " in line)
@@ -223,7 +239,9 @@ def _gpus_linux():
                 name = (node.parent / "name").read_text().strip()
             except OSError:
                 pass
-            out.append({"vendor": "amd", "name": name or gfx, "gfx": gfx})
+            if name.lower() == "ip discovery":
+                name = ""
+            out.append({"vendor": "amd", "name": drm or name or gfx, "gfx": gfx})
     for card in sorted(Path("/sys/class/drm").glob("card[0-9]*/device/vendor")):
         try:
             if card.read_text().strip() == "0x10de":
