@@ -42,7 +42,21 @@ import threading
 import time
 from pathlib import Path
 
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+def _rocm_build():
+    """ROCm-сборка torch — по версии пакета (+rocm…), без импорта torch: настройки аллокатора действуют только до него."""
+    try:
+        from importlib.metadata import version
+        return "rocm" in version("torch").lower()
+    except Exception:
+        return False
+
+
+ROCM = _rocm_build()
+# expandable_segments — только CUDA. На ROCm (HIP VMM) он при каждом empty_cache() снимает и заново отображает
+# физическую память, и на RDNA4 под Linux это давало зелёные артефакты по всему экрану со второй генерации и
+# зависание сэмплера (отчёты Марши 2026-10-25). ComfyUI на AMD его тоже не включает. MAISTEP_EXPANDABLE=1 — вернуть.
+if not ROCM or os.environ.get("MAISTEP_EXPANDABLE") == "1":
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")  # flash-внимание на RDNA3/4 (ROCm)
 
 # AMD до RDNA3: bf16 нет (у ComfyUI — тот же список)
@@ -386,7 +400,8 @@ def _pipe(path, opts, torch, diffusers, ctx=None):
         return st["pipe"]
     arch = _check_ckpt(path)
     if ctx and (amd := _amd_arch(torch)):
-        ctx.log(f"AMD {amd}, ROCm {torch.version.hip}")
+        alloc = os.environ.get("PYTORCH_HIP_ALLOC_CONF") or os.environ.get("PYTORCH_CUDA_ALLOC_CONF") or "default"
+        ctx.log(f"AMD {amd}, ROCm {torch.version.hip}, torch {torch.__version__}, allocator {alloc}")
     _drop()
     device = "cuda" if opts["device"] in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     amd = _gpu_setup(torch, device)
