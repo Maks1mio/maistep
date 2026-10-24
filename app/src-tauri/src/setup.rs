@@ -107,7 +107,10 @@ fn known_folder(var: &str, sub: &[&str]) -> Option<PathBuf> {
 #[cfg(not(windows))]
 fn desktop() -> Option<PathBuf> {
     // папка рабочего стола бывает локализована («Рабочий стол») — спрашиваем xdg-user-dir
-    let p = Command::new("xdg-user-dir").arg("DESKTOP").output().ok().filter(|o| o.status.success())
+    let mut c = Command::new("xdg-user-dir");
+    c.arg("DESKTOP");
+    no_window(&mut c);
+    let p = c.output().ok().filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|p| !p.is_empty()).map(PathBuf::from);
     p.or_else(|| known_folder("HOME", &["Desktop"])).filter(|p| p.is_dir())
 }
@@ -289,12 +292,17 @@ fn download_python(app: Option<&AppHandle>, dir: &Path) -> Result<(), String> {
     progress(app, "python-unpack", 1, 1);
     let py = crate::server::portable_python(dir);
     let mut c = Command::new(&py);
-    c.args(["-m", "venv"]).arg(dir.join(".venv"));
+    c.args(["-m", "venv", "--clear"]).arg(dir.join(".venv"));
     no_window(&mut c);
-    if !c.status().map(|s| s.success()).unwrap_or(false) {
-        return Err(format!("не удалось создать .venv из {}", py.display()));
+    match c.output() {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            let tail: Vec<&str> = err.lines().rev().take(4).collect();
+            Err(format!("не удалось создать .venv из {}: {}", py.display(), tail.into_iter().rev().collect::<Vec<_>>().join(" | ")))
+        }
+        Err(e) => Err(format!("не удалось создать .venv из {}: {e}", py.display())),
     }
-    Ok(())
 }
 
 // ---------- удаление ----------
@@ -389,9 +397,7 @@ pub async fn setup_install(app: AppHandle, dir: String, desktop: bool, start_men
 pub fn setup_launch(app: AppHandle, dir: String) -> Result<(), String> {
     let mut c = Command::new(PathBuf::from(&dir).join(crate::update::BIN));
     // переменные AppImage установщика не должны достаться приложению (иначе оно сочтёт себя установщиком)
-    for v in ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] {
-        c.env_remove(v);
-    }
+    no_window(&mut c);
     c.current_dir(&dir).spawn().map_err(|e| e.to_string())?;
     app.exit(0);
     Ok(())
@@ -410,7 +416,10 @@ pub fn setup_close(app: AppHandle) {
 
 #[tauri::command]
 pub fn setup_open_dir(dir: String) {
-    let _ = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(dir).spawn();
+    let mut c = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" });
+    c.arg(dir);
+    no_window(&mut c);
+    let _ = c.spawn();
 }
 
 // Окно установщика/удаления. Данные WebView — во временной папке (после закрытия не нужны).

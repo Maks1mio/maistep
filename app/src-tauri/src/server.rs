@@ -40,17 +40,27 @@ pub fn portable_python(root: &Path) -> PathBuf {
     if cfg!(windows) { root.join("python").join("python.exe") } else { root.join("python").join("bin").join("python3") }
 }
 
-// Системный Python из PATH: команда и аргументы
-fn system_python() -> Option<(&'static str, Vec<&'static str>)> {
-    if run_hidden("python", &["--version"]).is_some() {
-        Some(("python", vec![]))
-    } else if !cfg!(windows) && run_hidden("python3", &["--version"]).is_some() {
-        Some(("python3", vec![]))
-    } else if cfg!(windows) && run_hidden("py", &["-3", "--version"]).is_some() {
-        Some(("py", vec!["-3"]))
-    } else {
-        None
-    }
+// Интерпретатор .venv / venv проекта
+fn venv_python(root: &Path, venv: &str) -> PathBuf {
+    if cfg!(windows) { root.join(venv).join("Scripts").join("python.exe") } else { root.join(venv).join("bin").join("python") }
+}
+
+// «Python 3.12.3» → (3, 12)
+fn py_version(out: &str) -> Option<(u32, u32)> {
+    let v = out.trim().strip_prefix("Python ")?;
+    let mut it = v.split('.').map(|x| x.chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u32>().ok());
+    Some((it.next()??, it.next()??))
+}
+
+// Системный Python 3.10+ из PATH: команда, аргументы, версия (python бывает 2.x — такой пропускаем)
+fn system_python() -> Option<(&'static str, Vec<&'static str>, (u32, u32))> {
+    let cands: &[(&str, &[&str])] = if cfg!(windows) { &[("python", &[]), ("py", &["-3"])] } else { &[("python3", &[]), ("python", &[])] };
+    cands.iter().find_map(|(cmd, pre)| {
+        let mut args = pre.to_vec();
+        args.push("--version");
+        let v = py_version(&run_hidden(cmd, &args)?)?;
+        (v >= (3, 10)).then(|| (*cmd, pre.to_vec(), v))
+    })
 }
 
 pub fn status(s: &Shared) -> Status {
@@ -65,25 +75,47 @@ pub fn status(s: &Shared) -> Status {
 
 // ---------- выбор Python ----------
 
-// Первый запуск установленной копии: .venv проекта создаётся из системного Python (пакеты — «Компоненты»)
+// Первый запуск установленной копии: .venv проекта создаётся из портативного Python установщика, а если его не
+// ставили — из Python системы (пакеты — «Компоненты»). Python системы — на свой страх: версия и пакеты дистрибутива
+// бывают неподходящими (сборки torch для AMD — только 3.10–3.14, на Debian/Ubuntu нужен python3-venv).
+// .venv без интерпретатора (прошлая попытка не удалась) создаётся заново.
 fn ensure_venv(app: &AppHandle, root: &Path) {
-    if std::env::var("MAISTEP_PYTHON").is_ok_and(|p| !p.trim().is_empty()) || root.join(".venv").is_dir() || root.join("venv").is_dir() {
+    let say = |level: &str, text: String| { let _ = app.emit("console", json!({ "src": "editor", "level": level, "text": text })); };
+    if std::env::var("MAISTEP_PYTHON").is_ok_and(|p| !p.trim().is_empty())
+        || [".venv", "venv"].iter().any(|v| venv_python(root, v).is_file())
+    {
         return;
     }
-    // портативный Python установщика (<папка>/python) — приоритетнее системного
-    let portable = portable_python(root).to_string_lossy().into_owned();
-    let base: Option<(&str, Vec<&str>)> = if Path::new(&portable).is_file() { Some((portable.as_str(), vec![])) } else { system_python() };
-    let Some((cmd, mut args)) = base else {
-        let hint = if cfg!(windows) { "поставьте Python с python.org (галочка «Add to PATH»)" } else { "поставьте python3 и python3-venv из пакетов системы" };
-        let _ = app.emit("console", json!({ "src": "editor", "level": "error", "text": format!("Python 3.10+ не найден — переустановите maistep с галочкой «Портативный Python» или {hint} и перезапустите") }));
+    let portable = portable_python(root);
+    let (cmd, mut args, from) = if portable.is_file() {
+        (portable.to_string_lossy().into_owned(), vec![], "портативного Python".to_string())
+    } else if let Some((cmd, pre, (ma, mi))) = system_python() {
+        let mut warn = format!("используется Python системы {ma}.{mi} ({cmd}) — возможны ошибки из-за его версии и пакетов дистрибутива; надёжнее — переустановить maistep с галочкой «Портативный Python»");
+        if (ma, mi) >= (3, 15) {
+            warn += &format!("; сборки PyTorch для AMD (ROCm) для Python {ma}.{mi} нет");
+        }
+        say("warn", warn);
+        (cmd.to_string(), pre.iter().map(|s| s.to_string()).collect(), format!("Python системы {ma}.{mi}"))
+    } else {
+        let hint = if cfg!(windows) { "поставьте Python 3.10–3.14 с python.org (галочка «Add to PATH»)" } else { "поставьте python3 (3.10+) и python3-venv из пакетов системы" };
+        say("error", format!("Python 3.10+ не найден — переустановите maistep с галочкой «Портативный Python» или {hint} и перезапустите"));
         return;
     };
-    let _ = app.emit("console", json!({ "src": "editor", "level": "info", "text": "первый запуск: создаётся .venv…" }));
-    let venv = root.join(".venv");
-    let venv = venv.to_string_lossy().into_owned();
-    args.extend(["-m", "venv", venv.as_str()]);
-    if run_hidden(cmd, &args).is_none() {
-        let _ = app.emit("console", json!({ "src": "editor", "level": "error", "text": format!("не удалось создать .venv ({cmd} -m venv)") }));
+    say("info", format!("первый запуск: создаётся .venv из {from}…"));
+    let venv = root.join(".venv").to_string_lossy().into_owned();
+    args.extend(["-m".into(), "venv".into(), "--clear".into(), venv]);
+    let mut c = Command::new(&cmd);
+    c.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    no_window(&mut c);
+    match c.output() {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            let tail: Vec<&str> = err.lines().rev().take(6).collect();
+            let hint = if !cfg!(windows) && err.contains("ensurepip") { " — поставьте пакет python3-venv" } else { "" };
+            say("error", format!("не удалось создать .venv из {from} ({cmd}){hint}: {}", tail.into_iter().rev().collect::<Vec<_>>().join(" | ")));
+        }
+        Err(e) => say("error", format!("не удалось создать .venv из {from} ({cmd}): {e}")),
     }
 }
 
@@ -95,7 +127,7 @@ fn python(root: &Path) -> (PathBuf, Vec<String>) {
         }
     }
     for venv in [".venv", "venv"] {
-        let p = if cfg!(windows) { root.join(venv).join("Scripts").join("python.exe") } else { root.join(venv).join("bin").join("python") };
+        let p = venv_python(root, venv);
         if p.is_file() {
             return (p, vec![]);
         }
@@ -105,7 +137,7 @@ fn python(root: &Path) -> (PathBuf, Vec<String>) {
         return (portable, vec![]);
     }
     match system_python() {
-        Some((cmd, args)) => (PathBuf::from(cmd), args.into_iter().map(String::from).collect()),
+        Some((cmd, args, _)) => (PathBuf::from(cmd), args.into_iter().map(String::from).collect()),
         None => (PathBuf::from("python3"), vec![]),
     }
 }
@@ -295,6 +327,14 @@ pub fn kill_on_exit(s: &Shared) {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn parses_python_version() {
+        assert_eq!(py_version("Python 3.12.3
+"), Some((3, 12)));
+        assert_eq!(py_version("Python 3.15.0rc1"), Some((3, 15)));
+        assert_eq!(py_version(""), None);
+    }
 
     #[test]
     fn busy_port_belongs_to_this_process() {

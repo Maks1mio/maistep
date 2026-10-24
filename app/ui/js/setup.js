@@ -58,6 +58,11 @@ function installScreen() {
   const linux = info.os === 'linux';
   const menu = check(linux ? 'Ярлык в меню приложений' : 'Ярлык в меню «Пуск»', null, linux);
   const python = check('Портативный Python 3.12', `скачать ~${linux ? 34 : 22} МБ в папку приложения — не нужен Python в системе`, true);
+  // без портативного — Python системы: .venv из него при первом запуске, на свой страх
+  const pyWarn = h('div.st-note.warn', {}, 'Без портативного Python maistep создаст .venv из Python системы при первом запуске. ',
+    `Возможны ошибки: нужен Python 3.10–3.14 (сборки PyTorch для AMD — только до 3.14)${linux ? ', на Debian/Ubuntu — пакет python3-venv' : ', добавленный в PATH'}.`);
+  pyWarn.hidden = true;
+  python.input.addEventListener('change', () => { pyWarn.hidden = python.input.checked; });
   const go = btn('primary', 'Установить', () => runInstall(input.value, desktop.input.checked, menu.input.checked, python.input.checked));
   let seq = 0;
   const validate = async () => {
@@ -82,6 +87,7 @@ function installScreen() {
         })),
         note),
       h('div.st-opts', {}, desktop.el, menu.el, python.el),
+      pyWarn,
       h('div.st-box', {}, h('b', {}, 'Portable: '), 'всё приложение и его данные (графы, настройки, Python, кэш окна) живут в этой папке. ',
         'Реестр и AppData не используются — папку можно перенести или удалить целиком.')),
     foot(h('span.grow'), btn('secondary', 'Отмена', close), go));

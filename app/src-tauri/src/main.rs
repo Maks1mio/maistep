@@ -85,7 +85,10 @@ fn main() {
     if update::apply_pending(&root) {
         // новый бинарь уже на месте старого — запускаем его
         if let Ok(exe) = update::self_path() {
-            if std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().is_ok() {
+            let mut c = std::process::Command::new(exe);
+            c.args(std::env::args_os().skip(1));
+            commands::no_window(&mut c);
+            if c.spawn().is_ok() {
                 return;
             }
         }

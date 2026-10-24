@@ -13,13 +13,40 @@ pub struct AppState {
     pub server: Shared,
 }
 
+// Дочерний процесс: без окна консоли (Windows) и без окружения AppImage (Linux) — через no_window идут все запуски
 #[cfg(windows)]
 pub fn no_window(c: &mut Command) {
     use std::os::windows::process::CommandExt;
     c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 }
 #[cfg(not(windows))]
-pub fn no_window(_: &mut Command) {}
+pub fn no_window(c: &mut Command) {
+    host_env(c, std::env::var("APPDIR").ok(), std::env::vars_os());
+}
+
+// AppRun образа ставит PYTHONHOME/PYTHONPATH, LD_LIBRARY_PATH, XDG_DATA_DIRS… на свой /tmp/.mount_*: с ними Python
+// (портативный или системный) не находит свою stdlib («No module named 'encodings'»), а xdg-open — свои библиотеки.
+// Из путей-списков убираются элементы внутри образа, переменные целиком из образа — удаляются.
+#[cfg(not(windows))]
+fn host_env(c: &mut Command, appdir: Option<String>, vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>) {
+    let Some(appdir) = appdir.filter(|d| d.len() > 1) else { return };
+    let appdir = appdir.trim_end_matches('/').to_string();
+    for v in ["APPIMAGE", "APPDIR", "ARGV0", "OWD", "PYTHONHOME", "PYTHONPATH"] {
+        c.env_remove(v);
+    }
+    for (k, v) in vars {
+        let s = v.to_string_lossy();
+        if !s.contains(&appdir) || k == "PYTHONHOME" || k == "PYTHONPATH" {
+            continue;
+        }
+        let kept: Vec<&str> = s.split(':').filter(|p| !p.is_empty() && !p.starts_with(&appdir)).collect();
+        if kept.is_empty() {
+            c.env_remove(&k);
+        } else {
+            c.env(&k, kept.join(":"));
+        }
+    }
+}
 
 #[tauri::command]
 pub fn load_project(st: State<AppState>) -> Value {
@@ -200,4 +227,25 @@ pub fn open_external(url: String) -> Result<(), String> {
     };
     no_window(&mut c);
     c.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appimage_env_is_not_inherited() {
+        let vars = [("PYTHONHOME", "/tmp/.mount_x/usr/"), ("PATH", "/tmp/.mount_x/usr/bin:/usr/bin"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_x/usr/lib"), ("HOME", "/home/u")]
+            .map(|(k, v)| (k.into(), v.into()));
+        let mut c = Command::new("true");
+        host_env(&mut c, Some("/tmp/.mount_x".into()), vars.into_iter());
+        let env: Vec<(String, Option<String>)> = c.get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into(), v.map(|v| v.to_string_lossy().into()))).collect();
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        assert_eq!(get("PYTHONHOME"), Some(None));
+        assert_eq!(get("LD_LIBRARY_PATH"), Some(None));
+        assert_eq!(get("PATH"), Some(Some("/usr/bin".into())));
+        assert_eq!(get("HOME"), None);
+    }
 }
