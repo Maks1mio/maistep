@@ -3,6 +3,7 @@
 // Обновления приложения — /api/update (server/maistep/updater.py): изменившиеся файлы релиза качаются в фоне,
 // применяются при перезапуске окна (команда app_restart). События SSE — update.
 // У компонента — вкладки, которым он нужен (tabs в components.json); у torch — сборка под видеокарту (CUDA/ROCm/CPU).
+// Модели (kind: 'model', раздел models манифеста) — файлы весов (Hugging Face, Civitai) в папки моделей; качаются только по кнопке.
 import { h } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector } from './inspector.js';
@@ -27,6 +28,7 @@ const VARIANT = { cuda: 'CUDA', rocm: 'ROCm', cpu: 'CPU' };
 const wrongBuild = c => !!(c.installed_variant && c.variant && c.installed_variant !== c.variant);
 // фильтр слева: группа или вкладка ('tab:naizer')
 const matches = c => !group || (group.startsWith('tab:') ? (c.tabs || []).includes(group.slice(4)) : c.group === group);
+const isModel = c => c.kind === 'model';
 const tabsLine = c => (c.tabs?.length ? `нужен для: ${c.tabs.map(viewTitle).join(', ')}` : '');
 
 function statusChip(st, c = null) {
@@ -86,8 +88,10 @@ async function cancel() {
 }
 
 function toolbar(sum) {
-  const missing = (data?.components || []).filter(c => c.status === 'missing').map(c => c.id);
+  const missing = (data?.components || []).filter(c => c.status === 'missing' && !isModel(c)).map(c => c.id);
   const updates = (data?.components || []).filter(c => c.status === 'update').map(c => c.id);
+  const starter = (data?.components || []).filter(c => isModel(c) && c.starter && c.status === 'missing');
+  const gb = starter.reduce((n, c) => n + (c.bytes || 0), 0) / 2 ** 30;
   const busy = job?.state === 'running';
   return h('div.bar', {},
     h('button', { disabled: loading, 'data-tip': 'Проверить последние стабильные версии (PyPI и GitHub Releases)', onclick: () => load(true, true) },
@@ -96,6 +100,8 @@ function toolbar(sum) {
       icon('download', { size: 14 }), `Установить недостающее${missing.length ? ` (${missing.length})` : ''}`),
     h('button', { disabled: busy || !updates.length, onclick: () => install(updates, 'recommended') },
       icon('upload', { size: 14 }), `Обновить рекомендованные${updates.length ? ` (${updates.length})` : ''}`),
+    starter.length ? h('button', { disabled: busy, 'data-tip': `Чтобы сразу начать: ${starter.map(c => c.title).join(', ')}. Файлы — в папки моделей библиотеки`,
+      onclick: () => install(starter.map(c => c.id), 'missing') }, icon('download', { size: 14 }), `Стартовые модели (${starter.length} · ${gb.toFixed(1).replace('.', ',')} ГБ)`) : null,
     h('span.grow'),
     h('span.dim', {}, `стабильный канал · ${data?.checked_at ? new Date(data.checked_at * 1000).toLocaleString() : 'ещё не проверялось'}`));
 }
@@ -153,7 +159,7 @@ function appCard() {
 function componentRow(c) {
   const busy = job?.state === 'running';
   let action = null;
-  if (c.status === 'missing') action = h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), 'Установить');
+  if (c.status === 'missing') action = h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), isModel(c) ? 'Скачать' : 'Установить');
   else if (c.status === 'update') action = h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), wrongBuild(c) ? `Поставить ${VARIANT[c.variant]}` : `Обновить до ${c.recommended}`);
   else if (c.latest_newer) action = h('button', { disabled: busy, 'data-tip': `Последняя стабильная версия ${c.latest}. Рекомендуется ${c.recommended} (проверена).`, onclick: () => install([c.id], 'latest') }, icon('download', { size: 14 }), `До ${c.latest}`);
   if (rechecking.has(c.id)) action = h('span.dim', {}, 'проверка…');
@@ -166,7 +172,7 @@ function componentRow(c) {
       c.tabs?.length ? h('div.dim', { style: { fontSize: '11px' } }, tabsLine(c)) : null,
       c.problem ? h('div', { style: { fontSize: '11px', color: 'var(--err)' } }, c.problem) : null),
     h('td.mono', {}, c.installed || h('span.dim', {}, '—')),
-    h('td.mono', {}, c.recommended || '—'),
+    h('td.mono', {}, isModel(c) ? h('span.dim', {}, 'модель') : c.recommended || '—'),
     h('td.mono', {}, c.latest || h('span.dim', {}, '—'), c.latest_newer ? h('span.mbadge', { style: { marginLeft: '6px' }, 'data-tip': 'Есть более новая стабильная версия; рекомендуется сначала проверенная из манифеста' }, 'new') : null),
     h('td', {}, rechecking.has(c.id) ? statusChip('checking') : statusChip(c.status, c)),
     h('td.cmp-act', {}, action || h('span.dim', {}, '—')));
@@ -225,7 +231,7 @@ export function componentsTreeItems() {
   rows.push({ ic: 'projectStructure', label: 'Все компоненты', tag: String(all.length), sel: !group, onClick: pick('') });
   for (const g of [...new Set(all.map(c => c.group))]) {
     const list = all.filter(c => c.group === g);
-    const bad = list.filter(c => c.status !== 'ok' && c.status !== 'newer').length;
+    const bad = list.filter(c => c.status !== 'ok' && c.status !== 'newer' && !isModel(c)).length; // модели — по желанию
     rows.push({ depth: 1, ic: bad ? 'warning' : 'success', label: g, tag: bad ? `требуют внимания: ${bad}` : `${list.length} · ок`, sel: group === g, onClick: pick(g) });
   }
   rows.push({ grp: 'Вкладки' });
@@ -284,15 +290,18 @@ function compInspector(s) {
     c.variants ? variantPicker(c) : null,
     kv('Нужен для', (c.tabs || []).map(viewTitle).join(', ')),
     kv('Установлено', c.installed || '—'),
+    kv('Файл', isModel(c) ? c.path : null),
+    kv('Лицензия', c.license),
     kv('Рекомендуется', c.recommended),
     kv('Последняя стабильная', c.latest),
     kv('Группа', c.group),
     kv('Размер', c.size),
     h('div.row', { style: { margin: '8px 0', flexWrap: 'wrap' } },
-      c.status === 'missing' ? h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), 'Установить') : null,
+      c.status === 'missing' ? h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), isModel(c) ? 'Скачать' : 'Установить') : null,
       c.status === 'update' ? h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), wrongBuild(c) ? `Поставить ${VARIANT[c.variant]}` : `Обновить до ${c.recommended}`) : null,
       c.latest_newer ? h('button', { disabled: busy, onclick: () => install([c.id], 'latest') }, icon('download', { size: 14 }), `До ${c.latest}`) : null,
-      h('button', { onclick: () => openExternal(`https://pypi.org/project/${c.package}/`) }, icon('externalLink', { size: 14 }), 'PyPI')),
+      isModel(c) ? (c.page ? h('button', { onclick: () => openExternal(c.page) }, icon('externalLink', { size: 14 }), c.page.includes('civitai') ? 'Civitai' : 'Hugging Face') : null)
+        : h('button', { onclick: () => openExternal(`https://pypi.org/project/${c.package}/`) }, icon('externalLink', { size: 14 }), 'PyPI')),
   ];
 }
 
@@ -347,7 +356,7 @@ export async function componentsStartupCheck() {
   if (!S.server.running) return;
   try {
     const [d, u] = await Promise.all([componentsStatus({}), updateStatus().catch(() => null)]);
-    const missing = d.components.filter(c => c.status === 'missing');
+    const missing = d.components.filter(c => c.status === 'missing' && !isModel(c)); // модели — только по кнопке
     const updates = d.components.filter(c => c.status === 'update');
     data = d;
     if (u) upd = u;

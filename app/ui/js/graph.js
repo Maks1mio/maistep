@@ -32,7 +32,7 @@ function readTheme() {
   K.field = K.bg;
 }
 export const TYPE_COLOR = { STRING: '#8bc78b', INT: '#7fb4e0', FLOAT: '#7fb4e0', BOOLEAN: '#e0a35f', COMBO: '#c9a0dc', IMAGE: '#64b5f6', JSON: '#f2c46b', '*': '#b5b8c0',
-  MODEL: '#b39ddb', CLIP: '#ffd500', VAE: '#ff6e6e', CONDITIONING: '#ffa931', LATENT: '#ff9cf9' };
+  MODEL: '#b39ddb', CLIP: '#ffd500', VAE: '#ff6e6e', CONDITIONING: '#ffa931', LATENT: '#ff9cf9', CONTROL_NET: '#00d78d' };
 const CAT_COLOR = { Values: '#3b6e4a', Text: '#3d5f8a', JSON: '#8a6a2e', Logic: '#5c4a8a', AI: '#8a3d6a', Image: '#2e6f86', Files: '#5a5f68', Output: '#7a4a2e',
   Loaders: '#4b5a8a', Conditioning: '#8a6a2e', Sampling: '#6a3d7a', Latent: '#8a3d5c', 'My Nodes': '#4a6a5a' };
 const catColor = cat => CAT_COLOR[cat] || `hsl(${[...String(cat)].reduce((a, c) => a + c.charCodeAt(0), 0) % 360} 35% 34%)`;

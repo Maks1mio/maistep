@@ -19,6 +19,9 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   GET  /api/library/model?id=cat/name   карточка модели (заголовок safetensors, .cminfo.json, …)
   GET  /api/library/preview?id=cat/name превью модели (только файлы-превью из индекса)
   POST /api/library/roots { add?: путь, remove?: путь }  добавить папку моделей / убрать из списка
+  GET  /api/stats               CPU, RAM, GPU, VRAM (+ история для графиков) — оверлей статистики
+  GET|POST /api/limits { ram_reserve_gb, vram_max_pct, gpu_load, max_mp }  лимиты нагрузки (sysmon.py)
+  GET  /api/logs                файлы логов (user/logs) · POST /api/logs/report — zip для отправки
   GET  /api/components?refresh=1&deep=1  компоненты: установлено/рекомендуется/последняя стабильная, установка
   POST /api/components/install { ids?, mode: recommended|missing|latest }  установка в .venv (SSE comp-log)
   POST /api/components/variant { variant: auto|cuda|rocm|cpu, gfx? }  сборка torch под видеокарту
@@ -56,7 +59,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "server"))
 
-from maistep import registry, executor, providers, library, components, civitai, agent, magic, updater  # noqa: E402
+from maistep import registry, executor, providers, library, components, civitai, agent, magic, updater, sysmon, logs  # noqa: E402
 from maistep.registry import Cancelled  # noqa: E402
 
 for d in ("input", "output", "user", "workflows", "custom_nodes"):
@@ -323,6 +326,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.json([{"file": p.relative_to(ROOT).as_posix(), "size": p.stat().st_size, "mtime": p.stat().st_mtime} for p in files[:500]])
         if u.path == "/api/library":
             return self.json(library.summary(qs.get("refresh") == "1"))
+        if u.path == "/api/stats":
+            return self.json(sysmon.stats())
+        if u.path == "/api/limits":
+            return self.json(sysmon.limits())
+        if u.path == "/api/logs":
+            return self.json({"dir": str(logs.DIR), "files": logs.files()})
         if u.path == "/api/library/model":
             try:
                 return self.json(library.details(qs.get("id", "")))
@@ -434,6 +443,20 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/components/install":
             r = components.install(data.get("ids") or [], data.get("mode") or "recommended")
             return self.json(r, 409 if r.get("error") else 200)
+        if u.path == "/api/limits":
+            r = sysmon.save_limits(data)
+            log("info", f"лимиты: {r}")
+            return self.json(r)
+        if u.path == "/api/logs/report":
+            extra = {"version": updater.installed_version(), "gpu": components.gpu_info(), "limits": sysmon.limits(),
+                     "gen": load_settings().get("gen") or {}}
+            try:
+                extra["stats"] = sysmon.line(sysmon.sample())
+            except Exception as e:
+                extra["stats"] = f"{type(e).__name__}: {e}"
+            path = logs.report(extra)
+            log("info", f"отчёт для отправки: {path}")
+            return self.json({"path": path})
         if u.path == "/api/library/roots":
             try:
                 r = library.edit_roots(data.get("add"), data.get("remove"))
@@ -482,12 +505,32 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
 
+def low_memory(text):
+    """sysmon: свободной RAM меньше запаса — остановить текущий запуск (один раз)."""
+    run = Q.running if Q else None
+    if run and not run.cancel.is_set():
+        log("error", text)
+        run.emit("log", {"node": None, "level": "error", "text": text})
+        Q.interrupt()
+
+
+class Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # клиент ушёл, не дождавшись ответа (перезагрузка страницы, закрытое окно) — не ошибка сервера
+        if isinstance(sys.exc_info()[1], (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
     global Q
     ap = argparse.ArgumentParser(description="maistep server")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 3300)))
     ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     a = ap.parse_args()
+    logs.setup()
+    sysmon.configure(lambda: Q.running if Q else None, low_memory, lambda level, text: log("info", f"[{level}] {text}"))
+    sysmon.start()
     registry.load_all(ROOT, log)
     updater.configure(lambda event, data: HUB.emit(event, data), log)
     updater.start()
@@ -496,7 +539,7 @@ def main():
                     lambda: list(Q.history), Q.interrupt)
     # на Windows SO_REUSEADDR позволяет второму процессу тихо занять тот же порт — пусть лучше упадёт с ошибкой
     ThreadingHTTPServer.allow_reuse_address = os.name != "nt"
-    srv = ThreadingHTTPServer((a.host, a.port), Handler)
+    srv = Server((a.host, a.port), Handler)
     srv.daemon_threads = True
     log("info", f"maistep server: http://{a.host}:{a.port}  (Python {sys.version.split()[0]}, проект {ROOT})")
     try:

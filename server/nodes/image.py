@@ -69,6 +69,51 @@ def image_fit(image, megapixels, multiple, ctx):
     return {"image": {"file": p.relative_to(ctx.root).as_posix()}, "width": w, "height": h}
 
 
+@node("image.lineart", title="Lineart From Page", cat="Image",
+      inputs={"image": ("IMAGE", {}),
+              "mode": (["invert", "threshold", "edges", "as_is"], {"default": "invert",
+                       "hint": "invert — a black-and-white page is already lineart: ink becomes white lines on black (what "
+                               "lineart ControlNets expect); threshold — the same, binarized (drops gray tone and paper "
+                               "noise); edges — lines of a color picture (difference of Gaussians: dark strokes and contours); "
+                               "as_is — the image is already a hint"}),
+              "threshold": ("INT", {"default": 160, "min": 1, "max": 254, "hint": "threshold: darker than this — a line"}),
+              "blur": ("FLOAT", {"default": 0.0, "min": 0, "max": 4, "step": 0.1,
+                                 "hint": "soften the hint, px at 1 MP: screentone dots merge into gray instead of noise"})},
+      outputs={"image": "IMAGE"},
+      hint="Preprocessor for lineart / manga-line ControlNets from a black-and-white page or sketch (no extra model): "
+           "white lines on black, paper levels stretched. The result goes to input/ (hidden from the lists).")
+def image_lineart(image, mode, threshold, blur, ctx):
+    from PIL import ImageFilter, ImageOps
+    im = _open(ctx, image, "L")
+    if mode != "as_is":
+        if blur > 0:
+            im = im.filter(ImageFilter.GaussianBlur(blur * max(0.5, (im.width * im.height / 1e6) ** 0.5)))
+        if mode == "threshold":
+            im = im.point(lambda v: 255 if v < threshold else 0)
+        elif mode == "edges":
+            im = _edges(im)
+        else:
+            im = ImageOps.autocontrast(ImageOps.invert(im), cutoff=(1, 0.2))  # бумага → чёрный, тушь → белый
+    p = ctx.input_dir / f"tocolar_lines_{time.strftime('%Y%m%d_%H%M%S')}_{im.width}x{im.height}.png"
+    n = 1
+    while p.exists():
+        p, n = p.with_name(f"tocolar_lines_{time.strftime('%Y%m%d_%H%M%S')}-{n}_{im.width}x{im.height}.png"), n + 1
+    im.convert("RGB").save(p)
+    return {"file": p.relative_to(ctx.root).as_posix()}
+
+
+def _edges(gray):
+    """Линии цветной картинки без модели: разность гауссиан (тёмнее окрестности — штрих), как XDoG у
+    аниме-препроцессоров, но проще. Белые линии на чёрном; масштаб — от 1 Мп."""
+    from PIL import ImageChops, ImageFilter, ImageOps
+    k = max(0.5, (gray.width * gray.height / 1e6) ** 0.5)
+    fine = gray.filter(ImageFilter.GaussianBlur(0.6 * k))
+    wide = gray.filter(ImageFilter.GaussianBlur(2.2 * k))
+    lines = ImageChops.subtract(wide, fine, scale=1, offset=0)  # насколько пиксель темнее округи
+    lines = ImageOps.autocontrast(lines, cutoff=(60, 0.3))
+    return lines.point(lambda v: 0 if v < 40 else min(255, int((v - 40) * 1.6)))
+
+
 @node("image.keep_lines", title="Keep Lines (Recolor)", cat="Image",
       inputs={"lines": ("IMAGE", {"hint": "the original black-and-white page"}),
               "colors": ("IMAGE", {"hint": "the colored version (any size — it is stretched to the original)"}),

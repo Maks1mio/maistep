@@ -8,6 +8,9 @@
 1. Запустите сервер (кнопка «Сервер» в шапке).
 2. Добавьте картинки: «С диска…» (можно сразу несколько), «Из проекта», перетаскивание или Ctrl+V.
 3. Справа выберите чекпоинт. Лучше всего аниме-SDXL: Illustrious, NoobAI, Pony. Шаги, CFG и сэмплер подставит Magic.
+   В секции **«Контуры»** должна стоять галочка «ControlNet по линиям страницы». Если модели ControlNet ещё нет,
+   там же будет кнопка **«Скачать (2,5 ГБ)»** (или «Компоненты» → группа «Модели»). Модель скачивается один раз,
+   в папку `controlnet` библиотеки моделей.
 4. Включите **«придумывать цвета самому»** — vision-LLM посмотрит страницу и сам подберёт цвета (волосы, глаза,
    кожа, одежда, фон). Результат виден в поле «Цвета этой страницы», его можно править; общие для всех страниц цвета
    персонажей попадают в «Персонажи», остальное — в «Подсказку».
@@ -24,12 +27,34 @@
 
 ## Как устроено
 
-Каждая картинка — скрытый граф `tocolar` (`app/ui/js/tocolar.js`) из обычных нод:
+Каждая картинка — скрытый граф `tocolar` (`app/ui/js/tocolar.js`) из обычных нод. Основной путь — ControlNet:
 
 ```
-Load Image → Fit Image → VAE Encode → KSampler (img2img, denoise 0.7) → VAE Decode ─┐
-     └──────────────────────────────────────────────────────────────────────→ Keep Lines → colored_*.png
+Load Image → Fit Image ─→ Lineart From Page (инверсия) ─→ Apply ControlNet ← Load ControlNet Model
+                 │                                         ↑ positive/negative из CLIP Text Encode
+                 └→ VAE Encode → KSampler (denoise 1, ControlNet 0.8 до 0.8 шагов) → VAE Decode ─┐
+Load Image ──────────────────────────────────────────────────────────────────────────────→ Keep Lines → colored_*.png
 ```
+
+- Ч/б страница — уже лайнарт: `image.lineart` (Lineart From Page) только инвертирует её (тушь → белые линии на
+  чёрном, уровни бумаги растягиваются) — так ждут лайнарт-ControlNet'ы. Отдельный препроцессор (lineart_anime и т.п.)
+  не нужен; режим `threshold` бинаризует, `blur` смягчает скринтон.
+- ControlNet — **NoobAI `noob-sdxl-controlnet-lineart_anime`** (Eugeoter, fp16, 2,5 ГБ, лицензия FAIPL-1.0-SD).
+  Почему он: обучен на NoobAI-XL, а NoobAI — это Illustrious-XL, поэтому он «родной» для Illustrious-чекпоинтов
+  (по умолчанию `waiIllustriousSDXL_v160`) и аниме-SDXL вообще; обучен ровно на аниме-лайнарте (белые линии на
+  чёрном). xinsir union-SDXL обучен на базе SDXL (на Illustrious уводит стиль и требует выбирать тип контроля),
+  canny по ч/б странице даёт двойные контуры и шум скринтона. Компонент `controlnet-lineart-anime` — в разделе
+  `models` у `components.json`; любой другой SDXL-ControlNet из библиотеки можно выбрать в «Модель ControlNet».
+- KSampler рисует с нуля (denoise 1: латент страницы задаёт только размер), ControlNet держит контуры: цвет ложится
+  точно в области, и он насыщенный — генерация не тянется к серой странице, как img2img. Denoise < 1 — img2img
+  от страницы с тем же ControlNet (бледнее).
+- Затем `image.keep_lines` переносит только цвет (см. ниже), так что линии и текст в баблах остаются как нарисованы.
+- Без галочки ControlNet — прежний путь: VAE Encode → KSampler (img2img, denoise 0.7) → Keep Lines.
+
+Память (8 ГБ VRAM): ControlNet SDXL (2,5 ГБ) рядом с UNet (5 ГБ) не помещается, и всё уходит в системную память
+(на RTX 5060 Ti — минута на шаг). Поэтому на картах до 12 ГБ веса ControlNet живут в RAM и подгружаются на GPU
+послойно во время шага (group offload diffusers с CUDA-потоком, как lowvram в ComfyUI): ~1 с/шаг при 1 Мп против
+0,5 с без ControlNet. Настройка — `"gen": {"controlnet_offload": "auto|true|false"}` в user/settings.json.
 
 - `image.fit` (server/nodes/image.py) уменьшает страницу до ~1 Мп (кратно 64), чтобы SDXL влезла в 8 ГБ VRAM.
   Промежуточный файл пишется в `input/tocolar_fit_*` и скрыт из списков.
@@ -42,8 +67,10 @@ Load Image → Fit Image → VAE Encode → KSampler (img2img, denoise 0.7) → 
 - Ноды доступны и в обычном графе (категория Image), так что раскраску можно собрать своим воркфлоу.
 
 Настройки:
-- **Denoise.** Чем ниже, тем ближе к исходнику и тем бледнее цвет; чем выше, тем смелее цвет, но SD может «додумать»
-  лишнее. Рабочий диапазон 0.65–0.8; по умолчанию 0.7.
+- **Сила контуров** (ControlNet strength, по умолчанию 0.8) — насколько точно генерация идёт по линиям; 0.7–1.
+- **Контуры до** (end percent, 0.8) — на последних 20 % шагов ControlNet отпускает: цвет и светотень мягче, без
+  «жёстких» краёв. 1.0 — до конца.
+- **Denoise** с ControlNet — 1.0 (с нуля); без ControlNet — 0.65–0.8: ниже — ближе к исходнику и бледнее.
 - **Насыщенность.** Множитель цвета из генерации: 0 — ч/б, 1 — как есть, 1.5 — ярче.
 - **Тени.** Сколько светотени брать из генерации: 0 — плоская заливка, 1 — вся светотень (линии всё равно из оригинала).
 - **Персонажи / Подсказка.** Общие теги для всех страниц; «Цвета этой страницы» — то, что придумал LLM именно для неё.
@@ -57,24 +84,30 @@ Load Image → Fit Image → VAE Encode → KSampler (img2img, denoise 0.7) → 
 
 ## После правок серверных нод
 
+ControlNet-путь добавил ноды `image.lineart`, `sd.controlnet_load`, `sd.controlnet_apply` — старый сервер их не знает:
+после обновления перезапустите сервер (или приложение).
+
 `image.keep_lines` получил входы `smooth` и `balance`, `image.fit` — уже был. Сервер читает ноды при старте, поэтому
 после обновления кода Python нужно перезапустить сервер (или приложение), иначе старый сервер отклонит новые входы.
 
+## ControlNet в обычном графе
+
+Ноды как в ComfyUI: **Load ControlNet Model** (`sd.controlnet_load`, Loaders) → **Apply ControlNet**
+(`sd.controlnet_apply`, Conditioning: positive, negative, control_net, image, strength, start/end percent) →
+KSampler. Несколько Apply подряд — multi-ControlNet. Сэмплер сам берёт пайплайн diffusers с ControlNet
+(txt2img или img2img) на модулях загруженного чекпоинта. Файлы ControlNet в формате diffusers (Hugging Face) и
+в формате ControlNet 1.1 / ComfyUI грузятся оба; ControlNet должен быть той же базы, что и чекпоинт (SDXL ↔ SDXL).
+В Inpaint Region (sd.inpaint) подсказка ControlNet всей картинки обрезается под ту же область, что и сама
+картинка, — на этом стоит «Опора» в ImageNaizer (Tile и контуры). Для цветных картинок у `image.lineart` есть режим
+`edges` — линии без модели (разность гауссиан).
+
 ## Что можно улучшить дальше (план)
 
-1. **ControlNet Lineart / Canny (лучший прирост качества).** С ним SD видит контуры и раскрашивает точно по областям,
-   а denoise можно поднять до 1.0. Что нужно:
-   - модель `controlnet-union-sdxl` или `xinsir/controlnet-canny-sdxl` в `models/controlnet`
-     (в текущей библиотеке ControlNet-моделей нет);
-   - в `server/maistep/diffusion.py` — `StableDiffusionXLControlNetImg2ImgPipeline` (diffusers) и ноды
-     `sd.controlnet_load` и `sd.controlnet_apply` (описатель `Cond` получит `control` + `strength`), как в ComfyUI
-     (`comfy_extras/nodes_controlnet.py` у Comfy Desktop);
-   - в ToColar — ползунок «Сила контуров» и узел ControlNet в графе.
-2. **Специальная модель раскраски манги** (быстрее SD, без промптов, стабильные цвета):
+1. **Специальная модель раскраски манги** (быстрее SD, без промптов, стабильные цвета):
    [manga-colorization-v2](https://github.com/qweasdd/manga-colorization-v2) (генератор + denoiser, ~150 МБ, PyTorch).
    Нужно: веса в `models/colorization/`, нода `image.colorize_manga` (загрузка сети один раз в `_state`, инференс на GPU),
    переключатель «Движок: SD / Manga Colorizer» в ToColar. Лицензию весов проверить перед добавлением в Компоненты.
-3. **Референс цвета (IP-Adapter).** Цветная обложка того же тайтла задаёт палитру персонажей:
+2. **Референс цвета (IP-Adapter).** Цветная обложка того же тайтла задаёт палитру персонажей:
    `ip-adapter_sdxl` + `image_encoder` в `models/ipadapter`, нода `sd.ipadapter_apply`.
-4. **Тайлинг для больших сканов (>2 Мп).** Раскраска по кускам с перекрытием, затем Keep Lines на полном размере.
-5. **Облачный вариант.** `gpt-image-1` /images/edits (нода `image.edit_openai`) — без GPU, но платно и с цензурой.
+3. **Тайлинг для больших сканов (>2 Мп).** Раскраска по кускам с перекрытием, затем Keep Lines на полном размере.
+4. **Облачный вариант.** `gpt-image-1` /images/edits (нода `image.edit_openai`) — без GPU, но платно и с цензурой.

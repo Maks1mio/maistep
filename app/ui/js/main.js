@@ -27,6 +27,7 @@ import { initMagic } from './magic.js';
 import { initImages } from './images.js';
 import { initPromptWeights } from './promptedit.js';
 import { initContextMenu } from './ctxmenu.js';
+import { initStats, toggleStats, statsShown, limitsDialog, logsReport, openLogs } from './stats.js';
 
 const $ = id => document.getElementById(id);
 const log = (level, text, src = 'editor') => emit('log', { src, level, text });
@@ -104,6 +105,7 @@ const MENU = [
     ['Компоненты и обновления', '6', () => openWorkspace('components')], ['ImageNaizer', '7', () => openWorkspace('naizer')],
     ['ToColar', '8', () => openWorkspace('tocolar')], ['UI Kit', '9', () => openWorkspace('uikit')], '-',
     ['Вписать граф', 'F', fit],
+    [() => `${statsShown() ? '✓ ' : ''}Статистика системы (CPU, RAM, GPU)`, 'Ctrl+Shift+M', toggleStats],
     ['Сбросить раскладку рабочей области', '', () => resetLayout()],
   ]],
   ['Запуск', [
@@ -114,10 +116,13 @@ const MENU = [
   ['Сервер', [
     ['Запустить', 'F5', startServer], ['Остановить', 'Shift+F5', stopServer], ['Перезапустить', 'Ctrl+F5', restartServer], '-',
     ['Перезагрузить ноды', '', reloadNodes], ['Пересканировать модели', '', () => loadLibrary(true)], ['Освободить память (выгрузить модели)', '', freeMemory], '-',
+    ['Производительность и лимиты…', '', limitsDialog], '-',
     ['Компоненты и обновления…', '', () => openWorkspace('components')],
     ['Открыть API в браузере', '', () => openExternal(`http://localhost:${S.server.port}/api/nodes`)],
   ]],
   ['Справка', [
+    ['Собрать отчёт об ошибке (логи)…', '', logsReport],
+    ['Открыть папку логов', '', openLogs], '-',
     ['О программе', '', () => about()],
   ]],
 ];
@@ -214,6 +219,7 @@ function keys(e) {
   if (e.ctrlKey && !typing && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
   if (e.key === 'F5') { e.preventDefault(); if (e.ctrlKey) restartServer(); else if (e.shiftKey) stopServer(); else startServer(); return; }
   if (e.key === 'F7') { e.preventDefault(); checkGraph(); return; }
+  if (e.ctrlKey && e.shiftKey && k === 'm') { e.preventDefault(); toggleStats(); return; }
   if (!typing && !e.ctrlKey && !e.altKey && /^[1-9]$/.test(e.key)) { openWorkspace(['graph', 'results', 'library', 'civitai', 'code', 'components', 'naizer', 'tocolar', 'uikit'][+e.key - 1]); return; }
   if (!typing && graphKeys(e)) { e.preventDefault(); return; }
   if (e.key === 'Escape' && !typing) select(null);
@@ -229,6 +235,7 @@ async function boot() {
   initInspector();
   initNodeInspector();
   initContextMenu();
+  initStats();
   initProject();
   initGraph();
   initMagic();

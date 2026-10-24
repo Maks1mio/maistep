@@ -77,6 +77,36 @@ def text_encode(clip, text, ctx):
     return D.encode(ctx, clip, T.translate(ctx, text))
 
 
+def _controlnet_default():
+    return _default("controlnet", ("noob-sdxl-controlnet-lineart", "noob-sdxl-controlnet-manga", "controlnet-union"))
+
+
+@node("sd.controlnet_load", title="Load ControlNet Model", cat="Loaders",
+      inputs={"control_net_name": picker("controlnet", _controlnet_default(),
+                                         "ControlNet for the checkpoint's base: SDXL / Illustrious / Pony — an SDXL ControlNet")},
+      outputs={"control_net": "CONTROL_NET"},
+      hint="ControlNet model from the library (models/controlnet). Weights load at sampling time, next to the checkpoint. "
+           "For anime lineart on Illustrious / NoobAI — noob-sdxl-controlnet-lineart_anime (Components → Models).")
+def controlnet_load(control_net_name):
+    return D.Control(D.model_path("controlnet", control_net_name))
+
+
+@node("sd.controlnet_apply", title="Apply ControlNet", cat="Conditioning",
+      inputs={"positive": ("CONDITIONING", {}), "negative": ("CONDITIONING", {}), "control_net": ("CONTROL_NET", {}),
+              "image": ("IMAGE", {"hint": "control hint already preprocessed for this ControlNet (lineart — white lines on black)"}),
+              "strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 2, "step": 0.05}),
+              "start_percent": ("FLOAT", {"default": 0.0, "min": 0, "max": 1, "step": 0.01,
+                                          "hint": "from which part of the sampling the hint works (0 — from the start)"}),
+              "end_percent": ("FLOAT", {"default": 1.0, "min": 0, "max": 1, "step": 0.01,
+                                        "hint": "until which part: 0.8 — the last steps are free, details look less stiff"})},
+      outputs={"positive": "CONDITIONING", "negative": "CONDITIONING"},
+      hint="Like ControlNetApplyAdvanced in ComfyUI: attaches a ControlNet hint to both prompts; KSampler then follows "
+           "the hint (lines, pose, depth). Chain several for multi-ControlNet. strength 0 — passes through.")
+def controlnet_apply(positive, negative, control_net, image, strength, start_percent, end_percent):
+    p, n = D.apply_controlnet(positive, negative, control_net, image, strength, start_percent, end_percent)
+    return {"positive": p, "negative": n}
+
+
 @node("sd.empty_latent", title="Empty Latent Image", cat="Latent",
       inputs={"width": ("INT", {"default": 832, "min": 64, "max": 4096, "step": 8}),
               "height": ("INT", {"default": 1216, "min": 64, "max": 4096, "step": 8}),
@@ -182,7 +212,8 @@ def magic_ksampler(model, positive, negative, latent_image, seed, steps, cfg, sa
       outputs={"image": "IMAGE", "seed": "INT"},
       volatile=lambda a: a.get("seed", 0) < 0,
       hint="Redraws only the masked area (like «Inpaint only masked» / Detailer): the area is cropped, upscaled, "
-           "denoised with the rest of the latent held in place, scaled back and pasted with a soft edge.")
+           "denoised with the rest of the latent held in place, scaled back and pasted with a soft edge. "
+           "ControlNet on the prompts (Apply ControlNet with a hint of the whole image) is cropped to the same area.")
 def inpaint(model, positive, negative, vae, image, mask, seed, steps, cfg, sampler_name, scheduler, denoise,
             only_masked, padding, resolution, feather, ctx, fill=False, patch=False):
     seed = random.randint(0, 2**50) if seed < 0 else int(seed)

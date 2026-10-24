@@ -28,6 +28,10 @@ keep=false — выгружать модель после каждого VAE Dec
 AMD (ROCm-сборка torch, тот же API torch.cuda) — как в ComfyUI: на RDNA3+ MIOpen выключен (cudnn.enabled=False,
 свёртки так быстрее; MAISTEP_ENABLE_MIOPEN=1 — вернуть), в VAE внимание без SDPA (на AMD оно падает на больших
 разрешениях), на RDNA2 и старше нет bf16 — VAE в fp32.
+
+Лимиты нагрузки (sysmon.py, «Сервер → Производительность и лимиты…»): vram_max_pct — потолок памяти torch
+(set_per_process_memory_fraction; оценки места ниже считают от него), max_mp — предел размера картинки,
+gpu_load — паузы между шагами сэмплера. Запас RAM следит sysmon и при нехватке прерывает запуск.
 """
 import gc
 import os
@@ -50,6 +54,7 @@ def _dbg(*args):
         print("[diffusion]", *args, file=sys.stderr, flush=True)
 
 from . import library as L  # noqa: E402
+from . import sysmon  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -82,7 +87,8 @@ UPSCALE = ["nearest-exact", "bilinear", "area", "bicubic"]
 
 _lock = threading.RLock()
 _state = {"key": None, "pipe": None, "i2i": None, "i2i_cls": None, "loras": {}, "layout": None, "device": None,
-          "dtype": None, "vae_dtype": None, "unet_at": None, "ckpt": None, "sdxl": False, "vaes": {}}
+          "dtype": None, "vae_dtype": None, "unet_at": None, "ckpt": None, "sdxl": False, "vaes": {}, "cns": {},
+          "cn_pipes": {}}
 
 
 class NotInstalled(RuntimeError):
@@ -119,13 +125,24 @@ class Vae:
 
 
 class Cond:
-    """CONDITIONING: эмбеддинги промпта на CPU (+ pooled у SDXL)."""
-    def __init__(self, embeds, pooled, sdxl, text):
-        self.embeds, self.pooled, self.sdxl, self.text = embeds, pooled, sdxl, text
+    """CONDITIONING: эмбеддинги промпта на CPU (+ pooled у SDXL); control — ControlNet'ы, приложенные к нему
+    (Apply ControlNet): кортежи (путь модели, файл картинки-подсказки, сила, start, end)."""
+    def __init__(self, embeds, pooled, sdxl, text, control=()):
+        self.embeds, self.pooled, self.sdxl, self.text, self.control = embeds, pooled, sdxl, text, tuple(control)
 
     def __str__(self):
         t = self.text if len(self.text) < 80 else self.text[:77] + "…"
-        return f"CONDITIONING {'SDXL' if self.sdxl else 'SD1.5'}: {t}"
+        return f"CONDITIONING {'SDXL' if self.sdxl else 'SD1.5'}: {t}" + \
+            (f" + ControlNet ×{len(self.control)}" if self.control else "")
+
+
+class Control:
+    """CONTROL_NET: файл модели ControlNet (веса грузятся при сэмплинге)."""
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def __str__(self):
+        return f"CONTROL_NET {self.path.stem}"
 
 
 class Latent:
@@ -158,7 +175,8 @@ def _opts(ctx):
     if g.get("vae_fp16", True) in (False, "false", "0", 0):
         vae = "fp32"
     return {"device": g.get("device") or "auto", "dtype": g.get("dtype") or "fp16",
-            "offload": g.get("offload", "auto"), "keep": g.get("keep", True), "vae": vae}
+            "offload": g.get("offload", "auto"), "keep": g.get("keep", True), "vae": vae,
+            "cn_offload": g.get("controlnet_offload", "auto")}
 
 
 def model_path(cat, name):
@@ -220,7 +238,7 @@ def _vae_flags(vae, slicing=None, tiling=None):
 
 def _drop():
     _state.update(key=None, pipe=None, i2i=None, i2i_cls=None, loras={}, layout=None, device=None, dtype=None,
-                  vae_dtype=None, unet_at=None, ckpt=None, sdxl=False, vaes={})
+                  vae_dtype=None, unet_at=None, ckpt=None, sdxl=False, vaes={}, cns={}, cn_pipes={})
     gc.collect()
 
 
@@ -295,9 +313,25 @@ def _vae_need(kind, h, w, dtype):
 
 
 def _free(torch, device):
-    """Свободно на GPU: драйвер + отложенное в кэше torch (как get_free_memory в ComfyUI)."""
-    free, _total = torch.cuda.mem_get_info(device)
-    return free + torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+    """Свободно на GPU: драйвер + отложенное в кэше torch (как get_free_memory в ComfyUI); с потолком VRAM —
+    не больше, чем осталось до него."""
+    free, total = torch.cuda.mem_get_info(device)
+    out = free + torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+    pct = sysmon.limits()["vram_max_pct"]
+    if 0 < pct < 100:
+        out = min(out, total * pct / 100 - torch.cuda.memory_allocated(device))
+    return max(0, out)
+
+
+def _vram_cap(torch, device):
+    """Потолок VRAM для torch: выше — OutOfMemory (и повтор тайлами), а не переполнение в системную память."""
+    if device != "cuda":
+        return
+    pct = sysmon.limits()["vram_max_pct"]
+    try:
+        torch.cuda.set_per_process_memory_fraction(pct / 100 if 0 < pct < 100 else 1.0)
+    except Exception as e:
+        _dbg("vram cap", e)
 
 
 def _unet_to(torch, where):
@@ -311,6 +345,9 @@ def _unet_to(torch, where):
     # включить LoRA («Setting requires_grad=True on inference tensor…»). Переносим всегда обычными тензорами.
     with torch.inference_mode(False), torch.no_grad():
         pipe.unet.to(where)
+        for cn in st["cns"].values():  # ControlNet работает только вместе с UNet — уходит и возвращается с ним
+            if not getattr(cn, "maistep_stream", False):
+                cn.to(where)
     st["unet_at"] = where
     if where == "cpu":
         torch.cuda.empty_cache()
@@ -324,6 +361,9 @@ def _layout(torch, device, opts):
     if isinstance(opts["offload"], bool):
         return "full" if opts["offload"] is False else "offload"
     free, total = torch.cuda.mem_get_info()
+    pct = sysmon.limits()["vram_max_pct"]
+    if 0 < pct < 100:
+        total, free = total * pct / 100, min(free, total * pct / 100)
     return "full" if (total >= 12 * 2**30 and free >= 8 * 2**30) else "split"
 
 
@@ -347,6 +387,7 @@ def _pipe(path, opts, torch, diffusers, ctx=None):
     _drop()
     device = "cuda" if opts["device"] in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     amd = _gpu_setup(torch, device)
+    _vram_cap(torch, device)
     dt = _dtype(torch, opts, device)
     if amd in AMD_OLD and dt == torch.bfloat16:
         dt = torch.float16
@@ -477,20 +518,144 @@ def _apply_loras(pipe, unet=(), te=(), ctx=None):
         raise ValueError(f"LoRA could not be applied: {type(e).__name__}: {e}") from e
 
 
+def _derive(cls, pipe, **extra):
+    """Пайплайн другого класса на тех же модулях (from_pipe). Без dtype from_pipe перекастует общие модули
+    в float32 (на 8 ГБ это уводит UNet в sysmem); текстовые энкодеры в split-раскладке остаются на CPU в fp32 —
+    им нужна точность кодирования."""
+    st = _state
+    out = cls.from_pipe(pipe, dtype=st.get("dtype") or getattr(pipe.unet, "dtype", None), **extra)
+    if st.get("layout") == "split":
+        for te in (getattr(out, "text_encoder", None), getattr(out, "text_encoder_2", None)):
+            if te is not None:
+                te.to("cpu").float()
+    if st.get("vae_dtype") is not None:
+        out.vae.to(dtype=st["vae_dtype"])
+    _vae_flags(out.vae, slicing=True)
+    return out
+
+
 def _i2i(pipe):
     st = _state
     if st["i2i"] is None:
-        # from_pipe без dtype перекастует общие модули в float32 (на 8 ГБ это уводит UNet в sysmem);
-        # текстовые энкодеры в split-раскладке остаются на CPU в fp32 — им нужна точность кодирования.
-        st["i2i"] = st["i2i_cls"].from_pipe(pipe, dtype=st.get("dtype") or getattr(pipe.unet, "dtype", None))
-        if st.get("layout") == "split":
-            for te in (getattr(st["i2i"], "text_encoder", None), getattr(st["i2i"], "text_encoder_2", None)):
-                if te is not None:
-                    te.to("cpu").float()
-        if st.get("vae_dtype") is not None:
-            st["i2i"].vae.to(dtype=st["vae_dtype"])
-        _vae_flags(st["i2i"].vae, slicing=True)
+        st["i2i"] = _derive(st["i2i_cls"], pipe)
     return st["i2i"]
+
+
+# ---------- ControlNet ----------
+def _cn_stream(torch, opts):
+    """Держать веса ControlNet в RAM и подгружать на GPU по слоям во время шага (group offload diffusers с
+    CUDA-потоком — как lowvram в ComfyUI): на картах до 12 ГБ SDXL-ControlNet (2,5 ГБ) рядом с UNet (5 ГБ) не
+    влезает, и всё уходит в sysmem (минута на шаг вместо секунды). gen.controlnet_offload: auto | true | false."""
+    if _state.get("device") != "cuda" or _state.get("layout") == "offload":
+        return False
+    v = opts.get("cn_offload", "auto")
+    if v in (True, "true", "1", 1):
+        return True
+    if v in (False, "false", "0", 0):
+        return False
+    total = torch.cuda.mem_get_info()[1]
+    pct = sysmon.limits()["vram_max_pct"]
+    return total * (pct / 100 if 0 < pct < 100 else 1) < 12 * 2**30
+
+
+def _controlnet(path, torch, diffusers, ctx=None):
+    """Модель ControlNet под загруженный чекпоинт (кэш в _state). Файлы в формате diffusers (Hugging Face:
+    xinsir, NoobAI) собираются по конфигу UNet чекпоинта, формат ControlNet 1.1 / ComfyUI — from_single_file."""
+    st = _state
+    key = str(path)
+    if key in st["cns"]:
+        return st["cns"][key]
+    pipe = st["pipe"]
+    dt, dev = st["dtype"], st["device"]
+    base = "SDXL" if st["sdxl"] else "SD1.5"
+    t0 = time.time()
+    from safetensors.torch import load_file
+    sd = load_file(key)
+    if "controlnet_cond_embedding.conv_in.weight" in sd:
+        from accelerate import init_empty_weights
+        with init_empty_weights():
+            cn = diffusers.ControlNetModel.from_unet(pipe.unet, load_weights_from_unet=False)
+        try:
+            cn.load_state_dict(sd, strict=True, assign=True)
+        except RuntimeError as e:
+            raise ValueError(f"ControlNet «{path.name}» does not match the checkpoint ({base}) — "
+                             "use a ControlNet for the same base") from e
+    else:
+        try:
+            cn = diffusers.ControlNetModel.from_single_file(key, torch_dtype=dt)
+        except Exception as e:
+            raise ValueError(f"ControlNet «{path.name}» did not load: {type(e).__name__}: {e}") from e
+        if cn.config.cross_attention_dim != pipe.unet.config.cross_attention_dim:
+            raise ValueError(f"ControlNet «{path.name}» does not match the checkpoint ({base})")
+    del sd
+    stream = _cn_stream(torch, _opts(ctx))
+    with torch.inference_mode(False), torch.no_grad():
+        cn.to(dtype=dt)
+        if stream:
+            cn.enable_group_offload(onload_device=torch.device(dev), offload_device=torch.device("cpu"),
+                                    offload_type="leaf_level", use_stream=True)
+        else:
+            cn.to(st.get("unet_at") or dev)
+    cn.maistep_stream = stream  # такие не переносим вместе с UNet (_unet_to)
+    cn.eval()
+    # в памяти — один набор ControlNet'ов: прежние уходят вместе со своими пайплайнами
+    st["cns"] = {key: cn}
+    st["cn_pipes"] = {}
+    gc.collect()
+    if ctx:
+        ctx.log(f"ControlNet loaded: {path.name} ({'streamed from RAM, ' if stream else ''}{time.time() - t0:.1f} s)")
+    return cn
+
+
+def _cn_pipe(pipe, paths, img2img, torch, diffusers, ctx=None):
+    """Пайплайн ControlNet (txt2img или img2img) на модулях загруженного чекпоинта."""
+    st = _state
+    key = (tuple(str(p) for p in paths), img2img)
+    if key in st["cn_pipes"]:
+        return st["cn_pipes"][key]
+    if any(str(p) not in st["cns"] for p in paths):
+        st["cns"], st["cn_pipes"] = {}, {}
+        gc.collect()
+    nets = [_controlnet(Path(p), torch, diffusers, ctx) for p in paths]
+    if len(paths) > 1:
+        st["cns"] = {str(p): n for p, n in zip(paths, nets)}
+    if st["sdxl"]:
+        cls = diffusers.StableDiffusionXLControlNetImg2ImgPipeline if img2img else diffusers.StableDiffusionXLControlNetPipeline
+    else:
+        cls = diffusers.StableDiffusionControlNetImg2ImgPipeline if img2img else diffusers.StableDiffusionControlNetPipeline
+    out = _derive(cls, pipe, controlnet=nets[0] if len(nets) == 1 else nets)
+    if st.get("layout") == "offload":
+        out.enable_model_cpu_offload()
+    st["cn_pipes"][key] = out
+    return out
+
+
+def apply_controlnet(positive, negative, control_net, image, strength, start_percent, end_percent):
+    """Apply ControlNet (Advanced): подсказка ControlNet к обоим промптам, как в ComfyUI (в diffusers она и так
+    действует на всю пару CFG). strength 0 — без изменений."""
+    if not control_net or float(strength) == 0 or float(end_percent) <= float(start_percent):
+        return positive, negative
+    c = (str(control_net.path), image["file"], float(strength), float(start_percent), float(end_percent))
+    add = lambda x: Cond(x.embeds, x.pooled, x.sdxl, x.text, x.control + (c,)) if x is not None else None  # noqa: E731
+    return add(positive), add(negative)
+
+
+def _control_images(ctx, controls, w, h, box=None):
+    """Картинки-подсказки ControlNet в размер латента (×8). box — область картинки, которую сэмплируем
+    (Inpaint Region: {"x", "y", "w", "h", "W", "H"}): из подсказки берётся тот же кусок — в её масштабе, она может
+    быть другого размера, чем картинка (например, лайнарт уменьшенной копии)."""
+    from PIL import Image
+    root = ctx.root if ctx else ROOT
+    out = []
+    for c in controls:
+        with Image.open(root / c[1]) as im:
+            pil = im.convert("RGB")
+        if box:
+            kx, ky = pil.width / box["W"], pil.height / box["H"]
+            pil = pil.crop((round(box["x"] * kx), round(box["y"] * ky),
+                            round((box["x"] + box["w"]) * kx), round((box["y"] + box["h"]) * ky)))
+        out.append(pil if pil.size == (w, h) else pil.resize((w, h), Image.LANCZOS))
+    return out
 
 
 # ---------- ноды ----------
@@ -642,25 +807,38 @@ def _unet_back(torch, ctx, shape, b):
                 "mode both running a server): Сервер → «Освободить память» in the other one, or reduce size/batch.", "warn")
 
 
-def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, scheduler, denoise, noise_mask=None):
+def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, scheduler, denoise, noise_mask=None,
+           control_box=None):
     """KSampler. denoise=1 — txt2img (из шума), меньше — img2img по латенту. steps — сколько шагов реально
     выполнится (как в ComfyUI: при denoise<1 расписание считается на steps/denoise).
     noise_mask (1×1×h×w в масштабе латента, 1 — перерисовать) — как SetLatentNoiseMask в ComfyUI: после каждого шага
-    вне маски возвращается исходный латент, зашумлённый до уровня следующего шага (так же делает inpaint-пайплайн)."""
+    вне маски возвращается исходный латент, зашумлённый до уровня следующего шага (так же делает inpaint-пайплайн).
+    control_box — какой кусок картинки сэмплируется (Inpaint Region): подсказки ControlNet обрезаются так же."""
     torch, diffusers, _ = _packages()
     if positive.sdxl != negative.sdxl:
         raise ValueError("positive and negative come from different model families (SD1.5 vs SDXL)")
     steps, denoise = max(1, int(steps)), min(1.0, max(0.0, float(denoise)))
     if denoise <= 0:
         return Latent(latent.samples.clone(), empty=latent.empty)
+    lim = sysmon.limits()
+    mp = latent.samples.shape[-2] * latent.samples.shape[-1] * 64 / 1e6
+    if lim["max_mp"] > 0 and mp > lim["max_mp"] + 1e-6:
+        h, w = latent.samples.shape[-2] * 8, latent.samples.shape[-1] * 8
+        raise ValueError(f"{w}×{h} = {mp:.1f} MP is above the limit of {lim['max_mp']:g} MP (Server → Performance and limits). "
+                         "Generate smaller and upscale with hires fix, or raise the limit")
     with _lock:
         pipe = _pipe(model.ckpt, _opts(ctx), torch, diffusers, ctx)
+        _vram_cap(torch, _state["device"])
         st = _state
         if positive.sdxl != st["sdxl"]:
             raise ValueError("conditioning does not match the model (SD1.5 vs SDXL) — encode with this model's CLIP")
         _apply_loras(pipe, unet=model.loras, ctx=ctx)
         img2img = (denoise < 0.999 or noise_mask is not None) and not latent.empty
-        active = _i2i(pipe) if img2img else pipe
+        controls = positive.control or negative.control
+        if controls:
+            active = _cn_pipe(pipe, [c[0] for c in controls], img2img, torch, diffusers, ctx)
+        else:
+            active = _i2i(pipe) if img2img else pipe
         _set_scheduler(active, sampler, scheduler, diffusers)
         dev, dt = st["device"], st["dtype"]
         b = latent.samples.shape[0]
@@ -688,8 +866,18 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         else:
             h, w = latent.samples.shape[-2] * 8, latent.samples.shape[-1] * 8
             call.update(width=w, height=h, num_inference_steps=steps)
+        if controls:
+            h, w = latent.samples.shape[-2] * 8, latent.samples.shape[-1] * 8
+            one = len(controls) == 1
+            pick = lambda i: controls[0][i] if one else [c[i] for c in controls]  # noqa: E731
+            imgs = _control_images(ctx, controls, w, h, control_box)
+            call["control_image" if img2img else "image"] = imgs[0] if one else imgs
+            call.update(controlnet_conditioning_scale=pick(2), control_guidance_start=pick(3), control_guidance_end=pick(4))
 
         last = [0.0]
+        # нагрузка GPU < 100% — пауза после шага, пропорциональная его времени (видеокарта остывает, система живая)
+        duty = max(0.1, min(1.0, lim["gpu_load"] / 100))
+        tick = [time.time()]
         nmask = None
         if noise_mask is not None and img2img:
             init = latent.samples.to(device=dev, dtype=dt)
@@ -703,6 +891,12 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
                 if i + 1 < len(ts):
                     keep = _pipe.scheduler.add_noise(init, noise, ts[i + 1:i + 2])
                 kw["latents"] = (1 - nmask) * keep + nmask * kw["latents"]
+            if duty < 1:
+                if dev == "cuda":
+                    torch.cuda.synchronize()
+                busy = time.time() - tick[0]
+                time.sleep(min(30.0, busy * (1 / duty - 1)))
+                tick[0] = time.time()
             if ctx:
                 ctx.progress(min(i + 1, steps), steps)
                 now = time.time()
@@ -716,10 +910,12 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         call["callback_on_step_end"] = cb
         if ctx:
             ctx.log(f"KSampler ({'inpaint' if nmask is not None else 'img2img' if img2img else 'txt2img'}, {st['layout']}): {steps} steps, cfg {cfg}, "
-                    f"{sampler}/{scheduler}, seed {seed}" + (f", denoise {denoise}" if img2img else ""))
+                    f"{sampler}/{scheduler}, seed {seed}" + (f", denoise {denoise}" if img2img else "")
+                    + "".join(f", ControlNet {Path(c[0]).stem} {c[2]:g} [{c[3]:g}–{c[4]:g}]" for c in controls)
+                    + (f", GPU load {lim['gpu_load']:g}%" if duty < 1 else ""))
         orig = active.encode_prompt
         active.encode_prompt = _fixed_encode(values)
-        t0 = time.time()
+        t0 = tick[0] = time.time()
         try:
             with torch.inference_mode():
                 out = active(**call).images
@@ -955,7 +1151,8 @@ def inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, 
         ctx.log(f"inpaint: area {cw}×{ch} at ({x0},{y0}) → {tw}×{th}, denoise {denoise}" + (", fill" if fill else ""))
         ctx.preview_meta = {"box": box}
     lat = encode_pil(ctx, vae, part)
-    out = sample(ctx, model, positive, negative, lat, seed, steps, cfg, sampler, scheduler, denoise, noise_mask=nm)
+    out = sample(ctx, model, positive, negative, lat, seed, steps, cfg, sampler, scheduler, denoise, noise_mask=nm,
+                 control_box=box)
     gen = decode_pils(ctx, vae, out)[0].resize((cw, ch), Image.LANCZOS)
     # вклейка по растушёванной маске; вне неё — исходные пиксели
     f = max(0, int(feather))

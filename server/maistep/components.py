@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -473,7 +474,107 @@ def refresh_sources(m):
 
 
 def _summary(rows):
+    """Сводка по пакетам; модели (опциональные файлы весов) в счётчики и значок не попадают."""
+    rows = [r for r in rows if r.get("kind") != "model"]
     return {k: sum(1 for r in rows if r["status"] == k) for k in ("ok", "update", "missing", "newer")}
+
+
+# ---------- модели (файлы весов, не pip) ----------
+# models в components.json: файл с Hugging Face (url, sha256, bytes) → папка категории библиотеки, куда качает и
+# Civitai (civitai._folder_for). Установленной считается модель с таким именем файла в любой папке категории.
+def _model_path(c, refresh=False):
+    from maistep import library as L
+    for it in L.index(refresh)["items"]:
+        if it["cat"] == c["cat"] and Path(it["path"]).name.lower() == c["file"].lower():
+            return it["path"]
+    return None
+
+
+def _model_row(c):
+    path = _model_path(c)
+    return {
+        "id": c["id"], "kind": "model", "title": c.get("title") or c["file"], "package": c["file"],
+        "group": c.get("group") or "Модели", "tabs": c.get("tabs") or [], "required": bool(c.get("required")),
+        "note": c.get("note") or "", "size": c.get("size") or "", "installed": "скачана" if path else None,
+        "installed_base": None, "recommended": "", "latest": None, "latest_newer": False,
+        "status": "ok" if path else "missing", "index_url": None, "pypi": False, "spec": c["file"],
+        "variant": None, "variants": None, "installed_variant": None, "problem": None,
+        "path": path, "cat": c["cat"], "page": c.get("page"), "license": c.get("license"),
+        "starter": bool(c.get("starter")), "bytes": int(c.get("bytes") or 0),
+    }
+
+
+def model_status(cid):
+    """Строка модели по id (для вкладок: есть ли ControlNet ToColar)."""
+    c = next((x for x in manifest().get("models") or [] if x["id"] == cid), None)
+    return _model_row(c) if c else None
+
+
+def _fetch_file(job, c, part, pos):
+    """Скачать url модели в .part с позиции pos (Range), с прогрессом в лог задания."""
+    url = c["url"]
+    if urllib.parse.urlparse(url).hostname == "civitai.com":  # ключ Civitai (если задан) — только самому Civitai
+        from maistep import civitai
+        url = civitai._dl_url(url)
+    req = urllib.request.Request(url, headers={**UA, **({"range": f"bytes={pos}-"} if pos else {})})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        if pos and r.status != 206:
+            pos = 0  # сервер не умеет Range — сначала
+        total = pos + int(r.headers.get("content-length") or 0) or int(c.get("bytes") or 0)
+        done, shown, t0 = pos, -1, time.time()
+        with open(part, "ab" if pos else "wb") as out:
+            while True:
+                if job.cancelled:
+                    raise InterruptedError("загрузка прервана (недокачанное продолжится при следующей установке)")
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                out.write(b)
+                done += len(b)
+                pct = int(100 * done / total) if total else 0
+                if pct // 5 != shown:
+                    shown = pct // 5
+                    speed = (done - pos) / max(0.1, time.time() - t0) / 2**20
+                    job.log(f"  {pct}% · {done / 2**20:.0f} из {total / 2**20:.0f} МБ · {speed:.1f} МБ/с")
+
+
+def _download_model(job, c):
+    """Скачать файл модели: докачка .part по Range, проверка размера и sha256, затем атомарная замена."""
+    import hashlib
+    from maistep import civitai
+    from maistep import library as L
+    if _model_path(c, refresh=True):
+        job.log(f"{c['file']}: уже есть в библиотеке")
+        return
+    folder, _cat = civitai._folder_for(c.get("civitai_type") or "Controlnet")
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / c["file"]
+    part = dest.with_name(dest.name + ".part")
+    pos = part.stat().st_size if part.exists() else 0
+    job.log(f"$ download {c['url']}\n  → {dest}" + (f" (докачка с {pos / 2**20:.0f} МБ)" if pos else ""))
+    if c.get("bytes") and pos > int(c["bytes"]):
+        part.unlink()
+        pos = 0
+    if c.get("bytes") and pos == int(c["bytes"]):
+        job.log("  файл уже скачан целиком")
+    else:
+        _fetch_file(job, c, part, pos)
+    size = part.stat().st_size
+    if c.get("bytes") and size != int(c["bytes"]):
+        raise RuntimeError(f"файл скачан не полностью: {size} из {c['bytes']} байт")
+    if c.get("sha256"):
+        job.log("  проверка sha256…")
+        h = hashlib.sha256()
+        with open(part, "rb") as f:
+            for b in iter(lambda: f.read(8 << 20), b""):
+                h.update(b)
+        if h.hexdigest().lower() != c["sha256"].lower():
+            part.unlink(missing_ok=True)
+            raise RuntimeError("sha256 не совпал — файл повреждён, скачайте ещё раз")
+    os.replace(part, dest)
+    L.index(refresh=True)
+    _emit("library-changed", {})
+    job.log(f"готово: {dest}")
 
 
 def status(refresh=False, deep=False):
@@ -537,6 +638,7 @@ def status(refresh=False, deep=False):
             "variant": c.get("variant"), "variants": c.get("variants"), "installed_variant": inst_variant,
             "problem": problem,
         })
+    rows += [_model_row(c) for c in m.get("models") or []]
     data = {
         "app": {"name": app_cfg.get("name") or "maistep", "installed": app_installed, "recommended": app_rec,
                 "latest": app_latest, "status": app_status,
@@ -587,6 +689,10 @@ def job_snapshot():
         return _job.snap() if _job else None
 
 
+def info_path():
+    return python_info()["path"]
+
+
 def install(ids=None, mode="recommended"):
     """Установить/обновить пакеты манифеста. mode: recommended (стабильная из манифеста), missing, latest."""
     global _job
@@ -596,9 +702,22 @@ def install(ids=None, mode="recommended"):
         m = manifest()
         gpu = gpu_info()
         comps = {c["id"]: _resolve(c, gpu) for c in m["python"]["components"]}
+        models = {c["id"]: c for c in m.get("models") or []}
         wanted = [i for i in (ids or []) if i in comps]
-        if ids and len(wanted) != len(ids):
-            return {"error": f"неизвестные компоненты: {', '.join(set(ids) - set(wanted))}"}
+        get = [models[i] for i in (ids or []) if i in models and not _model_path(models[i], refresh=True)]
+        if ids and len(wanted) + len([i for i in ids if i in models]) != len(ids):
+            return {"error": f"неизвестные компоненты: {', '.join(set(ids) - set(wanted) - set(models))}"}
+        if ids and not wanted:  # только модели (пакеты по пустому списку не добираем)
+            if not get:
+                _job = Job([], mode)
+                _job.state = "done"
+                _job.log("модели уже скачаны")
+                _job.ended = time.time()
+                return {"job": _job.snap()}
+            _job = Job([c["id"] for c in get], mode)
+            threading.Thread(target=_run_install, args=(_job, info_path(), [("model", c) for c in get]), daemon=True).start()
+            _emit("components", {"job": _job.snap()})
+            return {"job": _job.snap()}
         info = python_info()
         ver = installed(info["path"])
         versions = ver.get("versions") or {}
@@ -637,19 +756,20 @@ def install(ids=None, mode="recommended"):
                 continue
             chosen.append(c)
             groups.setdefault(c.get("index_url"), []).append(_spec(c, target))
-        if not chosen:
+        if not chosen and not get:
             _job = Job(wanted, mode)
             _job.state = "done"
             _job.log("нечего устанавливать — версии уже совпадают")
             _job.ended = time.time()
             return {"job": _job.snap()}
-        _job = Job([c["id"] for c in chosen], mode)
+        _job = Job([c["id"] for c in chosen] + [c["id"] for c in get], mode)
         args = []
         for index, specs in groups.items():
             cmd = ["-m", "pip", "install", "--upgrade", "--disable-pip-version-check", "--no-input", *specs]
             if index:
                 cmd += ["--index-url", index]
             args.append(cmd)
+        args += [("model", c) for c in get]
         threading.Thread(target=_run_install, args=(_job, info["path"], args), daemon=True).start()
         _emit("components", {"job": _job.snap()})
         return {"job": _job.snap()}
@@ -659,6 +779,9 @@ def _run_install(job, py, commands):
     flags = 0x08000000 if sys.platform == "win32" else 0
     try:
         for cmd in commands:
+            if cmd[0] == "model":
+                _download_model(job, cmd[1])
+                continue
             job.log("$ " + " ".join([Path(py).name, *cmd]))
             p = subprocess.Popen([py, *cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                  encoding="utf-8", errors="replace", bufsize=1, creationflags=flags,
@@ -679,6 +802,9 @@ def _run_install(job, py, commands):
                 return
         job.state = "done"
         job.log("готово: компоненты обновлены")
+    except InterruptedError as e:
+        job.state, job.error = "cancelled", str(e)
+        job.log(job.error)
     except Exception as e:
         job.state = "failed"
         job.error = f"{type(e).__name__}: {e}"

@@ -9,6 +9,9 @@
 // поэтапное превью приходят как у любого запуска (превью рисуется прямо в области на холсте).
 // Hierarchy (контекст naizer) — недавние документы и файлы output/ и input/; Inspector — настройки генерации.
 // «Контекст сцены» — vision-LLM (скрытый llm.chat) описывает картинку, теги подмешиваются в промпт.
+// «Опора» — ControlNet по видимому композиту: Tile держит композицию и цвета (детализация с силой 0.55–0.75 без
+// «чужого» объекта), «Контуры» — линии картинки (image.lineart edges) держат форму при перерисовке (перекрасить,
+// сменить материал). Подсказку сервер обрезает под область (sd.inpaint). Модели нет — генерация без опоры.
 import { h, num, check, debounce, clamp } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector, typingIn } from './inspector.js';
@@ -17,6 +20,7 @@ import { api, fileUrl, upload, interrupt, getModels, getSettings } from './backe
 import { isShown, activeView } from './dock.js';
 import { dropdown } from './kit.js';
 import { libraryPicker } from './library.js';
+import { cnNames, cnPick, loadCn, cnMissing } from './cnmodels.js';
 import { modelPicker } from './modelpick.js';
 import { fetchRec, MAGIC_KEYS } from './magic.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage } from './images.js';
@@ -26,13 +30,21 @@ const DEF = {
   file: '', docs: {}, mode: 'detail', prompt: { detail: '', redraw: '' }, negative: '', denoise: { detail: 0.4, redraw: 0.9 }, fill: true,
   ckpt: '', params: null, magic: null, padding: 48, feather: 12, resolution: 0, seed: -1, tool: 'brush', size: 60,
   useContext: true, ctxProvider: '', ctxModel: '', side: 250,
+  cn: { detail: 'tile', redraw: 'off' }, cnStrength: { tile: 0.6, lines: 0.8 }, cnModel: { tile: '', lines: '' },
 };
 const st = (() => { try { return { ...DEF, ...JSON.parse(localStorage.getItem(LS)) }; } catch { return { ...DEF }; } })();
 if (!st.docs || typeof st.docs !== 'object') st.docs = {};
+for (const k of ['cn', 'cnStrength', 'cnModel']) st[k] = { ...DEF[k], ...(st[k] && typeof st[k] === 'object' ? st[k] : {}) };
 delete st.versions; delete st.context; // старый формат: версии-картинки целиком
 const keep = debounce(() => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch {} }, 200);
 const log = (level, text) => emit('log', { src: 'naizer', level, text });
-const MODES = { detail: ['Детализировать', 'Те же формы, больше деталей: denoise 0.3–0.5'], redraw: ['Перерисовать', 'На месте выделения — то, что в промпте: denoise 0.8–1'] };
+const MODES = { detail: ['Детализировать', 'Те же формы, больше деталей: denoise 0.3–0.5 (с опорой Tile — 0.55–0.75)'], redraw: ['Перерисовать', 'На месте выделения — то, что в промпте: denoise 0.8–1'] };
+// опора ControlNet: подпись, подсказка, до какой доли шагов держит
+const CNS = {
+  off: ['нет', 'Без ControlNet: только denoise решает, сколько останется от старого'],
+  tile: ['детали', 'Tile: держит композицию и цвета выделенного — можно поднять силу до 0.55–0.75 и получить больше деталей без чужого объекта', 0.9],
+  lines: ['контуры', 'Контуры: линии картинки держат форму — перекрасить одежду, сменить материал, перерисовать в том же силуэте', 0.8],
+};
 const TINT = '#548AF7';
 
 // инструменты: свои иконки (в наборе JetBrains нет кисти/лассо), цвет — currentColor
@@ -702,11 +714,17 @@ async function run(again = null) {
     const mode = st.mode, prompt = (st.prompt[mode] || '').trim();
     if (mode === 'redraw' && !prompt) return log('warn', 'напишите в промпте, что нарисовать на месте выделения');
     try {
-      src = { base: await baseForRun(), mask: await maskFile(), mode, prompt, denoise: st.denoise[mode] };
+      const cn = st.cn[mode] || 'off';
+      src = { base: await baseForRun(), mask: await maskFile(), mode, prompt, denoise: st.denoise[mode],
+        cn, cnStrength: cn === 'off' ? 0 : st.cnStrength[cn] };
     } catch (e) { return log('error', `подготовка: ${e.message}`); }
   }
   const { mode } = src;
   if (!rec?.ok) await loadRec();
+  const useCn = src.cn && src.cn !== 'off';
+  if (useCn && cnNames() == null) await loadCn();
+  const cnFile = useCn ? cnPick(src.cn, st.cnModel[src.cn]) : '';
+  if (useCn && !cnFile) log('warn', `опора «${CNS[src.cn][0]}»: модель ControlNet не установлена — генерирую без неё (Inspector → «Скачать»)`);
   const q = rec?.prompt || { positive: 'masterpiece, best quality', negative: 'lowres, worst quality, bad anatomy' };
   const ctx = st.useContext !== false ? (doc()?.context || '').trim() : '';
   const positive = mode === 'detail'
@@ -733,12 +751,23 @@ async function run(again = null) {
       L('img', 'image', 'inp', 'image'), L('mask', 'image', 'inp', 'mask')],
     targets: ['inp'],
   };
+  if (cnFile) { // ControlNet по всей основе; sd.inpaint вырежет из подсказки ту же область
+    wf.nodes.push({ id: 'cnl', type: 'sd.controlnet_load', props: { control_net_name: cnFile } },
+      { id: 'cna', type: 'sd.controlnet_apply', props: { strength: src.cnStrength, start_percent: 0, end_percent: CNS[src.cn][2] } });
+    wf.links = wf.links.filter(l => l.to !== 'inp' || !['positive', 'negative'].includes(l.in));
+    wf.links.push(L('pos', 'conditioning', 'cna', 'positive'), L('neg', 'conditioning', 'cna', 'negative'), L('cnl', 'control_net', 'cna', 'control_net'),
+      L('cna', 'positive', 'inp', 'positive'), L('cna', 'negative', 'inp', 'negative'));
+    if (src.cn === 'lines') {
+      wf.nodes.push({ id: 'lines', type: 'image.lineart', props: { mode: 'edges', threshold: 160, blur: 0 } });
+      wf.links.push(L('img', 'image', 'lines', 'image'), L('lines', 'image', 'cna', 'image'));
+    } else wf.links.push(L('img', 'image', 'cna', 'image'));
+  }
   const pid = crypto.randomUUID().replace(/-/g, '');
   busy = { pid, file: st.file, src, layer: again?.id || null, step: 0, max: 0, preview: null, box: null, mode };
   refresh();
   try {
     await api('/api/prompt', { id: pid, workflow: wf });
-    log('info', `${MODES[mode][0]}${again ? ` (ещё вариант «${again.name}»)` : ''} · denoise ${src.denoise} · ${p.steps} шагов, cfg ${p.cfg}, ${p.sampler_name}/${p.scheduler}`);
+    log('info', `${MODES[mode][0]}${again ? ` (ещё вариант «${again.name}»)` : ''} · denoise ${src.denoise}${cnFile ? ` · опора ${CNS[src.cn][0]} ${src.cnStrength}` : ''} · ${p.steps} шагов, cfg ${p.cfg}, ${p.sampler_name}/${p.scheduler}`);
   } catch (e) {
     busy = null;
     for (const is of e.data?.issues || []) log('error', `нода ${is.node}: ${is.message}`);
@@ -906,7 +935,7 @@ function sidePanel() {
       A.src ? h('button', { onclick: () => run(A), disabled: !!busy, 'data-tip': 'Та же область и промпт, новый seed — вариант добавится в этот слой' }, icon('refresh', { size: 14 }), 'Ещё вариант') : null,
       h('button', { onclick: () => selFromLayer(A), 'data-tip': 'Выделить непрозрачную часть слоя (Ctrl+клик по миниатюре)' }, svg('sel', 14), 'Выделить'),
       h('button', { onclick: () => cutLayer(A), disabled: !selBox, 'data-tip': 'Стереть выделенное из слоя (Shift+Del)\nстарый вид — в вариантах слоя и в отмене' }, svg('erase', 14), 'Стереть выделенное')),
-    A.src ? h('div.hint', {}, `${MODES[A.src.mode]?.[0] || ''} · denoise ${A.src.denoise}${A.vars[A.vi]?.seed != null ? ` · seed ${A.vars[A.vi].seed}` : ''}`) : null)
+    A.src ? h('div.hint', {}, `${MODES[A.src.mode]?.[0] || ''} · denoise ${A.src.denoise}${A.src.cn && A.src.cn !== 'off' ? ` · опора ${CNS[A.src.cn]?.[0]} ${A.src.cnStrength}` : ''}${A.vars[A.vi]?.seed != null ? ` · seed ${A.vars[A.vi].seed}` : ''}`) : null)
     : h('div.nz-props', {}, h('div.hint', {}, d?.layers.length ? 'Фон не редактируется — выберите слой, чтобы менять его.' : 'Выделите область и нажмите «Детализировать» или «Перерисовать» — результат появится здесь отдельным слоем.'));
   const side = h('div.nz-side', { style: { width: `${st.side}px` } },
     h('div.nz-split', { onpointerdown: e => {
@@ -1016,6 +1045,29 @@ function contextCard() {
   ];
 }
 
+// опора ControlNet: вид, модель (или кнопка «Скачать»), сила
+function cnCard(row, slider) {
+  const kind = st.cn[st.mode] || 'off';
+  const out = [h('h4', {}, 'Опора (ControlNet)'),
+    h('div.ui-seg.nz-modes', {}, ...Object.entries(CNS).map(([k, [label, tip]]) => h(`button${kind === k ? '.on' : ''}`, { 'data-tip': tip,
+      onclick: () => { st.cn[st.mode] = k; keep(); if (k !== 'off' && cnNames() == null) loadCn(); refresh(); } }, label))),
+    h('div.hint', {}, CNS[kind][1])];
+  if (kind === 'off') return out;
+  if (cnNames() == null) loadCn();
+  const file = cnPick(kind, st.cnModel[kind]);
+  if (!file) {
+    out.push(cnMissing(kind, { slim: false, fallback: 'Пока модели нет, генерация идёт без опоры.' }));
+    return out;
+  }
+  const btn = h('button.icon', { 'data-tip': 'Модель ControlNet (папка controlnet библиотеки)', onclick: () => libraryPicker(btn, { cat: 'controlnet', value: file,
+    onPick: n => { st.cnModel[kind] = n; keep(); refresh(); } }) }, icon('link', { size: 14 }));
+  const inp = h('input', { type: 'text', value: file.replace(/\.\w+$/, ''), spellcheck: false, readOnly: true, onclick: () => btn.click() });
+  out.push(row('модель', h('div.row', { style: { flex: 1 } }, inp, btn)),
+    row('сила опоры', slider(st.cnStrength[kind], 0.2, 1.5, 0.05, x => { st.cnStrength[kind] = x; keep(); }),
+      kind === 'tile' ? 'насколько держать композицию и цвета (0.5–0.8)' : 'насколько точно держать линии (0.7–1)'));
+  return out;
+}
+
 function inspector() {
   const area = (value, ph, set, rows = 3) => {
     const t = h('textarea', { rows, spellcheck: false, placeholder: ph, title: 'Ctrl+↑ / Ctrl+↓ — вес тега: (girl:1.2)' });
@@ -1054,6 +1106,7 @@ function inspector() {
     row('сила', slider(st.denoise[st.mode], 0.1, 1, 0.05, x => { st.denoise[st.mode] = x; keep(); }), 'denoise: насколько сильно менять выделенное'),
     redraw ? h('label.row', { style: { gap: '6px', margin: '2px 0 4px' }, title: 'Перед генерацией размыть выделенное, чтобы старый объект не просвечивал' },
       check(st.fill !== false, v => { st.fill = v; keep(); }), 'размыть старое (лучше заменяет объект)') : null,
+    ...cnCard(row, slider),
     ...contextCard(),
     h('h4', {}, 'Модель'),
     row('чекпоинт', h('div.row', { style: { flex: 1 } }, ckIn, ckBtn)),
@@ -1170,6 +1223,7 @@ export function initNaizer() {
     }, 900);
   });
   addEventListener('view', e => { if (e.detail === 'naizer') render(); });
+  on('cn-models', () => { if (S.sel?.kind === 'naizer') refresh_(); });
 }
 
 export function showNaizer() {

@@ -317,6 +317,10 @@ def recommend(ckpt, loras=(), refresh=False, online=True):
         if lf and lf != fam:
             row["ok"] = False
             row["note"] = f"LoRA для {lf.replace('other:', '')}, чекпоинт — {prof['title']}: не подойдёт"
+        lsp = _speed(li["name"])  # параметры чекпоинта не трогаем (правило), но подсказываем, что нужно быстрой LoRA
+        if lsp:
+            notes.append(f"{lsp['title']}-LoRA {li['name']}: поставьте steps {lsp['steps']}, cfg {lsp['cfg']:g}, "
+                         f"{lsp['sampler_name']}/{lsp['scheduler']} — с обычными параметрами картинка пережжётся")
         if row["weight"] and abs(float(strength or 0) - row["weight"]) > 0.25:
             row["note"] = (row.get("note") + "; " if row.get("note") else "") + f"автор советует силу ≈ {row['weight']}"
         lor.append(row)

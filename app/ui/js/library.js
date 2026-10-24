@@ -262,6 +262,7 @@ export function initLibrary() {
   onContextMenu(tileMenu);
   registerInspector('libmodel', libInspector);
   on('library', render);
+  on('library-changed', () => loadLibrary(true)); // скачана модель (Civitai, Компоненты)
   on('select', s => { if (gridEl) gridEl.querySelectorAll('.ltile').forEach(t => t.classList.toggle('sel', s?.kind === 'libmodel' && t.dataset.id === s.id)); });
   on('server', st_ => { if (st_.running) setTimeout(() => loadLibrary(), 1500); else { lib = null; render(); } });
   addEventListener('view', e => { if (e.detail === 'library') render(); });

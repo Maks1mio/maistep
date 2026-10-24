@@ -75,6 +75,7 @@ function connect() {
   ev('comp-log', d => emit('component-log', d));
   ev('update', d => emit('update', d));
   ev('civitai', d => emit('civitai', d));
+  ev('library-changed', () => emit('library-changed'));
   ev('agent', d => emit('agent', d));
   ev('error', d => {
     const wf = runs.get(d.prompt_id);

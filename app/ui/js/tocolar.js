@@ -1,6 +1,8 @@
 // ToColar — раскраска чёрно-белых картинок (манга, комиксы, скетчи) пачкой. Каждая картинка — скрытый граф
-// (id "tocolar"): Fit Image → VAE Encode → KSampler (img2img, denoise) → VAE Decode → Keep Lines. Последняя нода
-// берёт светлоту из оригинала, а цвет — из генерации, поэтому линии, тон и текст остаются как нарисованы.
+// (id "tocolar"). Основной путь — ControlNet: Fit Image → Lineart From Page (страница сама — лайнарт: инверсия)
+// → Apply ControlNet (lineart_anime под SDXL Illustrious/NoobAI) → KSampler с нуля (denoise 1) → VAE Decode →
+// Keep Lines. Без ControlNet — прежний img2img (VAE Encode, denoise ~0.7). Keep Lines берёт светлоту из оригинала,
+// а цвет — из генерации, поэтому линии, тон и текст остаются как нарисованы.
 // Цвета придумывает vision-LLM (скрытый llm.chat): общие персонажи + подсказка страницы, всё можно править.
 // Состояние (список, настройки, подсказки) — localStorage; результаты — PNG в output/ (colored_*).
 import { h, check, clamp } from './util.js';
@@ -9,6 +11,7 @@ import { icon } from './icons.js';
 import { api, upload, fileUrl, getSettings, getModels } from './backend.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage, transferHasImage } from './images.js';
 import { libraryPicker } from './library.js';
+import { cnNames, cnPick, loadCn, cnMissing } from './cnmodels.js';
 import { modelPicker } from './modelpick.js';
 import { dropdown } from './kit.js';
 import { fetchRec } from './magic.js';
@@ -20,7 +23,8 @@ const COLOR_POS = 'full color, colorized manga, vibrant colors, anime coloring, 
 const COLOR_NEG = 'monochrome, greyscale, black and white, sepia, desaturated, lineart only';
 const DEF = {
   items: [], sel: 0, ckpt: '', prompt: '', cast: '', negative: '', auto: true, llmProvider: '', llmModel: '',
-  denoise: 0.7, strength: 1.1, shading: 0.55, megapixels: 1.0, seed: -1, steps: null, cfg: null, split: 0.5, v: 2,
+  denoise: 0.7, strength: 1.1, shading: 0.55, megapixels: 1.0, seed: -1, steps: null, cfg: null, split: 0.5,
+  cn: true, cnModel: '', cnStrength: 0.8, cnEnd: 0.8, cnDenoise: 1.0, v: 3,
 };
 
 // vision-LLM: две строки — повторяющиеся персонажи и цвета именно этой страницы
@@ -44,8 +48,10 @@ function load() {
   try { d = JSON.parse(localStorage.getItem(LS)) || {}; } catch {}
   const s = { ...DEF, ...d };
   if (!d.v || d.v < 2) { // прежние умолчания давали бледный цвет
-    s.denoise = 0.7; s.strength = 1.1; s.shading = 0.55; s.auto = true; s.v = 2;
+    s.denoise = 0.7; s.strength = 1.1; s.shading = 0.55; s.auto = true;
   }
+  if (!d.v || d.v < 3) s.cn = true; // ControlNet — основной путь с 3-й версии настроек
+  s.v = DEF.v;
   s.items = (Array.isArray(s.items) ? s.items : []).map(it => ({
     src: it.src, out: it.out || null, outs: Array.isArray(it.outs) ? it.outs : (it.out ? [it.out] : []),
     status: it.status === 'run' ? 'new' : it.status || 'new', prompt: it.prompt ?? null, zoom: it.zoom || 1,
@@ -92,6 +98,9 @@ async function loadRec() {
   rec = await fetchRec({ ckpt: ck, loras: [] });
   render();
 }
+
+// ControlNet: выбранная модель или первая подходящая для лайнарта (cnmodels.js)
+const cnName = () => cnPick('lines', st.cnModel);
 
 // ---------- vision-LLM: цвета сам ----------
 let defaultProvider = '';
@@ -212,35 +221,51 @@ function graph(it) {
   const q = rec?.ok ? rec.prompt : { positive: 'masterpiece, best quality', negative: 'lowres, worst quality, bad anatomy' };
   const p = rec?.ok ? rec.params : {};
   const L = (from, out, to, inn) => ({ from, out, to, in: inn });
-  return {
-    id: 'tocolar', title: `ToColar: ${name(it.src)}`,
-    nodes: [
-      { id: 'ckpt', type: 'sd.checkpoint', props: { ckpt_name: ckptName() } },
-      { id: 'skip', type: 'sd.clip_skip', props: { stop_at_clip_layer: rec?.clip_skip || -2 } },
-      { id: 'pos', type: 'sd.text_encode', props: { text: [q.positive, COLOR_POS, pagePrompt(it)].filter(Boolean).join(', ') } },
-      { id: 'neg', type: 'sd.text_encode', props: { text: [st.negative.trim() || q.negative, COLOR_NEG].filter(Boolean).join(', ') } },
-      { id: 'img', type: 'image.load', props: { file: it.src } },
-      { id: 'fit', type: 'image.fit', props: { megapixels: st.megapixels, multiple: 64 } },
-      { id: 'enc', type: 'sd.vae_encode', props: {} },
-      { id: 'ks', type: 'sd.ksampler', props: { seed: st.seed, steps: st.steps ?? p.steps ?? 25, cfg: st.cfg ?? p.cfg ?? 6,
-        sampler_name: p.sampler_name || 'euler_ancestral', scheduler: p.scheduler || 'normal', denoise: st.denoise } },
-      { id: 'dec', type: 'sd.vae_decode', props: {} },
-      { id: 'keep', type: 'image.keep_lines', props: { strength: st.strength, shading: st.shading ?? 0.55, smooth: 5,
-        prefix: `colored_${stem(it.src)}` } },
-    ],
-    links: [L('ckpt', 'clip', 'skip', 'clip'), L('skip', 'clip', 'pos', 'clip'), L('skip', 'clip', 'neg', 'clip'),
-      L('img', 'image', 'fit', 'image'), L('fit', 'image', 'enc', 'pixels'), L('ckpt', 'vae', 'enc', 'vae'),
-      L('ckpt', 'model', 'ks', 'model'), L('pos', 'conditioning', 'ks', 'positive'), L('neg', 'conditioning', 'ks', 'negative'),
-      L('enc', 'latent', 'ks', 'latent_image'), L('dec', 'image', 'keep', 'colors'), L('ks', 'latent', 'dec', 'samples'),
-      L('ckpt', 'vae', 'dec', 'vae'), L('img', 'image', 'keep', 'lines')],
-    targets: ['keep'],
-  };
+  const cn = st.cn && cnName();
+  const nodes = [
+    { id: 'ckpt', type: 'sd.checkpoint', props: { ckpt_name: ckptName() } },
+    { id: 'skip', type: 'sd.clip_skip', props: { stop_at_clip_layer: rec?.clip_skip || -2 } },
+    { id: 'pos', type: 'sd.text_encode', props: { text: [q.positive, COLOR_POS, pagePrompt(it)].filter(Boolean).join(', ') } },
+    { id: 'neg', type: 'sd.text_encode', props: { text: [st.negative.trim() || q.negative, COLOR_NEG].filter(Boolean).join(', ') } },
+    { id: 'img', type: 'image.load', props: { file: it.src } },
+    { id: 'fit', type: 'image.fit', props: { megapixels: st.megapixels, multiple: 64 } },
+    // латент страницы: при denoise 1 он задаёт только размер (txt2img), ниже — img2img от серой страницы
+    { id: 'enc', type: 'sd.vae_encode', props: {} },
+    { id: 'ks', type: 'sd.ksampler', props: { seed: st.seed, steps: st.steps ?? p.steps ?? 25, cfg: st.cfg ?? p.cfg ?? 6,
+      sampler_name: p.sampler_name || 'euler_ancestral', scheduler: p.scheduler || 'normal', denoise: cn ? st.cnDenoise : st.denoise } },
+    { id: 'dec', type: 'sd.vae_decode', props: {} },
+    // с ControlNet контуры генерации совпадают с оригиналом — цвет можно сглаживать меньше и брать больше светотени
+    { id: 'keep', type: 'image.keep_lines', props: { strength: st.strength, shading: st.shading ?? 0.55, smooth: cn ? 3 : 5,
+      prefix: `colored_${stem(it.src)}` } },
+  ];
+  const links = [L('ckpt', 'clip', 'skip', 'clip'), L('skip', 'clip', 'pos', 'clip'), L('skip', 'clip', 'neg', 'clip'),
+    L('img', 'image', 'fit', 'image'), L('fit', 'image', 'enc', 'pixels'), L('ckpt', 'vae', 'enc', 'vae'),
+    L('ckpt', 'model', 'ks', 'model'), L('enc', 'latent', 'ks', 'latent_image'), L('dec', 'image', 'keep', 'colors'),
+    L('ks', 'latent', 'dec', 'samples'), L('ckpt', 'vae', 'dec', 'vae'), L('img', 'image', 'keep', 'lines')];
+  if (cn) {
+    nodes.push(
+      { id: 'lines', type: 'image.lineart', props: { mode: 'invert', threshold: 160, blur: 0 } },
+      { id: 'cnl', type: 'sd.controlnet_load', props: { control_net_name: cn } },
+      { id: 'cna', type: 'sd.controlnet_apply', props: { strength: st.cnStrength, start_percent: 0, end_percent: st.cnEnd } });
+    links.push(L('fit', 'image', 'lines', 'image'), L('pos', 'conditioning', 'cna', 'positive'), L('neg', 'conditioning', 'cna', 'negative'),
+      L('cnl', 'control_net', 'cna', 'control_net'), L('lines', 'image', 'cna', 'image'),
+      L('cna', 'positive', 'ks', 'positive'), L('cna', 'negative', 'ks', 'negative'));
+  } else {
+    links.push(L('pos', 'conditioning', 'ks', 'positive'), L('neg', 'conditioning', 'ks', 'negative'));
+  }
+  return { id: 'tocolar', title: `ToColar: ${name(it.src)}`, nodes, links, targets: ['keep'] };
 }
 
 async function start(only = null) {
   if (job) return;
   if (!S.server.running) { log('warn', 'сервер не запущен'); emit('server-start'); return; }
   if (!ckptName()) return log('warn', 'выберите чекпоинт (лучше аниме: Illustrious, Pony, NoobAI)');
+  if (st.cn && cnNames() == null) await loadCn();
+  if (st.cn && !cnName()) {
+    log('warn', 'ControlNet не установлен — скачайте модель (справа, «Контуры») или выключите ControlNet');
+    render();
+    return;
+  }
   if (only == null) for (const it of st.items) if (it.status === 'err') it.status = 'new';
   if (!rec) await loadRec();
   stopAll = false;
@@ -269,7 +294,8 @@ async function next(only = null) {
   try {
     await api('/api/prompt', { id: pid, workflow: graph(it) });
     if (job === me) me.posted = true;
-    log('info', `раскраска ${name(it.src)} · denoise ${st.denoise}${it.prompt ? ` · ${it.prompt.slice(0, 80)}` : ''}`);
+    const how = st.cn && cnName() ? `ControlNet ${st.cnStrength} до ${st.cnEnd}` : `img2img denoise ${st.denoise}`;
+    log('info', `раскраска ${name(it.src)} · ${how}${it.prompt ? ` · ${it.prompt.slice(0, 80)}` : ''}`);
   } catch (e) {
     it.status = 'err'; job = null;
     for (const is of e.data?.issues || []) log('error', `нода ${is.node}: ${is.message}`);
@@ -369,6 +395,33 @@ function llmLine() {
   return h('div.tc-llm', {}, icon('eye', { size: 13 }), prov, pick);
 }
 
+const range = (key, min, max, step) => h('div.tc-rng', {}, h('input', { type: 'range', min, max, step, value: st[key] ?? DEF[key],
+  oninput: e => { st[key] = Number(e.target.value); e.target.nextSibling.textContent = st[key].toFixed(2); keep(); } }), h('b', {}, (st[key] ?? DEF[key]).toFixed(2)));
+
+// «Контуры»: ControlNet по линиям страницы (или прежний img2img), скачивание модели, если её нет
+function contours() {
+  const on_ = h('label.tc-check', { 'data-tip': 'SD видит линии страницы и красит точно по областям; без него — img2img по серой странице' },
+    check(st.cn, v => { st.cn = v; keep(); render(); }), 'ControlNet по линиям страницы');
+  const out = [h('div.tc-sec', {}, 'Контуры'), h('div.tc-auto', {}, on_)];
+  if (!st.cn) {
+    out.push(field('Denoise', range('denoise', 0.3, 0.95, 0.05), 'без ControlNet: меньше — ближе к исходнику и бледнее, больше — смелее цвет (0.65–0.8)'));
+    return out;
+  }
+  const cn = cnName();
+  if (!cn) {
+    out.push(cnMissing('lines', { why: 'Нужна для SDXL Illustrious / NoobAI / Pony.', fallback: 'или выключите ControlNet — раскраска пойдёт прежним img2img' }));
+    return out;
+  }
+  const btn = h('button.ui-dd.tc-ck', { type: 'button', 'data-tip': 'Модель ControlNet (папка controlnet библиотеки)',
+    onclick: () => libraryPicker(btn, { cat: 'controlnet', value: cn, onPick: n => { st.cnModel = n; keep(); render(); } }) },
+  icon('link', { size: 16 }), h('span.t', {}, name(cn).replace(/\.\w+$/, '')), h('span.chev', {}, icon('down', { size: 16 })));
+  out.push(field('Модель ControlNet', btn),
+    field('Сила контуров', range('cnStrength', 0.3, 1.5, 0.05), 'насколько точно генерация следует линиям (0.7–1)'),
+    field('Контуры до', range('cnEnd', 0.3, 1, 0.05), 'доля шагов с ControlNet: последние шаги свободны — цвет мягче, без «жёстких» краёв'),
+    field('Denoise', range('cnDenoise', 0.5, 1, 0.05), '1 — рисует цвет с нуля по контурам; меньше — от серой страницы (бледнее)'));
+  return out;
+}
+
 function sidebar() {
   const ck = ckptName();
   const p = rec?.ok ? rec.params : {};
@@ -395,9 +448,7 @@ function sidebar() {
       h('button.ui-btn.secondary.slim', { type: 'button', disabled: !st.cast && !st.prompt, title: 'Очистить общие подсказки',
         onclick: () => { st.cast = ''; st.prompt = ''; keep(); render(); } }, 'Очистить')),
     field('Негатив', textarea(st.negative, v => { st.negative = v; keep(); }, rec?.ok ? rec.prompt.negative : 'lowres, worst quality')),
-    field('Denoise', h('div.tc-rng', {}, h('input', { type: 'range', min: 0.3, max: 0.95, step: 0.05, value: st.denoise,
-      oninput: e => { st.denoise = Number(e.target.value); e.target.nextSibling.textContent = st.denoise.toFixed(2); keep(); } }), h('b', {}, st.denoise.toFixed(2))),
-      'меньше — ближе к исходнику и бледнее, больше — смелее цвет (рабочее 0.65–0.8)'),
+    ...contours(),
     field('Насыщенность', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1.6, step: 0.05, value: st.strength,
       oninput: e => { st.strength = Number(e.target.value); e.target.nextSibling.textContent = st.strength.toFixed(2); keep(); } }), h('b', {}, st.strength.toFixed(2))),
       'слабый цвет генерации подтягивается автоматически'),
@@ -594,7 +645,10 @@ function render() {
     cur() && !job ? h('button.ui-btn.secondary.slim', { onclick: () => start(st.sel), 'data-tip': 'Раскрасить выбранную ещё раз (новый вариант)' }, icon('refresh', { size: 16 }), 'Заново') : null,
     h('span.grow'),
     st.items.some(i => i.status === 'done') && !job ? h('div.ui-tb', {}, h('button.b', { 'data-tip': 'Убрать готовые из списка', onclick: () => { st.items = st.items.filter(i => i.status !== 'done'); st.sel = 0; keep(); render(); } }, icon('delete', { size: 16 }))) : null);
+  const top = viewEl.querySelector('.tc-side')?.scrollTop || 0; // перерисовка не сбрасывает прокрутку настроек
   viewEl.replaceChildren(bar, h('div.tc-body', {}, listEl(), viewer(), sidebar()));
+  const side = viewEl.querySelector('.tc-side');
+  if (side) side.scrollTop = top;
 }
 
 // ---------- регистрация ----------
@@ -603,6 +657,7 @@ export function showTocolar() {
   render();
   if (!rec) loadRec();
   if (st.auto) ensureLlm();
+  if (cnNames() == null) loadCn();
 }
 
 export function initTocolar() {
@@ -633,6 +688,7 @@ export function initTocolar() {
     if (job && job.pid && (!d.prompt_id || d.prompt_id === job.pid)) finish(d);
   });
   setInterval(reconcile, 4000);
+  on('cn-models', () => { if (viewEl?.isConnected) render(); }); // модели ControlNet: список, загрузка
   on('server', s => {
     if (!s.running) return;
     setTimeout(() => {

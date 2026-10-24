@@ -189,5 +189,87 @@
         "note": "Claude и CheapVibeCode через официальный SDK: AI Agent, нода LLM, контекст сцены ImageNaizer, цвета ToColar, перевод промптов"
       }
     ]
-  }
+  },
+  "models": [
+    {
+      "id": "checkpoint-wai-illustrious",
+      "title": "Чекпоинт WAI-Illustrious-SDXL v16",
+      "group": "Модели",
+      "starter": true,
+      "tabs": [
+        "graph",
+        "naizer",
+        "tocolar"
+      ],
+      "cat": "checkpoints",
+      "civitai_type": "Checkpoint",
+      "file": "waiIllustriousSDXL_v160.safetensors",
+      "url": "https://civitai.com/api/download/models/2514310?fileId=2402203",
+      "sha256": "a5f58eb1c33616c4f06bca55af39876a7b817913cd829caa8acb111b770c85cc",
+      "bytes": 6938040682,
+      "size": "6,5 ГБ",
+      "page": "https://civitai.com/models/827184?modelVersionId=2514310",
+      "license": "см. страницу на Civitai",
+      "note": "Аниме-SDXL (Illustrious): основной чекпоинт генерации, ImageNaizer и ToColar; шаги и CFG подставит Magic"
+    },
+    {
+      "id": "lora-dmd2",
+      "title": "LoRA DMD2 (быстрая генерация SDXL)",
+      "group": "Модели",
+      "starter": true,
+      "tabs": [
+        "graph",
+        "naizer"
+      ],
+      "cat": "loras",
+      "civitai_type": "LORA",
+      "file": "dmd2_sdxl_4step_lora_fp16.safetensors",
+      "url": "https://huggingface.co/tianweiy/DMD2/resolve/main/dmd2_sdxl_4step_lora_fp16.safetensors",
+      "sha256": "b3d9173815a4b595991c3a7a0e0e63ad821080f314a0b2a3cc31ecd7fcf2cbb8",
+      "bytes": 393854592,
+      "size": "376 МБ",
+      "page": "https://huggingface.co/tianweiy/DMD2",
+      "license": "CC BY-NC 4.0 (некоммерческая)",
+      "note": "Load LoRA (сила 1) — картинка за 4–8 шагов вместо 25–30: в разы быстрее на 8 ГБ. В KSampler: steps 4–8, cfg 1, lcm/normal (Magic напомнит)"
+    },
+    {
+      "id": "controlnet-lineart-anime",
+      "title": "ControlNet Lineart Anime (NoobAI SDXL)",
+      "group": "Модели",
+      "starter": true,
+      "tabs": [
+        "tocolar",
+        "graph"
+      ],
+      "cat": "controlnet",
+      "civitai_type": "Controlnet",
+      "file": "noob-sdxl-controlnet-lineart_anime.fp16.safetensors",
+      "url": "https://huggingface.co/Eugeoter/noob-sdxl-controlnet-lineart_anime/resolve/main/diffusion_pytorch_model.fp16.safetensors",
+      "sha256": "44eae6a514a60ae426ff966ecdbb9e170ad63d8889456982bb29037df42b86a8",
+      "bytes": 2502139136,
+      "size": "2,5 ГБ",
+      "page": "https://huggingface.co/Eugeoter/noob-sdxl-controlnet-lineart_anime",
+      "license": "FAIPL-1.0-SD",
+      "note": "Контуры для SDXL Illustrious / NoobAI / Pony: ToColar раскрашивает страницу точно по линиям, ImageNaizer перерисовывает область с сохранением формы"
+    },
+    {
+      "id": "controlnet-tile",
+      "title": "ControlNet Tile (NoobAI SDXL)",
+      "group": "Модели",
+      "tabs": [
+        "naizer",
+        "graph"
+      ],
+      "cat": "controlnet",
+      "civitai_type": "Controlnet",
+      "file": "noob-sdxl-controlnet-tile.fp16.safetensors",
+      "url": "https://huggingface.co/Eugeoter/noob-sdxl-controlnet-tile/resolve/main/diffusion_pytorch_model.fp16.safetensors",
+      "sha256": "d6d676f29153357ac8d57727e35b8edc090aa4de57e861b878872ff45c432615",
+      "bytes": 2502139136,
+      "size": "2,5 ГБ",
+      "page": "https://huggingface.co/Eugeoter/noob-sdxl-controlnet-tile",
+      "license": "FAIPL-1.0-SD",
+      "note": "Детализация в ImageNaizer: держит композицию и цвета области, поэтому denoise можно поднять до 0.6–0.8 — больше деталей без «чужого» объекта"
+    }
+  ]
 }
