@@ -56,7 +56,7 @@ maistep — **portable**: всё живёт в выбранной папке —
 `maistep.exe --uninstall --silent [--keep-data]`. Без портативного Python при первом запуске `.venv` создаётся из
 системного Python 3.10+; пакеты генерации и LLM ставятся в «Компонентах».
 
-Обновления приходят сами: сервер раз в 6 часов смотрит последний стабильный релиз, сверяет его `manifest.json`
+Обновления приходят сами: сервер при старте и раз в час смотрит последний стабильный релиз, сверяет его `manifest.json`
 (sha256 каждого файла) с диском и в фоне качает **только изменившиеся файлы** (с raw.githubusercontent.com по тегу
 релиза) в `update/staging/` — прерванная загрузка продолжается. `maistep.exe` (~14 МБ) качается, только если изменился
 код Rust; правки UI, сервера и нод — килобайты. Скачанное применяется при перезапуске окна («Компоненты» →
@@ -65,12 +65,15 @@ maistep — **portable**: всё живёт в выбранной папке —
 Пока репозиторий приватный, нужен токен: `user/settings.json` → `"update": {"token": "…"}` (`"auto": false` —
 не качать самому).
 
-Релиз:
+Релиз собирает GitHub Actions (`.github/workflows/release.yml`): поднимите `"version"` в `package.json` и запушьте
+в main — на Windows-раннере соберутся установщик, `maistep.exe` и `manifest.json`, и выйдет релиз `v<версия>` со
+списком изменений. Если релиз с этой версией уже есть, сборка пропускается; вручную — Actions → release → Run workflow.
+Вручную, без CI:
 
 ```
-node scripts/release.mjs version 0.2.0   # номер во всех файлах → git commit, git push
-node scripts/release.mjs build           # dist/: установщик, maistep.exe, manifest.json (из HEAD)
-node scripts/release.mjs publish --notes "что нового"   # gh release create v0.2.0
+node scripts/release.mjs version 0.2.0   # номер ещё и в tauri.conf.json, Cargo.toml, components.json (необязательно)
+node scripts/release.mjs build           # dist/: установщик, maistep.exe, manifest.json (из HEAD; --dirty — из рабочей копии)
+node scripts/release.mjs publish         # gh release create v0.2.0 (--notes "текст" вместо автосписка)
 ```
 
 ## Рабочие области

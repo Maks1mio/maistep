@@ -16,10 +16,11 @@ const LSG = 'maistep-components-group';
 let group = (() => { try { return localStorage.getItem(LSG) || ''; } catch { return ''; } })();
 const CHECKED = 'maistep-components-checked';
 let data = null, upd = null, loading = false, error = null, job = null, lines = [];
+let rechecking = new Set(); // пакеты только что поставленной установки — до свежих версий с сервера
 let viewEl = null, bodyEl = null, logEl = null;
 const log = (level, text) => emit('log', { src: 'editor', level, text });
 
-const CHIP = { ok: ['ok', 'установлено'], update: ['warn', 'обновите'], missing: ['bad', 'не установлено'], newer: ['info', 'новее рекомендованной'] };
+const CHIP = { checking: ['info', 'проверка…'], ok: ['ok', 'установлено'], update: ['warn', 'обновите'], missing: ['bad', 'не установлено'], newer: ['info', 'новее рекомендованной'] };
 
 function statusChip(st) {
   const [cls, text] = CHIP[st] || ['info', st || '—'];
@@ -148,6 +149,7 @@ function componentRow(c) {
   if (c.status === 'missing') action = h('button.primary', { disabled: busy, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), 'Установить');
   else if (c.status === 'update') action = h('button.primary', { disabled: busy, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), `Обновить до ${c.recommended}`);
   else if (c.latest_newer) action = h('button', { disabled: busy, 'data-tip': `Последняя стабильная версия ${c.latest}. Рекомендуется ${c.recommended} (проверена).`, onclick: () => install([c.id], 'latest') }, icon('download', { size: 14 }), `До ${c.latest}`);
+  if (rechecking.has(c.id)) action = h('span.dim', {}, 'проверка…');
   const sel = S.sel?.kind === 'component' && S.sel.id === c.id;
   return h(`tr${sel ? '.sel' : ''}`, { 'data-id': c.id, onclick: e => { if (!e.target.closest('button')) select({ kind: 'component', id: c.id }); } },
     h('td.cmp-name', {},
@@ -157,7 +159,7 @@ function componentRow(c) {
     h('td.mono', {}, c.installed || h('span.dim', {}, '—')),
     h('td.mono', {}, c.recommended || '—'),
     h('td.mono', {}, c.latest || h('span.dim', {}, '—'), c.latest_newer ? h('span.mbadge', { style: { marginLeft: '6px' }, 'data-tip': 'Есть более новая стабильная версия; рекомендуется сначала проверенная из манифеста' }, 'new') : null),
-    h('td', {}, statusChip(c.status)),
+    h('td', {}, rechecking.has(c.id) ? statusChip('checking') : statusChip(c.status)),
     h('td.cmp-act', {}, action || h('span.dim', {}, '—')));
 }
 
@@ -272,7 +274,9 @@ export function initComponents() {
       job = d.job;
       if (d.job.lines) lines = d.job.lines.slice();
       if (wasRunning && d.job.state !== 'running') {
-        setTimeout(() => load(false, true), 400);
+        // сначала быстро — только версии пакетов (CUDA-проверка импортирует torch и идёт секунды), потом CUDA
+        rechecking = new Set(d.job.ids || []);
+        load(false, false).finally(() => { rechecking = new Set(); render(); load(false, true); });
         log(d.job.state === 'done' ? 'ok' : 'error', `компоненты: ${d.job.state === 'done' ? 'установка завершена' : d.job.error || d.job.state}`);
       }
       render();

@@ -60,8 +60,9 @@ pub fn installed_root() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+// версия релиза (scripts/release.mjs передаёт package.json → MAISTEP_VERSION), иначе — из Cargo.toml
 fn version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    option_env!("MAISTEP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string()
 }
 
 fn progress(app: Option<&AppHandle>, stage: &str, done: u64, total: u64) {

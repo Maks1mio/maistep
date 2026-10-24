@@ -1,0 +1,58 @@
+# Релиз maistep: на каждый push в main, где "version" в package.json стал новым (нет релиза v<версия>),
+# собирает на Windows установщик + maistep.exe + manifest.json (scripts/release.mjs) и публикует GitHub Release.
+# Установленные копии видят релиз при старте / раз в час и докачивают только изменившиеся файлы (server/maistep/updater.py).
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # release.mjs проверяет, что коммит есть в origin
+
+      - name: Новая версия?
+        id: ver
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" >/dev/null 2>&1; then
+            echo "релиз v$v уже есть — сборка не нужна"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.ver.outputs.new == 'true'
+        with:
+          node-version: 22
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.ver.outputs.new == 'true'
+        with:
+          workspaces: app/src-tauri
+
+      - name: Сборка
+        if: steps.ver.outputs.new == 'true'
+        run: node scripts/release.mjs build
+
+      - name: Публикация v${{ steps.ver.outputs.version }}
+        if: steps.ver.outputs.new == 'true'
+        run: node scripts/release.mjs publish

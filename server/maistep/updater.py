@@ -31,7 +31,7 @@ LOCAL = ROOT / "manifest.json"
 API = "https://api.github.com/repos/{repo}/releases?per_page=20"
 RAW = "https://raw.githubusercontent.com/{repo}/{tag}/{path}"
 UA = "maistep-updater/1.0"
-CHECK_EVERY = 6 * 3600
+CHECK_EVERY = 3600  # раз в час: лимит GitHub API без токена — 60 запросов в час с IP
 
 _emit = lambda event, data: None  # задаёт main.py (SSE-хаб)
 _log = lambda level, text: None
@@ -76,7 +76,7 @@ def installed_version():
     v = _read_json(LOCAL, {}).get("version")
     if v:
         return str(v)
-    for p, key in ((ROOT / "app" / "src-tauri" / "tauri.conf.json", "version"), (ROOT / "package.json", "version")):
+    for p, key in ((ROOT / "package.json", "version"), (ROOT / "app" / "src-tauri" / "tauri.conf.json", "version")):
         if v := _read_json(p, {}).get(key):
             return str(v)
     return "0.0.0"

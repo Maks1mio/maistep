@@ -26,11 +26,12 @@ const TAURI = path.join(ROOT, RUST, 'tauri.conf.json');
 
 const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28 });
 const gitBuf = (...args) => execFileSync('git', args, { cwd: ROOT, maxBuffer: 1 << 28 });
-const run = (cmd, args) => execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
+const run = (cmd, args, env = {}) => execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ...env } });
 const sha = buf => crypto.createHash('sha256').update(buf).digest('hex');
 const readJson = p => JSON.parse(fs.readFileSync(p, 'utf8'));
 const writeJson = (p, v) => fs.writeFileSync(p, `${JSON.stringify(v, null, 2)}\n`);
-const version = () => readJson(TAURI).version;
+// версия релиза — "version" в package.json (её смена на main запускает сборку в GitHub Actions); в exe — через MAISTEP_VERSION
+const version = () => readJson(path.join(ROOT, 'package.json')).version;
 const die = msg => { console.error(`release: ${msg}`); process.exit(1); };
 
 function setVersion(v) {
@@ -77,7 +78,7 @@ function rustSource(dirty) {
 function build(dirty) {
   const v = version(), files = payloadFiles(dirty);
   const comp = readJson(path.join(ROOT, 'components.json'));
-  if (comp.app?.stable !== v) die(`components.json app.stable = ${comp.app?.stable}, а версия ${v} — node scripts/release.mjs version ${v}`);
+  if (!/^\d+\.\d+\.\d+$/.test(v || '')) die(`package.json version = ${v} — нужна версия вида 1.2.3`);
   fs.rmSync(DIST, { recursive: true, force: true });
   fs.mkdirSync(DIST, { recursive: true });
   const manifest = { name: 'maistep', version: v, tag: `v${v}`, repo: comp.app.repo, files: {}, exe: { source: rustSource(dirty) } };
@@ -89,7 +90,7 @@ function build(dirty) {
   const bytes = Object.values(manifest.files).reduce((s, f) => s + f.size, 0);
   console.log(`приложение: ${files.size} файлов, ${(bytes / 1048576).toFixed(1)} МБ`);
 
-  run('cargo', ['build', '--release', '--manifest-path', `${RUST}/Cargo.toml`]);
+  run('cargo', ['build', '--release', '--locked', '--manifest-path', `${RUST}/Cargo.toml`], { MAISTEP_VERSION: v });
   const exe = fs.readFileSync(path.join(ROOT, RUST, 'target', 'release', 'maistep.exe'));
   manifest.exe = { ...manifest.exe, sha256: sha(exe), size: exe.length };
   fs.writeFileSync(path.join(DIST, 'maistep.exe'), exe);
@@ -122,8 +123,9 @@ function publish() {
   for (const [f, meta] of Object.entries(m.files)) {
     if (sha(gitBuf('show', `HEAD:${f}`)) !== meta.sha256) die(`dist/ собран не из HEAD (${f}) — пересоберите`);
   }
-  const notes = process.argv.includes('--notes') ? process.argv[process.argv.indexOf('--notes') + 1] : `maistep ${v}`;
-  run('gh', ['release', 'create', tag, '--target', head, '--title', `maistep ${v}`, '--notes', notes,
+  // без --notes — список изменений GitHub собирает сам (коммиты с прошлого релиза)
+  const i = process.argv.indexOf('--notes'), notes = i > 0 ? ['--notes', process.argv[i + 1]] : ['--generate-notes'];
+  run('gh', ['release', 'create', tag, '--target', head, '--title', `maistep ${v}`, ...notes,
     `dist/maistep-${v}-setup.exe`, 'dist/maistep.exe', 'dist/manifest.json']);
 }
 
