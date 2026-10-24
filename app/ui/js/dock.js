@@ -10,7 +10,7 @@ import { icon } from './icons.js';
 const KEY = 'maistep-layouts-1';
 const panels = new Map(); // id → { id, title, icon, el, view, onShow }
 const WS = [
-  ['graph', 'Workflow', 'blueprint'], ['results', 'Results', 'image'], ['library', 'Models', 'diagram'], ['civitai', 'Civitai', 'search'], ['code', 'CodeEditor', 'code'], ['components', 'Компоненты', 'download'], ['naizer', 'ImageNaizer', 'spark'], ['uikit', 'UI Kit', 'layout'],
+  ['graph', 'Workflow', 'blueprint'], ['results', 'Results', 'image'], ['library', 'Models', 'diagram'], ['civitai', 'Civitai', 'search'], ['code', 'CodeEditor', 'code'], ['components', 'Компоненты', 'download'], ['naizer', 'ImageNaizer', 'spark'], ['tocolar', 'ToColar', 'gutter/colors'], ['uikit', 'UI Kit', 'layout'],
 ];
 const area = (...tabs) => ({ tabs, active: tabs[0] });
 const split = (dir, sizes, ...kids) => ({ dir, sizes, kids });
@@ -30,6 +30,8 @@ const DEFAULTS = {
   components: () => split('h', [0.16, 0.58, 0.26], area('hier'), split('v', [0.75, 0.25], area('components'), area('console')), area('inspector')),
   // версии и файлы слева, холст с выделением, настройки правки справа
   naizer: () => split('h', [0.15, 0.6, 0.25], area('hier'), split('v', [0.85, 0.15], area('naizer'), area('console')), area('inspector')),
+  // список страниц, сравнение до/после, настройки — всё в самой странице
+  tocolar: () => split('v', [0.85, 0.15], area('tocolar'), area('console')),
   uikit: () => split('h', [0.75, 0.25], area('uikit'), area('inspector')),
 };
 const defaultLayout = ws => (DEFAULTS[ws] || DEFAULTS.graph)();

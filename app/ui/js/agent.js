@@ -8,6 +8,7 @@ import { icon } from './icons.js';
 import { api, upload, fileUrl, getSettings } from './backend.js';
 import { modelPicker } from './modelpick.js';
 import { lightbox } from './graph.js';
+import { dropdown } from './kit.js';
 
 const LS = 'maistep-agent-chat';
 let chats = [], chat = null, provs = null, viewEl = null, listEl = null, draftEl = null, ta = null, attachEl = null;
@@ -165,7 +166,7 @@ const TOOL_LABEL = { list_workflows: 'Список воркфлоу', get_workfl
 
 function toolChip(t, res, running = false) {
   const arg = t.input?.id || t.input?.file || t.input?.cat || t.input?.type || '';
-  const head = h('summary', {},
+  const head = h('summary', {}, icon('right', { size: 16, cls: 'ag-tw' }),
     h(`span.ag-tdot${running ? '.run' : res ? (res.ok ? '.ok' : '.bad') : ''}`),
     h('b', {}, TOOL_LABEL[t.name] || t.name), arg ? h('span.dim', {}, ` ${arg}`) : null,
     t.name === 'edit_workflow' && t.input?.ops ? h('span.dim', {}, ` · ${t.input.ops.length} правок`) : null);
@@ -189,7 +190,7 @@ function messageEl(m, results) {
   if (m.role === 'error') return h('div.ag-msg.err', {}, icon('error', { size: 14 }), h('span', {}, m.text));
   if (m.role === 'assistant') {
     return h('div.ag-msg.bot', {},
-      m.thinking ? h('details.ag-think', {}, h('summary', {}, 'Размышления'), h('div', {}, m.thinking)) : null,
+      m.thinking ? h('details.ag-think', {}, h('summary', {}, icon('right', { size: 16, cls: 'ag-tw' }), 'Размышления'), h('div', {}, m.thinking)) : null,
       m.text ? mdEl(m.text) : null,
       ...(m.tools || []).map(t => toolChip(t, results.get(t.id))),
       m.note ? h('div.ag-note', {}, m.note) : null,
@@ -203,7 +204,7 @@ function renderDraft() {
   if (!draft || !chat || !busy.has(chat.id)) { draftEl.replaceChildren(); return; }
   const stick = nearBottom();
   draftEl.replaceChildren(h('div.ag-msg.bot', {},
-    draft.thinking ? h('details.ag-think', { open: !draft.text }, h('summary', {}, 'Размышляет…'), h('div', {}, draft.thinking)) : null,
+    draft.thinking ? h('details.ag-think', { open: !draft.text }, h('summary', {}, icon('right', { size: 16, cls: 'ag-tw' }), 'Размышляет…'), h('div', {}, draft.thinking)) : null,
     draft.text ? mdEl(draft.text) : null,
     ...draft.tools.map(t => toolChip(t, null, t.running)),
     !draft.text && !draft.tools.length && !draft.thinking ? h('div.ag-typing', {}, h('i'), h('i'), h('i')) : null));
@@ -217,24 +218,43 @@ function renderTop() {
   if (top) top.replaceWith(topBar());
 }
 
+// кнопка-дропдаун UI Kit без рамки («Text ⌄») со своим попапом
+const ddLink = (cls, tip, onclick, ...content) => h(`button.ui-dd.link${cls}`, { type: 'button', onclick: e => onclick(e.currentTarget), 'data-tip': tip },
+  ...content, h('span.chev', {}, icon('down', { size: 16 })));
+const tipped = (el, tip) => { el.dataset.tip = tip; return el; };
+
+// шапка: диалог, новый диалог, привязка к воркфлоу и доступ
 function topBar() {
   const c = chat;
-  const prov = c && provs?.providers?.[c.provider];
-  const wfTitle = id => doc('workflow', id)?.data.title || id;
   const hiddenN = c?.hidden?.length || 0;
   return h('div.ag-top', {},
-    h('button.ag-title', { onclick: e => chatsPopup(e.currentTarget), 'data-tip': 'Диалоги' },
-      busy.has(c?.id) ? h('span.ag-tdot.run') : null,
-      h('span', {}, c?.title || (c ? 'Новый диалог' : 'Нет диалога')), icon('down', { size: 12 })),
-    h('button.icon', { onclick: newChat, 'data-tip': 'Новый диалог' }, icon('add', { size: 14 })),
+    ddLink('.ag-title', 'Диалоги', chatsPopup,
+      busy.has(c?.id) ? h('span.ag-tdot.run') : null, h('span.t', {}, c?.title || (c ? 'Новый диалог' : 'Нет диалога'))),
+    h('div.ui-tb', {}, h('button.b', { onclick: newChat, 'data-tip': 'Новый диалог' }, icon('add', { size: 16 }))),
     h('span.grow'),
-    c ? h('button.ag-chip', { onclick: e => providerPopup(e.currentTarget), 'data-tip': 'Провайдер' }, prov?.name || c.provider) : null,
-    c ? h('button.ag-chip', { onclick: e => modelPicker(e.currentTarget, { provider: c.provider, value: c.model, onPick: id => patch({ model: id }) }), 'data-tip': 'Модель' }, c.model || 'модель') : null,
-    c ? h('button.ag-chip', { onclick: e => menu(e.currentTarget, ['low', 'medium', 'high', 'xhigh', 'max'].map(x => [x, x === c.effort, () => patch({ effort: x })])), 'data-tip': 'Усилие (effort, только Claude): больше — умнее и дороже' }, c.effort || 'medium') : null,
-    c ? h('button.ag-chip', { onclick: e => bindPopup(e.currentTarget), 'data-tip': 'Воркфлоу, к которому привязан диалог: его граф агент видит сразу' },
-      icon('blueprint', { size: 12 }), c.wf ? wfTitle(c.wf) : 'без воркфлоу') : null,
-    c ? h(`button.ag-chip${hiddenN ? '.warn' : ''}`, { onclick: e => accessPopup(e.currentTarget), 'data-tip': 'Какие воркфлоу агент может видеть' },
-      icon(hiddenN ? 'hide' : 'show', { size: 12 }), hiddenN ? `скрыто ${hiddenN}` : 'доступ: все') : null);
+    c ? wfDropdown(c) : null,
+    c ? h('div.ui-tb', {}, h(`button.b${hiddenN ? '.txt.warn' : ''}`, { onclick: e => accessPopup(e.currentTarget),
+      'data-tip': hiddenN ? `Агенту не видно воркфлоу: ${hiddenN}` : 'Агент видит все воркфлоу — изменить доступ' },
+      icon(hiddenN ? 'hide' : 'show', { size: 16 }), hiddenN ? `скрыто ${hiddenN}` : null)) : null);
+}
+
+function wfDropdown(c) {
+  const opts = [['', 'без воркфлоу'], ...[...S.docs.workflow].map(([id, d]) => [id, `${d.data.title || id}${c.hidden?.includes(id) ? ' (скрыт)' : ''}`])];
+  if (c.wf && !doc('workflow', c.wf)) opts.push([c.wf, c.wf]);
+  const el = dropdown(c.wf || '', opts, v => patch({ wf: v || null }), { link: true, icon: 'blueprint' });
+  el.classList.add('ag-wf');
+  return tipped(el, 'Воркфлоу, к которому привязан диалог: его граф агент видит сразу');
+}
+
+// подвал поля ввода: провайдер, модель, усилие
+function modelBar(c) {
+  const provOpts = Object.entries(provs?.providers || {}).map(([pid, p]) => [pid, `${p.name || pid}${p.has_key || p.kind === 'ollama' ? '' : ' (нет ключа)'}`]);
+  if (!provOpts.some(([pid]) => pid === c.provider)) provOpts.push([c.provider, c.provider]);
+  return [
+    tipped(dropdown(c.provider, provOpts, v => patch({ provider: v }), { link: true }), 'Провайдер'),
+    ddLink('', 'Модель', a => modelPicker(a, { provider: c.provider, value: c.model, onPick: id => patch({ model: id }) }), h(`span.t${c.model ? '' : '.ph'}`, {}, c.model || 'модель')),
+    tipped(dropdown(c.effort || 'medium', ['low', 'medium', 'high', 'xhigh', 'max'], v => patch({ effort: v }), { link: true }), 'Усилие (effort, только Claude): больше — умнее и дороже'),
+  ];
 }
 
 function render(scroll = false) {
@@ -258,9 +278,10 @@ function render(scroll = false) {
 
 function empty() {
   const ex = ['Объясни, как устроен этот воркфлоу', 'Добавь LoRA между чекпоинтом и сэмплером', 'Почему KSampler падает с ошибкой?', 'Сделай воркфлоу txt2img с hires fix'];
-  return h('div.ag-empty', {}, icon('ai', { size: 28 }), h('div.ag-h2', {}, 'AI Agent'),
-    h('div.dim', {}, 'Помогает собирать и чинить воркфлоу, видит граф, может его править и запускать. Картинки — кнопкой, Ctrl+V или перетаскиванием.'),
-    h('div.ag-ex', {}, ...ex.map(t => h('button', { onclick: () => { ta.value = t; autosize(); ta.focus(); } }, t))));
+  return h('div.ag-empty', {}, icon('ai', { size: 32 }), h('div.t-h2', {}, 'AI Agent'),
+    h('div.t-p', {}, 'Помогает собирать и чинить воркфлоу, видит граф, может его править и запускать. Картинки — кнопкой, Ctrl+V или перетаскиванием.'),
+    h('div.ag-ex', {}, ...ex.map(t => h('button.ui-btn.secondary.slim', { onclick: () => { ta.value = t; autosize(); ta.focus(); } },
+      icon('bulb', { size: 16 }), h('span', {}, t)))));
 }
 
 function composer() {
@@ -280,7 +301,8 @@ function composer() {
   file.onchange = () => { addFiles([...file.files]); file.value = ''; };
   const el = h('div.ag-comp', {}, attachEl, ta,
     h('div.ag-row', {},
-      h('button.icon', { onclick: () => file.click(), 'data-tip': 'Прикрепить картинки' }, icon('attached', { size: 16 })), file,
+      h('div.ui-tb', {}, h('button.b', { onclick: () => file.click(), 'data-tip': 'Прикрепить картинки (Ctrl+V, перетаскивание)' }, icon('attached', { size: 16 }))), file,
+      ...(chat ? modelBar(chat) : []),
       h('span.grow'),
       h('span.ag-sendwrap')));
   renderAttach();
@@ -292,14 +314,14 @@ function renderComposer(el = viewEl?.querySelector('.ag-comp')) {
   const w = el?.querySelector('.ag-sendwrap');
   if (!w) return;
   w.replaceChildren(chat && busy.has(chat.id)
-    ? h('button.ag-send.stop', { onclick: stop, 'data-tip': 'Остановить (Esc)' }, icon('stop', { size: 14 }), 'Стоп')
-    : h('button.ag-send.primary', { onclick: send, 'data-tip': 'Отправить (Enter)' }, icon('send', { size: 14 }), 'Отправить'));
+    ? h('button.ui-btn.secondary.slim.ag-send.stop', { onclick: stop, 'data-tip': 'Остановить (Esc)' }, icon('stop', { size: 16 }))
+    : h('button.ui-btn.primary.slim.ag-send', { onclick: send, 'data-tip': 'Отправить (Enter)' }, icon('send', { size: 16 })));
 }
 
 function renderAttach() {
   if (!attachEl) return;
   attachEl.replaceChildren(...attach.map((a, i) => h('div.ag-att', {}, h('img', { src: fileUrl(a.file) }),
-    h('button', { onclick: () => { attach.splice(i, 1); renderAttach(); }, 'data-tip': 'Убрать' }, '×'))));
+    h('button', { onclick: () => { attach.splice(i, 1); renderAttach(); }, 'data-tip': 'Убрать' }, icon('closeSmall', { size: 16 })))));
 }
 function autosize() { if (!ta) return; ta.style.height = 'auto'; ta.style.height = `${Math.min(220, ta.scrollHeight)}px`; }
 
@@ -313,25 +335,22 @@ function place(el, anchor) {
   el.style.top = `${Math.min(r.bottom + 4, innerHeight - el.offsetHeight - 6)}px`;
   pop = el;
 }
-function menu(anchor, items) {
-  place(h('div.ui-menu.ag-pop', {}, ...items.map(([label, on, fn]) => h(`div.item${on ? '.on' : ''}`, { onclick: () => { closePop(); fn(); } },
-    h('span.ic', {}, on ? icon('check', { size: 14 }) : null), h('span', {}, label)))), anchor);
-}
+const tbBtn = (ic, tip, fn) => h('button.b', { onclick: e => { e.stopPropagation(); closePop(); fn(); }, 'data-tip': tip }, icon(ic, { size: 16 }));
 
 function chatsPopup(anchor) {
   const cur = S.current.workflow;
   const list = chats.filter(c => !filterWf || c.wf === cur);
   const box = h('div.ui-menu.ag-pop.ag-chats', {},
     h('div.ag-poph', {}, h('b', {}, 'Диалоги'), h('span.grow'),
-      h(`button.ag-chip${filterWf ? '.on' : ''}`, { onclick: () => { filterWf = !filterWf; chatsPopup(anchor); } }, `только «${doc('workflow', cur)?.data.title || cur || '—'}»`)),
-    h('div.item', { onclick: () => { closePop(); newChat(); } }, h('span.ic', {}, icon('add', { size: 14 })), h('span', {}, 'Новый диалог')),
+      h('label.ui-check', {}, h('input', { type: 'checkbox', checked: filterWf, onchange: () => { filterWf = !filterWf; chatsPopup(anchor); } }),
+        h('span', {}, `только «${doc('workflow', cur)?.data.title || cur || '—'}»`))),
+    h('div.item', { onclick: () => { closePop(); newChat(); } }, h('span.ic', {}, icon('add', { size: 16 })), h('span', {}, 'Новый диалог')),
     h('div.sep'),
     ...(list.length ? list.map(c => h(`div.item.ag-ci${c.id === chat?.id ? '.on' : ''}`, { onclick: () => { closePop(); openChat(c.id); } },
-      h('span.ic', {}, busy.has(c.id) ? h('span.ag-tdot.run') : icon('ai', { size: 14 })),
+      h('span.ic', {}, busy.has(c.id) ? h('span.ag-tdot.run') : icon('ai', { size: 16 })),
       h('span.ag-ct', {}, h('span', {}, c.title || 'Новый диалог'), h('span.dim', {}, `${c.wf ? `${doc('workflow', c.wf)?.data.title || c.wf} · ` : ''}${c.count} сообщ. · ${new Date((c.updated || 0) * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}`)),
-      h('button.icon.ag-x', { onclick: e => { e.stopPropagation(); closePop(); renameChat(c); }, 'data-tip': 'Переименовать' }, icon('edit', { size: 13 })),
-      h('button.icon.ag-x', { onclick: e => { e.stopPropagation(); closePop(); removeChat(c.id); }, 'data-tip': 'Удалить' }, icon('delete', { size: 13 }))))
-      : [h('div.dim', { style: { padding: '6px 12px' } }, 'диалогов нет')]));
+      h('span.ui-tb.ag-x', {}, tbBtn('edit', 'Переименовать', () => renameChat(c)), tbBtn('delete', 'Удалить', () => removeChat(c.id)))))
+      : [h('div.ag-hint', {}, 'диалогов нет')]));
   place(box, anchor);
 }
 
@@ -344,16 +363,6 @@ async function renameChat(c) {
   loadList();
 }
 
-async function providerPopup(anchor) {
-  provs ||= await getSettings().catch(() => null);
-  menu(anchor, Object.entries(provs?.providers || {}).map(([pid, p]) => [`${p.name || pid}${p.has_key || p.kind === 'ollama' ? '' : ' (нет ключа)'}`, pid === chat.provider, () => patch({ provider: pid })]));
-}
-
-function bindPopup(anchor) {
-  menu(anchor, [['без воркфлоу', !chat.wf, () => patch({ wf: null })],
-    ...[...S.docs.workflow].map(([id, d]) => [`${d.data.title || id}${chat.hidden?.includes(id) ? ' (скрыт)' : ''}`, chat.wf === id, () => patch({ wf: id })])]);
-}
-
 function accessPopup(anchor) {
   const hidden = new Set(chat.hidden || []);
   const row = (id, d) => h('label.item.ag-acc', {},
@@ -361,11 +370,11 @@ function accessPopup(anchor) {
     h('span', {}, d.data.title || id), h('span.dim', {}, id));
   const box = h('div.ui-menu.ag-pop.ag-access', {},
     h('div.ag-poph', {}, h('b', {}, 'Что видит агент'), h('span.grow'),
-      h('button.ag-chip', { onclick: () => { box.querySelectorAll('input').forEach(i => { i.checked = true; }); hidden.clear(); } }, 'все'),
-      h('button.ag-chip', { onclick: () => { box.querySelectorAll('input').forEach(i => { i.checked = false; }); for (const id of S.docs.workflow.keys()) hidden.add(id); } }, 'ни одного')),
-    h('div.dim', { style: { padding: '0 12px 6px', fontSize: '11px' } }, 'Снятые воркфлоу не попадают в контекст и недоступны инструментам агента в этом диалоге.'),
+      h('button.ui-btn.secondary.slim', { onclick: () => { box.querySelectorAll('input').forEach(i => { i.checked = true; }); hidden.clear(); } }, 'Все'),
+      h('button.ui-btn.secondary.slim', { onclick: () => { box.querySelectorAll('input').forEach(i => { i.checked = false; }); for (const id of S.docs.workflow.keys()) hidden.add(id); } }, 'Ни одного')),
+    h('div.ag-hint', {}, 'Снятые воркфлоу не попадают в контекст и недоступны инструментам агента в этом диалоге.'),
     ...[...S.docs.workflow].map(([id, d]) => row(id, d)),
-    h('div.ag-poph', {}, h('span.grow'), h('button.primary', { onclick: () => { closePop(); patch({ hidden: [...hidden] }); } }, 'Готово')));
+    h('div.ag-foot', {}, h('button.ui-btn.primary', { onclick: () => { closePop(); patch({ hidden: [...hidden] }); } }, 'Готово')));
   place(box, anchor);
 }
 

@@ -18,6 +18,7 @@ import { initComponents, showComponents, componentsStartupCheck } from './compon
 import { initCivitai, showCivitai } from './civitai.js';
 import { initAgent, showAgent } from './agent.js';
 import { initNaizer, showNaizer } from './naizer.js';
+import { initTocolar, showTocolar } from './tocolar.js';
 import { initPersist, restore, autosaveOn, setAutosave } from './persist.js';
 import { initTooltips, messageBox } from './kit.js';
 import { initBackend, queuePrompt, interrupt, clearQueue, reloadNodes, api } from './backend.js';
@@ -227,6 +228,7 @@ async function boot() {
   initCivitai();
   initAgent();
   initNaizer();
+  initTocolar();
   initPersist();
   addView('graph', 'Workflow', () => setCtxQuiet('workflow'));
   addView('results', 'Results', () => setCtxQuiet('results'));
@@ -235,6 +237,7 @@ async function boot() {
   addView('code', 'CodeEditor', () => setCtxQuiet('code'));
   addView('components', 'Компоненты', () => { setCtxQuiet('components'); showComponents(); });
   addView('naizer', 'ImageNaizer', () => { setCtxQuiet('naizer'); showNaizer(); });
+  addView('tocolar', 'ToColar', showTocolar);
   initUIKit(); // addView('uikit') — последней вкладкой
   addView('agent', 'AI Agent', showAgent, 'ai'); // панель, не рабочая область: ставится в любую область через ⋮
   startDock();
@@ -284,6 +287,7 @@ async function boot() {
   drawHierarchy();
   loadAssets();
   setInterval(watchData, 2000);
+  uiTimer = setInterval(watchUi, 1000);
   const st = await invoke('server_status');
   if (st.running) serverUi(st);
   else await startServer(); // каталог нод и запуски — через Python-сервер
@@ -310,6 +314,38 @@ async function watchData() {
   if (sel) select(sel);
 }
 on('saved', () => { ownUntil = Date.now() + 2500; });
+
+// ---------- правки интерфейса (app/ui грузится с диска) ----------
+// Стили подменяются на лету, остальное (js, html) — перезагрузка окна: открытые документы сначала сохраняются,
+// а пока идёт ввод в поле — ждём, чтобы не потерять набранное.
+let uiStamp = null, uiTimer = 0;
+async function watchUi() {
+  let now;
+  try { now = await invoke('ui_stamp'); } catch { clearInterval(uiTimer); return; } // старое ядро без команды
+  if (uiStamp === null) { uiStamp = now; return; }
+  if (now === uiStamp) return;
+  const [css, rest] = now.split('/'), [css0, rest0] = uiStamp.split('/');
+  if (rest !== rest0) {
+    const el = document.activeElement;
+    if (el?.matches?.('input:not([type=checkbox]):not([type=radio]), textarea, [contenteditable]') && el.value !== '') return;
+    if (dirtyDocs().length) {
+      if (!autosaveOn()) { uiStamp = now; log('warn', 'интерфейс обновлён на диске, но есть несохранённые правки — сохраните и перезагрузите окно (F5)'); return; }
+      await saveAll();
+    }
+    location.reload();
+    return;
+  }
+  uiStamp = now;
+  if (css !== css0) {
+    for (const l of document.querySelectorAll('link[rel=stylesheet]')) { // новый лист рядом, старый — после загрузки: без мигания
+      const n = l.cloneNode();
+      n.href = `${l.href.split('?')[0]}?v=${Date.now()}`;
+      n.onload = n.onerror = () => l.remove();
+      l.after(n);
+    }
+    log('info', 'стили интерфейса обновлены');
+  }
+}
 
 function setCtxQuiet(ctx) {
   if (S.ctx !== ctx) { S.ctx = ctx; drawHierarchy(); }

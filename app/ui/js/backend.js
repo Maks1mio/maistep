@@ -36,7 +36,8 @@ const runs = new Map(); // prompt_id → workflow id
 function connect() {
   es?.close();
   es = new EventSource(`${base()}/events`);
-  const ev = (name, fn) => es.addEventListener(name, e => fn(JSON.parse(e.data)));
+  // у EventSource есть и родное событие error (обрыв связи) — без data, его здесь не разбираем
+  const ev = (name, fn) => es.addEventListener(name, e => { if (e.data != null) fn(JSON.parse(e.data)); });
   es.onopen = () => { retry = 0; fetchNodes(); };
   es.onerror = () => {
     es.close(); es = null;

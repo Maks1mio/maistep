@@ -64,6 +64,8 @@
   --sp-dlg-y: 8px;     /* поля диалога сверху/снизу (до заголовка и подвала) */
   --sp-btn: 12px;      /* между кнопками в подвале */
   --ui-font: 13px/16px Inter, 'Segoe UI', system-ui, sans-serif;
+  --ui-sans: Inter, 'Segoe UI', system-ui, sans-serif;
+  --ui-mono: 'JetBrains Mono', Consolas, monospace;
 }
 
 /* светлая тема (Light New UI) */

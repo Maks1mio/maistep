@@ -109,6 +109,12 @@ const CMD = {
     walk(path.join(ROOT, 'workflows'));
     return `${latest}:${count}`;
   },
+  ui_stamp: () => {
+    const css = [0, 0], rest = [0, 0];
+    const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) { if (!['icons', 'fonts'].includes(e.name)) walk(p); } else { const s = p.endsWith('.css') ? css : rest; s[0] = Math.max(s[0], Math.floor(fs.statSync(p).mtimeMs)); s[1]++; } } };
+    walk(UI);
+    return `${css.join(':')}/${rest.join(':')}`;
+  },
   fs_list: ({ path: rel }) => fs.readdirSync(projPath(rel), { withFileTypes: true })
     .filter(e => !(e.isDirectory() && FS_SKIP.includes(e.name)))
     .map(e => ({ name: e.name, dir: e.isDirectory(), size: e.isDirectory() ? 0 : fs.statSync(path.join(projPath(rel), e.name)).size }))

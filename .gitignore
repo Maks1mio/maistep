@@ -8,6 +8,7 @@
 !/.gitignore
 !/.github/
 !/README.md
+!/TOCOLAR.md
 !/package.json
 !/requirements.txt
 !/components.json

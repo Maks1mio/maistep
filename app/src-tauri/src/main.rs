@@ -121,6 +121,7 @@ fn main() {
             commands::data_write,
             commands::data_delete,
             commands::data_stamp,
+            commands::ui_stamp,
             commands::fs_list,
             commands::fs_search,
             commands::fs_read,

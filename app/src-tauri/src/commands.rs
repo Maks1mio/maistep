@@ -59,6 +59,25 @@ pub fn data_stamp(st: State<AppState>) -> String {
     format!("{latest}:{count}")
 }
 
+// правки интерфейса на диске (app/ui грузится с диска): «стили/остальное» — окно подхватывает их без перезапуска
+#[tauri::command]
+pub fn ui_stamp(st: State<AppState>) -> String {
+    let ui = st.root.join("app").join("ui");
+    let (mut css, mut rest) = ((0u128, 0usize), (0u128, 0usize));
+    let walk = walkdir::WalkDir::new(&ui).into_iter().filter_entry(|e| !matches!(e.file_name().to_str(), Some("icons" | "fonts")));
+    for e in walk.flatten() {
+        if !e.file_type().is_file() {
+            continue;
+        }
+        let t = e.metadata().ok().and_then(|m| m.modified().ok());
+        let t = t.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0);
+        let slot = if e.path().extension().is_some_and(|x| x == "css") { &mut css } else { &mut rest };
+        slot.0 = slot.0.max(t);
+        slot.1 += 1;
+    }
+    format!("{}:{}/{}:{}", css.0, css.1, rest.0, rest.1)
+}
+
 // Проводник Project: содержимое одной папки проекта. Папки первыми, по имени.
 #[derive(serde::Serialize)]
 pub struct FsEntry {

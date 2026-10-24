@@ -42,6 +42,62 @@ def image_save(image, prefix, ctx):
     return {"image": {"file": rel}, "ui": {"images": [rel]}}
 
 
+def _open(ctx, image, mode="RGB"):
+    from PIL import Image
+    with Image.open(ctx.root / image["file"]) as im:
+        return im.convert(mode)
+
+
+@node("image.fit", title="Fit Image", cat="Image",
+      inputs={"image": ("IMAGE", {}),
+              "megapixels": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 16, "step": 0.1, "hint": "target area: ~1.0 for SDXL, ~0.3 for SD1.5"}),
+              "multiple": ("INT", {"default": 64, "min": 8, "max": 256, "step": 8, "hint": "sides are rounded to this"})},
+      outputs={"image": "IMAGE", "width": "INT", "height": "INT"},
+      hint="Scales the image to the given area keeping the aspect ratio — before VAE Encode, so a large page "
+           "doesn't overflow VRAM. The result goes to input/ (hidden from the lists).")
+def image_fit(image, megapixels, multiple, ctx):
+    from PIL import Image
+    im = _open(ctx, image)
+    k = (megapixels * 1e6 / (im.width * im.height)) ** 0.5
+    w = max(multiple, round(im.width * k / multiple) * multiple)
+    h = max(multiple, round(im.height * k / multiple) * multiple)
+    if (w, h) != im.size:
+        im = im.resize((w, h), Image.LANCZOS)
+    p = ctx.input_dir / f"tocolar_fit_{time.strftime('%Y%m%d_%H%M%S')}_{w}x{h}.png"
+    im.save(p)
+    return {"image": {"file": p.relative_to(ctx.root).as_posix()}, "width": w, "height": h}
+
+
+@node("image.keep_lines", title="Keep Lines (Recolor)", cat="Image",
+      inputs={"lines": ("IMAGE", {"hint": "the original black-and-white page"}),
+              "colors": ("IMAGE", {"hint": "the colored version (any size — it is stretched to the original)"}),
+              "strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 1.5, "step": 0.05, "hint": "color amount; >1 — more saturated"}),
+              "shading": ("FLOAT", {"default": 0.6, "min": 0, "max": 1, "step": 0.05,
+                                    "hint": "shadows from the generated image: 0 — flat color, 1 — all its shading (lines stay from the original)"}),
+              "prefix": ("STRING", {"default": "colored"})},
+      outputs={"image": "IMAGE"},
+      hint="Takes lightness from the original and color from the generated image (Lab): lines, screentones and "
+           "lettering stay exactly as drawn, only the color (and, with shading, its shadows) is added. Saves a PNG to output/ at the original size.")
+def image_keep_lines(lines, colors, strength, shading, prefix, ctx):
+    from PIL import Image, ImageChops
+    base = _open(ctx, lines)
+    col = _open(ctx, colors).resize(base.size, Image.LANCZOS).convert("LAB")
+    L = base.convert("LAB").getchannel("L")  # светлота оригинала: линии, тон, текст
+    Lg, a, b = col.split()
+    if shading > 0:  # тени генерации только темнее оригинала: тёмные линии и тон не светлеют
+        L = ImageChops.darker(L, Image.blend(L, Lg, shading))
+    if strength != 1:
+        a, b = (ch.point(lambda v: max(0, min(255, round(128 + (v - 128) * strength)))) for ch in (a, b))
+    out = Image.merge("LAB", (L, a, b)).convert("RGB")
+    p = ctx.output_dir / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.png"
+    n = 1
+    while p.exists():
+        p, n = p.with_name(f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}-{n}.png"), n + 1
+    out.save(p)
+    rel = p.relative_to(ctx.root).as_posix()
+    return {"image": {"file": rel}, "ui": {"images": [rel]}}
+
+
 @node("image.generate_openai", title="Generate Image (OpenAI)", cat="Image",
       inputs={"prompt": ("STRING", {"multiline": True}), "model": ("STRING", {"default": "gpt-image-1"}),
               "size": (["1024x1024", "1536x1024", "1024x1536", "auto"], {}), "seed": ("INT", {"default": 0, "hint": "change it to regenerate"})},
