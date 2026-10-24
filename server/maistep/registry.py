@@ -127,6 +127,8 @@ class Ctx:
 
     def log(self, text, level="info"):
         self._run.emit("log", {"node": self.node_id, "level": level, "text": str(text)})
+        from . import logs  # и в файл лога сервера — для «Собрать отчёт»
+        logs.note(f"[{self.node_id}]{'' if level == 'info' else f' {level}:'} {text}")
 
     def check(self):
         if self._run.cancel.is_set():

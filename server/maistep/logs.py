@@ -39,6 +39,23 @@ def _write(text):
             pass
 
 
+def note(text):
+    """Строка только в файл лога (не в консоль): логи нод запусков — чтобы в отчёте были параметры KSampler,
+    время VAE, предупреждения ноды, а UI не получал их дважды."""
+    _write("".join(f"{datetime.datetime.now():%H:%M:%S} {line}\n" for line in str(text).splitlines() or [""]))
+
+
+def watchdog(seconds):
+    """Сторож зависаний: если за seconds не вызвать watchdog снова (или stop_watchdog), стеки всех потоков уходят
+    в лог — видно, где встал torch/драйвер (зависание GPU не роняет процесс, faulthandler.enable его не ловит)."""
+    if _file:
+        faulthandler.dump_traceback_later(seconds, repeat=False, file=_file, exit=False)
+
+
+def stop_watchdog():
+    faulthandler.cancel_dump_traceback_later()
+
+
 class _Tee:
     """Поток вывода: как был (консоль редактора) + в файл с временем в начале строки."""
 

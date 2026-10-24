@@ -34,7 +34,9 @@ AMD (ROCm-сборка torch, тот же API torch.cuda) — как в ComfyUI:
 gpu_load — паузы между шагами сэмплера. Запас RAM следит sysmon и при нехватке прерывает запуск.
 """
 import gc
+import math
 import os
+import re
 import sys
 import threading
 import time
@@ -54,6 +56,7 @@ def _dbg(*args):
         print("[diffusion]", *args, file=sys.stderr, flush=True)
 
 from . import library as L  # noqa: E402
+from . import logs  # noqa: E402
 from . import sysmon  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -702,18 +705,99 @@ def encode(ctx, clip, text):
         cs = _clip_skip(clip.stop, st["sdxl"])
         t0 = time.time()
         with torch.inference_mode():
-            if st["sdxl"]:
-                pe, _npe, ppe, _nppe = pipe.encode_prompt(
-                    prompt=text or "", prompt_2=None, device=dev, num_images_per_prompt=1,
-                    do_classifier_free_guidance=False, clip_skip=cs)
-            else:
-                pe, _npe = pipe.encode_prompt(
-                    prompt=text or "", device=dev, num_images_per_prompt=1,
-                    do_classifier_free_guidance=False, clip_skip=cs)
-                ppe = None
+            pe, ppe, n = _encode_long(torch, pipe, text or "", dev, cs, st["sdxl"])
         _dbg("encode", round(time.time() - t0, 2), "с")
+        if n > 1 and ctx:
+            ctx.log(f"long prompt: {n} chunks of 75 tokens")
         return Cond(pe.to("cpu", torch.float32), ppe.to("cpu", torch.float32) if ppe is not None else None,
                     st["sdxl"], text or "")
+
+
+def parse_weights(text):
+    """Синтаксис весов A1111 / ComfyUI → [(кусок, вес)]: (tag:1.3), (tag) ×1.1, [tag] ÷1.1, вложенность
+    перемножается, \\( \\) — буквальные скобки."""
+    out, buf, stack = [], [], []  # stack: (позиция в out на момент «(», «(» или «[»)
+    cur = lambda: 1.0 if not stack else stack[-1][2]  # noqa: E731
+
+    def flush():
+        if buf:
+            out.append(["".join(buf), cur()])
+            buf.clear()
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            buf.append(text[i + 1])
+            i += 2
+            continue
+        if ch in "([":
+            flush()
+            stack.append((len(out), ch, cur() * (1.1 if ch == "(" else 1 / 1.1)))
+        elif ch == ")" and stack and stack[-1][1] == "(":
+            flush()
+            start, _, w = stack.pop()
+            m = re.match(r"^(.*):\s*([+-]?\d+(?:\.\d+)?)\s*$", out[-1][0], re.S) if len(out) > start else None
+            if m:  # (tag:1.3) — явный вес вместо ×1.1 (на всё внутри скобок)
+                out[-1][0] = m.group(1)
+                for p in out[start:]:
+                    p[1] *= float(m.group(2)) / 1.1
+        elif ch == "]" and stack and stack[-1][1] == "[":
+            flush()
+            stack.pop()
+        else:
+            buf.append(ch)
+        i += 1
+    flush()
+    return [(t, round(w, 4)) for t, w in out if t.strip()]
+
+
+def _encode_long(torch, pipe, text, dev, clip_skip, sdxl):
+    """CLIP Text Encode как в ComfyUI (sd1_clip.py): промпт режется на куски по 75 токенов (BOS + 75 + EOS), каждый
+    кодируется отдельно, эмбеддинги склеиваются — длинный промпт не обрезается на 77 токенах (иначе пропадает хвост,
+    куда lora.js дописывает триггер-слова). Веса (tag:1.2): z = z_пустого + (z − z_пустого)·вес по токенам.
+    pooled (SDXL) — из первого куска. Короткий промпт без весов даёт то же, что encode_prompt diffusers.
+    Возвращает (эмбеддинги, pooled | None, число кусков)."""
+    toks = [pipe.tokenizer] + ([pipe.tokenizer_2] if sdxl else [])
+    tes = [pipe.text_encoder] + ([pipe.text_encoder_2] if sdxl else [])
+    toks, tes = zip(*[(t, e) for t, e in zip(toks, tes) if t is not None and e is not None])
+    pieces = parse_weights(text) or [("", 1.0)]
+    ids, ws = [], []
+    for seg, w in pieces:  # токенизатор у обоих энкодеров SDXL один и тот же (BPE CLIP) — делим по первому
+        t = toks[0](seg, add_special_tokens=False, truncation=False, verbose=False)["input_ids"]
+        ids += t
+        ws += [w] * len(t)
+    chunks = [(ids[i:i + 75], ws[i:i + 75]) for i in range(0, len(ids), 75)] or [([], [])]
+    embeds, pooled = [], None
+    for ci, (cid, cw) in enumerate(chunks):
+        parts = []
+        weighted = any(abs(w - 1) > 1e-4 for w in cw)
+        for k, (tk, te) in enumerate(zip(toks, tes)):
+            pad = tk.pad_token_id if tk.pad_token_id is not None else tk.eos_token_id
+
+            def run(body, tk=tk, te=te, pad=pad, k=k):
+                seq = [tk.bos_token_id] + body + [tk.eos_token_id]
+                seq += [pad] * (77 - len(seq))
+                x = torch.tensor([seq], device=dev)
+                o = te(x, output_hidden_states=True)
+                if sdxl:
+                    hs = o.hidden_states[-2] if clip_skip is None else o.hidden_states[-(clip_skip + 2)]
+                    pool = o[0] if o[0].ndim == 2 else None
+                elif clip_skip is None:
+                    hs, pool = o[0], None
+                else:
+                    hs, pool = te.text_model.final_layer_norm(o.hidden_states[-(clip_skip + 1)]), None
+                return hs, pool
+            z, pool = run(cid)
+            if weighted:
+                empty, _ = run([])
+                w = torch.tensor([1.0] + cw + [1.0] * (76 - len(cw)), device=z.device, dtype=z.dtype).view(1, -1, 1)
+                z = empty + (z - empty) * w
+            if ci == 0 and pool is not None:
+                pooled = pool
+            parts.append(z.to("cpu", torch.float32))
+        embeds.append(torch.cat(parts, -1))
+    pe = torch.cat(embeds, 1)
+    return pe, (pooled.to("cpu", torch.float32) if pooled is not None else None), len(chunks)
 
 
 def empty_latent(width, height, batch):
@@ -742,6 +826,7 @@ def _fixed_encode(values):
 # Поэтапное превью: латент → RGB линейной проекцией (latent_rgb_factors из ComfyUI comfy/latent_formats.py) —
 # без VAE, доли миллисекунды на шаг. Шлём не чаще PREVIEW_EVERY секунд.
 PREVIEW_EVERY = 0.35
+STALL = 120  # с без шага сэмплера / конца VAE — стеки потоков в лог (logs.watchdog): зависание GPU видно в отчёте
 PREVIEW_MAX = 512
 _RGB = {
     False: ([[0.3512, 0.2297, 0.3227], [0.3250, 0.4974, 0.2350], [-0.2829, 0.1762, 0.2721], [-0.2120, -0.2616, -0.7177]],
@@ -847,11 +932,11 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         def rep(x):
             return x.to(device=dev, dtype=dt).repeat(b, *([1] * (x.ndim - 1)))
         pe, npe = rep(positive.embeds), rep(negative.embeds)
-        # эмбеддинги разной длины (длинный промпт) — дополняем короткий нулями, как ComfyUI склеивает по 77 токенов
+        # эмбеддинги разной длины (длинный промпт — несколько кусков по 77) — как ComfyUI: короче повторяется до
+        # общего кратного (нули вместо этого внимание тоже «видит», и картинка смещается)
         if pe.shape[1] != npe.shape[1]:
-            n = max(pe.shape[1], npe.shape[1])
-            pad = lambda x: torch.cat([x, x.new_zeros(x.shape[0], n - x.shape[1], x.shape[2])], 1) if x.shape[1] < n else x  # noqa: E731
-            pe, npe = pad(pe), pad(npe)
+            n = math.lcm(pe.shape[1], npe.shape[1])
+            pe, npe = pe.repeat(1, n // pe.shape[1], 1), npe.repeat(1, n // npe.shape[1], 1)
         call = {"prompt_embeds": pe, "negative_prompt_embeds": npe, "guidance_scale": float(cfg),
                 "num_images_per_prompt": 1, "output_type": "latent",
                 "generator": torch.Generator(device="cpu").manual_seed(int(seed))}
@@ -885,6 +970,7 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
             noise = torch.randn(init.shape, generator=torch.Generator(device="cpu").manual_seed(int(seed) + 1)).to(device=dev, dtype=dt)
 
         def cb(_pipe, i, _timestep, kw):
+            logs.watchdog(STALL)  # шаг прошёл — сторож заново
             if nmask is not None:
                 ts = _pipe.scheduler.timesteps
                 keep = init
@@ -916,6 +1002,7 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         orig = active.encode_prompt
         active.encode_prompt = _fixed_encode(values)
         t0 = tick[0] = time.time()
+        logs.watchdog(STALL * 2)  # первый шаг дольше: прогрев ядер (MIOpen/cuDNN)
         try:
             with torch.inference_mode():
                 out = active(**call).images
@@ -928,6 +1015,7 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
             raise
         finally:
             active.encode_prompt = orig
+            logs.stop_watchdog()
         took = time.time() - t0
         _dbg("sampling", round(took, 2), "с")
         if ctx:
@@ -1022,7 +1110,11 @@ def encode_pil(ctx, vae, pil):
             return m.encode(x).latent_dist.sample(generator=gen)
         t0 = time.time()
         with torch.inference_mode():
-            lat = _vae_run(torch, m, _vae_need("encode", h, w, m.dtype), run, ctx).float()
+            logs.watchdog(STALL)
+            try:
+                lat = _vae_run(torch, m, _vae_need("encode", h, w, m.dtype), run, ctx).float()
+            finally:
+                logs.stop_watchdog()
         _dbg("vae encode", round(time.time() - t0, 2), "с")
         cfg = m.config
         mean, std = getattr(cfg, "latents_mean", None), getattr(cfg, "latents_std", None)
@@ -1078,8 +1170,14 @@ def decode_pils(ctx, vae, latent):
             return m.decode(lat, return_dict=False)[0]
         t0 = time.time()
         with torch.inference_mode():
-            img = _vae_run(torch, m, _vae_need("decode", h, w, m.dtype), run, ctx)
+            logs.watchdog(STALL)
+            try:
+                img = _vae_run(torch, m, _vae_need("decode", h, w, m.dtype), run, ctx)
+            finally:
+                logs.stop_watchdog()
         _dbg("vae decode", round(time.time() - t0, 2), "с")
+        if ctx:
+            ctx.log(f"VAE decode {w}×{h}: {time.time() - t0:.1f} s ({str(m.dtype).replace('torch.', '')})")
         pils = _processor(diffusers).postprocess(img.to("cpu", torch.float32), output_type="pil")
         if not _opts(ctx)["keep"]:
             _drop()
