@@ -13,7 +13,7 @@ import { popup } from './ctxmenu.js';
 import { fileUrl, queuePrompt, upload, getModels, modelMeta } from './backend.js';
 import { modelPicker } from './modelpick.js';
 import { libraryPicker } from './library.js';
-import { applyLoraTriggers, appendTriggers } from './lora.js';
+import { loraTriggers, copyTriggers } from './lora.js';
 import { MAGIC, magicState, isMagicChanged, resetMagic } from './magic.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage } from './images.js';
 
@@ -112,6 +112,10 @@ function previewOf(n, def = defs()[n.type], pw = (n.w || NW) - 20) {
   if (st) return { kind: 'stream', text: st, h: lineCount(st) * 15 + 12 };
   const o = outputsOf(n.id);
   if (o?._error) return { kind: 'error', text: o._error.split('\n').slice(0, 6).join('\n'), h: Math.min(6, lineCount(o._error)) * 15 + 12 };
+  if (n.type === 'sd.lora') {
+    const tags = loraTriggers(n.props?.lora_name ?? def?.inputs?.lora_name?.default);
+    if (tags.length) return tagsPv(tags, pw);
+  }
   if (o) {
     const images = [...(o._ui?.images || []), ...(def?.output ? Object.values(o).filter(v => v?.image).map(v => v.image) : [])];
     if (images.length) return imagePv([...new Set(images)].map(fileUrl), pw);
@@ -131,6 +135,23 @@ function imagePv(urls, pw, extra = {}) {
   const cw = pw / cols, rows = Math.ceil(list.length / cols);
   return { kind: 'image', urls, list, cols, rows, h: clamp(Math.round(cw * ar) * rows, 60, PREV_MAX), ...extra };
 }
+// триггер-слова LoRA чипами: подпись сверху, затем слова и «все» — раскладка по ширине (щелчок копирует, hit())
+let measure = null;
+function tagsPv(tags, pw) {
+  measure ||= document.createElement('canvas').getContext('2d');
+  measure.font = `11px ${FONT}`;
+  const chips = [], gap = 4, ch = 20;
+  let x = 0, y = 20;
+  for (const [i, t] of [...tags, 'все'].entries()) {
+    const label = i === tags.length ? 'копировать все' : t;
+    const w = Math.min(pw - 12, measure.measureText(label).width + 14);
+    if (x && x + w > pw - 12) { x = 0; y += ch + gap; }
+    chips.push({ text: label, copy: i === tags.length ? tags.join(', ') : t, x: 6 + x, y, w, h: ch, all: i === tags.length });
+    x += w + gap;
+  }
+  return { kind: 'tags', chips, h: y + ch + 6 };
+}
+
 const lineCount = t => Math.min(14, String(t).split('\n').reduce((a, l) => a + Math.max(1, Math.ceil(l.length / 40)), 0));
 
 const toScreen = p => ({ x: p.x * view.z + view.x, y: p.y * view.z + view.y });
@@ -364,6 +385,17 @@ function drawNode(c, n, L) {
       });
       const tag = pv.live ? `шаг ${pv.step}${S.run?.progress?.max ? `/${S.run.progress.max}` : ''}` : pv.urls.length > pv.list.length ? `+${pv.urls.length - pv.list.length}` : pv.urls.length > 1 ? `${pv.urls.length} шт.` : '';
       if (tag) badge(c, tag, x + 6, y + 6, pv.live ? K.ok : null);
+    } else if (pv.kind === 'tags') {
+      if (!lod) {
+        c.font = `10.5px ${FONT}`; c.fillStyle = K.dim; c.fillText('триггер-слова · щелчок — копировать', x + 7, y + 13);
+        c.font = `11px ${FONT}`;
+        pv.chips.forEach((t, i) => {
+          const hot = hover?.node === n.id && hover.tag === i;
+          c.fillStyle = hot ? K.fieldHi : t.all ? K.node : K.head; rr(c, x + t.x, y + t.y, t.w, t.h, 4); c.fill();
+          c.strokeStyle = hot ? K.accent : K.fieldBd; c.lineWidth = 1; rr(c, x + t.x + 0.5, y + t.y + 0.5, t.w - 1, t.h - 1, 4); c.stroke();
+          c.fillStyle = t.all ? K.dim : K.fg; c.fillText(clipText(c, t.text, t.w - 12), x + t.x + 7, y + t.y + 14);
+        });
+      }
     } else if (!lod) {
       c.font = `11px ${MONO}`; c.fillStyle = pv.kind === 'error' ? '#F0A8A6' : pv.kind === 'stream' ? '#9FE0B4' : K.fg2;
       const lines = wrapText(c, pv.text, pw - 14);
@@ -438,6 +470,11 @@ function hit(p) {
     }
     if (!n.collapsed && L.mrow && p.y >= L.mTop && p.y < L.mTop + L.mrow) return { node: n.id, n, L, magic: true, reset: p.x > n.x + L.w - 82 };
     if (p.x > n.x + L.w - 10 && p.y > n.y + L.h - 10) return { node: n.id, n, L, resize: true };
+    if (!n.collapsed && L.pv?.kind === 'tags' && p.y >= L.pTop && p.y < L.pTop + L.ph) {
+      const qx = p.x - n.x - 10, qy = p.y - L.pTop;
+      const i = L.pv.chips.findIndex(t => qx >= t.x && qx <= t.x + t.w && qy >= t.y && qy <= t.y + t.h);
+      return i >= 0 ? { node: n.id, n, L, tag: i, body: true } : { node: n.id, n, L, body: true };
+    }
     if (!n.collapsed && L.pv?.kind === 'image' && p.y >= L.pTop && p.y < L.pTop + L.ph) {
       const pv = L.pv, i = Math.floor((p.x - n.x - 10) / ((L.w - 20) / pv.cols)) + pv.cols * Math.floor((p.y - L.pTop) / (L.ph / pv.rows));
       return { node: n.id, n, L, preview: clamp(i, 0, pv.list.length - 1), body: true };
@@ -482,10 +519,9 @@ export function connect(from, out, to, inp) {
 
 function setProp(id, k, v, merge = true) {
   wfEdit(wf => { const n = wf.nodes.find(z => z.id === id); n.props ||= {}; n.props[k] = v; }, { label: `${id}.${k}`, merge: merge ? `${id}.${k}` : null });
-  if (k === 'lora_name') applyLoraTriggers(S.current.workflow, id, v);
 }
 
-export function addNode(type, at, props = {}, opts = {}) {
+export function addNode(type, at, props = {}) {
   const d = cur();
   const def = defs()[type];
   if (!d || !def) return null;
@@ -494,7 +530,6 @@ export function addNode(type, at, props = {}, opts = {}) {
   const defaults = Object.fromEntries(Object.entries(def.inputs).filter(([, i]) => i.widget).map(([k, i]) => [k, i.default]));
   wfEdit(wf => {
     wf.nodes.push({ id, type, x: Math.round(pos.x / 10) * 10, y: Math.round(pos.y / 10) * 10, props: { ...defaults, ...props } });
-    if (opts.triggers?.length) appendTriggers(wf, opts.triggers); // вместе с нодой — одним шагом отмены
   }, { label: `нода ${def.title}` });
   select({ kind: 'node', doc: d.id, id });
   return id;
@@ -550,6 +585,10 @@ function onDown(e) {
       return startLink({ from: SL.outPos[ex.out], to: p, node: ex.from, pin: ex.out, type: SL.outs.find(o => o.name === ex.out).type, reverse: false });
     }
     return startLink({ from: t.L.inPos[t.in], to: p, node: t.node, pin: t.in, type: t.L.def.inputs[t.in].type, reverse: true });
+  }
+  if (t?.tag != null) { // триггер-слово LoRA — в буфер обмена
+    select({ kind: 'node', doc: d.id, id: t.node });
+    return copyTriggers(t.L.pv.chips[t.tag].copy);
   }
   if (t?.widget) {
     select({ kind: 'node', doc: d.id, id: t.node });
@@ -662,10 +701,10 @@ function onMove(e) {
   lastMouse = mouse(e);
   if (linking) return;
   const t = hit(toWorld(lastMouse));
-  const nh = t ? { node: t.node, in: t.in, out: t.out, widget: t.widget, magic: t.reset } : null;
+  const nh = t ? { node: t.node, in: t.in, out: t.out, widget: t.widget, magic: t.reset, tag: t.tag } : null;
   if (JSON.stringify(nh) !== JSON.stringify(hover)) {
     hover = nh;
-    cv.style.cursor = t?.in || t?.out ? 'crosshair' : t?.resize ? 'nwse-resize' : t?.widget ? (['INT', 'FLOAT'].includes(t.L.def.inputs[t.widget].type) ? 'ew-resize' : 'pointer') : t?.preview != null ? 'zoom-in' : t?.reset ? 'pointer' : t ? 'move' : '';
+    cv.style.cursor = t?.in || t?.out ? 'crosshair' : t?.resize ? 'nwse-resize' : t?.widget ? (['INT', 'FLOAT'].includes(t.L.def.inputs[t.widget].type) ? 'ew-resize' : 'pointer') : t?.preview != null ? 'zoom-in' : t?.tag != null ? 'copy' : t?.reset ? 'pointer' : t ? 'move' : '';
     draw();
   }
 }
@@ -983,14 +1022,14 @@ export function initGraph() {
   on('server', s => { if (!s.running) return; imgRetry.clear(); setTimeout(draw, 500); });
   // чекпоинт / LoRA / VAE — сразу своим загрузчиком, остальное — «Library Model»
   const LOADER = { checkpoints: ['sd.checkpoint', 'ckpt_name'], loras: ['sd.lora', 'lora_name'], vae: ['sd.vae', 'vae_name'] };
+  on('library', () => redraw()); // триггер-слова LoRA под нодами — из карточек библиотеки
   on('library-insert', it => {
     showView('graph');
     requestAnimationFrame(() => {
       if (!cur()) return;
       const [type, key] = LOADER[it.cat] || [];
       if (type && defs()[type]) {
-        const triggers = it.cat === 'loras' && type === 'sd.lora' && it.trained?.length ? it.trained : null;
-        addNode(type, null, { [key]: it.name }, { triggers });
+        addNode(type, null, { [key]: it.name });
       } else addNode('library.model', null, { cat: it.cat, name: it.name });
     });
   });

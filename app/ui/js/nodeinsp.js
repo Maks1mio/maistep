@@ -7,7 +7,7 @@ import { defs, deleteSel, issuesOf, TYPE_COLOR, llmModel } from './graph.js';
 import { fileUrl, queuePrompt, upload } from './backend.js';
 import { modelPicker, badges } from './modelpick.js';
 import { libraryPicker } from './library.js';
-import { applyLoraTriggers } from './lora.js';
+import { loraTriggers, copyTriggers } from './lora.js';
 import { imagePicker } from './images.js';
 import { MAGIC, MAGIC_KEYS, magicState, fetchRec, resetMagic, refreshMagic } from './magic.js';
 
@@ -17,7 +17,6 @@ function widget(d, n, k, inp) {
   const v = n.props?.[k] ?? inp.default;
   const set = val => {
     edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); nn.props ||= {}; nn.props[k] = val; }, { label: `${n.id}.${k}`, merge: `${n.id}.${k}` });
-    if (n.type === 'sd.lora' && k === 'lora_name') applyLoraTriggers(d.id, n.id, val);
   };
   if (inp.type === 'COMBO') return sel(v, inp.options || [], set);
   if (inp.picker === 'library_model') {
@@ -120,6 +119,16 @@ function result(n) {
   return parts;
 }
 
+// триггер-слова Load LoRA: щелчок по слову — в буфер обмена (в промпт сами не попадают)
+function triggersCard(n, def) {
+  if (n.type !== 'sd.lora') return [];
+  const tags = loraTriggers(n.props?.lora_name ?? def.inputs.lora_name?.default);
+  if (!tags.length) return [];
+  return [h('h4', {}, 'Триггер-слова (щёлкните — копировать)'),
+    ...tags.map(w => h('div.ltrig', { onclick: () => copyTriggers(w), 'data-tip': 'Копировать' }, w)),
+    h('button', { style: { marginTop: '4px' }, onclick: () => copyTriggers(tags.join(', ')) }, icon('copy', { size: 14 }), 'Копировать все')];
+}
+
 function nodeInspector(s) {
   const d = doc('workflow', s.doc), n = d?.data.nodes.find(x => x.id === s.id);
   if (!n) return [h('div.dim', {}, 'нода не найдена')];
@@ -143,6 +152,7 @@ function nodeInspector(s) {
       }
       return field(k, widget(d, n, k, inp), inp.hint || inp.type);
     }),
+    ...triggersCard(n, def),
     h('h4', {}, 'Выходы'),
     ...(def.outputs.length ? def.outputs.map(o => {
       const to = d.data.links.filter(l => l.from === n.id && l.out === o.name).map(l => `${l.to}.${l.in}`);
