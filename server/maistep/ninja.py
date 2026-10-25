@@ -7,6 +7,8 @@
 clip/ (openai/clip-vit-large-patch14), controlnet/config.json (control_v11p_sd15_lineart), sd/{unet,vae,scheduler}
 (конфиги SD 1.5 + VAE). Модели живут в RAM; на время вызова — на GPU, UNet SDXL на это время уходит в RAM.
 """
+import gc
+import os
 import threading
 import time
 from pathlib import Path
@@ -54,6 +56,24 @@ def _state_dict(torch, part):
     return sd
 
 
+def _part(torch, mod, part, log):
+    """Веса сразу в fp16: from_config собирает fp32, и четыре сети разом упирались в RAM (60+ ГБ из 64)."""
+    import logging
+    mu = logging.getLogger("diffusers.models.modeling_utils")
+    level = mu.level
+    mu.setLevel(logging.ERROR)  # пустой список «держать в float32» — ложная тревога diffusers при .to(fp16)
+    try:
+        mod.to(dtype=torch.float16)
+    finally:
+        mu.setLevel(level)
+    sd = _state_dict(torch, part)
+    bad = mod.load_state_dict(sd, strict=False)
+    del sd
+    if bad.missing_keys:
+        log(f"MangaNinja {part}: нет {len(bad.missing_keys)} весов (напр. {bad.missing_keys[0]})")
+    return mod
+
+
 def _load(torch, log):
     from diffusers import AutoencoderKL, ControlNetModel, DDIMScheduler
     from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
@@ -61,22 +81,33 @@ def _load(torch, log):
     from .manganinja.point_network import PointNet
     from .manganinja.refunet_2d_condition import RefUNet2DConditionModel
     from .manganinja.unet_2d_condition import UNet2DConditionModel
+    # transformers 5 режет safetensors по потокам (core_model_loading.spawn_materialize). На Windows
+    # рабочий поток падает с access violation в _materialize_copy — процесс сервера умирает целиком,
+    # как раз на CLIP после сетей (логи 2026-10-26). Выключатель — их же HF_DEACTIVATE_ASYNC_LOAD.
+    os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+    import logging
     t0 = time.time()
     fp = torch.float16
     ucfg = UNet2DConditionModel.load_config(str(BASE / "sd" / "unet"))
-    denoise = UNet2DConditionModel.from_config(ucfg)
-    ref = RefUNet2DConditionModel.from_config(ucfg)
-    cn = ControlNetModel.from_config(ControlNetModel.load_config(str(BASE / "controlnet")))
-    point = PointNet()
-    for mod, part in ((denoise, "denoising_unet"), (ref, "reference_unet"), (cn, "controlnet"), (point, "point_net")):
-        bad = mod.load_state_dict(_state_dict(torch, part), strict=False)
-        if bad.missing_keys:
-            log(f"MangaNinja {part}: нет {len(bad.missing_keys)} весов (напр. {bad.missing_keys[0]})")
-        mod.to(fp)
+    denoise = _part(torch, UNet2DConditionModel.from_config(ucfg), "denoising_unet", log)
+    ref = _part(torch, RefUNet2DConditionModel.from_config(ucfg), "reference_unet", log)
+    cn = _part(torch, ControlNetModel.from_config(ControlNetModel.load_config(str(BASE / "controlnet"))), "controlnet", log)
+    point = _part(torch, PointNet(), "point_net", log)
+    gc.collect()
     clip = str(BASE / "clip")
     tok = CLIPTokenizer.from_pretrained(clip)
-    text = CLIPTextModel.from_pretrained(clip, torch_dtype=fp)
-    vision = CLIPVisionModelWithProjection.from_pretrained(clip, torch_dtype=fp)
+    # один файл CLIP на текст и картинку: «UNEXPECTED» и «layers were not sharded» — не ошибка
+    # (нет тензорного параллелизма, обе башни лежат в одном checkpoint)
+    quiet = ("transformers.modeling_utils", "transformers.distributed.tensor_parallel")
+    prev = {name: logging.getLogger(name).level for name in quiet}
+    for name in quiet:
+        logging.getLogger(name).setLevel(logging.ERROR)
+    try:
+        text = CLIPTextModel.from_pretrained(clip, torch_dtype=fp)
+        vision = CLIPVisionModelWithProjection.from_pretrained(clip, torch_dtype=fp)
+    finally:
+        for name, level in prev.items():
+            logging.getLogger(name).setLevel(level)
     vae = AutoencoderKL.from_pretrained(str(BASE / "sd" / "vae"), torch_dtype=fp)
     sched = DDIMScheduler.from_pretrained(str(BASE / "sd" / "scheduler"))
     # у авторов по копии CLIP на reference UNet и ControlNet — веса одинаковые, держим одну (−0.8 ГБ VRAM)
@@ -100,6 +131,8 @@ def size_for(w, h, area=512 * 512, most=768):
 def colorize(reference, lineart, steps=30, guidance=9.0, seed=None, log=print, progress=None, stop=None):
     """reference — цветной PIL, lineart — PIL «L»: белые линии на чёрном. → цветной PIL размера lineart
     (стороны кратны 64). Референс растягивается до того же размера, как у авторов."""
+    import warnings
+
     import numpy as np
     import torch
     from . import diffusion as D
@@ -113,12 +146,20 @@ def colorize(reference, lineart, steps=30, guidance=9.0, seed=None, log=print, p
             _state["pipe"] = _load(torch, log)
         pipe = _state["pipe"]
         D._unet_to(torch, "cpu")  # 8 ГБ: SDXL и MangaNinja вместе не помещаются
+        sd = D._state.get("pipe")
+        vae = getattr(sd, "vae", None) if sd is not None else None
+        vae_on_gpu = vae is not None and next(vae.parameters()).is_cuda
+        if vae_on_gpu:  # после декода SDXL VAE ещё на карте — вместе с MangaNinja это уже за 8 ГБ
+            with torch.inference_mode(False), torch.no_grad():
+                vae.to("cpu")
+            torch.cuda.empty_cache()
         t0 = time.time()
+        step = pipe.scheduler.step if progress else None
         try:
             pipe.to("cuda")
             g = torch.Generator("cuda").manual_seed(int(seed if seed is not None and seed >= 0 else time.time()) % 2**32)
             if progress:  # шаги DDIM: обёртка вокруг scheduler.step (у пайплайна нет колбэка)
-                step, n = pipe.scheduler.step, [0]
+                n = [0]
 
                 def wrapped(*a, **k):
                     if stop and stop():
@@ -128,14 +169,20 @@ def colorize(reference, lineart, steps=30, guidance=9.0, seed=None, log=print, p
                     return step(*a, **k)
                 pipe.scheduler.step = wrapped
             zero = torch.from_numpy(np.zeros((H, W), np.uint8))[None, None]
-            out = pipe(True, reference.convert("RGB").resize((W, H)), lineart.convert("L"), lineart.convert("L"),
-                       denosing_steps=int(steps), processing_res=0, match_input_res=True, batch_size=1,
-                       show_progress_bar=False, guidance_scale_ref=float(guidance), guidance_scale_point=15.0,
-                       generator=g, point_ref=zero, point_main=zero)
+            with warnings.catch_warnings():
+                # vendored UNet ещё передаёт scale= в Resnet/Attention; diffusers 0.41 его игнорирует
+                warnings.filterwarnings("ignore", message=r"`scale` is deprecated", category=FutureWarning)
+                out = pipe(True, reference.convert("RGB").resize((W, H)), lineart.convert("L"), lineart.convert("L"),
+                           denosing_steps=int(steps), processing_res=0, match_input_res=True, batch_size=1,
+                           show_progress_bar=False, guidance_scale_ref=float(guidance), guidance_scale_point=15.0,
+                           generator=g, point_ref=zero, point_main=zero)
         finally:
-            if progress:
+            if step is not None:
                 pipe.scheduler.step = step
-            pipe.to("cpu")
+            pipe.to("cpu", silence_dtype_warnings=True)  # между вызовами веса лежат в RAM, считаем только на GPU
+            if vae_on_gpu:
+                with torch.inference_mode(False), torch.no_grad():
+                    vae.to("cuda")
             torch.cuda.empty_cache()
         log(f"MangaNinja {W}×{H}, {steps} шагов: {time.time() - t0:.1f} с")
         return out.img_pil
