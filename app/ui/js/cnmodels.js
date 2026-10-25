@@ -12,8 +12,10 @@ import { openWorkspace } from './dock.js';
 export const CN = {
   lines: { id: 'controlnet-lineart-anime', title: 'ControlNet Lineart Anime', find: [/lineart|manga.?line/i, /union|scribble|canny/i] },
   tile: { id: 'controlnet-tile', title: 'ControlNet Tile', find: [/tile/i, /union/i] },
+  // не ControlNet, но качается так же: LaMa — заполнение пустого при outpaint в ImageNaizer
+  lama: { id: 'inpaint-lama', title: 'LaMa', cat: 'inpaint', find: [/lama/i] },
 };
-let names = null, rows = {}, line = '', loading = null;
+let names = null, items = [], rows = {}, line = '', loading = null;
 const log = (level, text) => emit('log', { src: 'editor', level, text });
 
 export const cnNames = () => names;
@@ -23,8 +25,9 @@ export const cnBusy = kind => S.componentsJob?.state === 'running' && (S.compone
 // выбранный файл (если он есть в библиотеке) или первый подходящий виду
 export function cnPick(kind, want = '') {
   if (!names) return '';
-  if (want && names.includes(want)) return want;
-  for (const re of CN[kind].find) { const n = names.find(x => re.test(x)); if (n) return n; }
+  const cat = CN[kind].cat || 'controlnet', list = items.filter(i => i.cat === cat).map(i => i.name);
+  if (want && list.includes(want)) return want;
+  for (const re of CN[kind].find) { const n = list.find(x => re.test(x)); if (n) return n; }
   return '';
 }
 
@@ -32,7 +35,7 @@ export function loadCn(refresh = false) {
   if (!S.server.running) return Promise.resolve();
   if (loading && !refresh) return loading;
   loading = Promise.all([loadLibrary(refresh), componentsStatus({}).catch(() => null)]).then(([lib, comp]) => {
-    if (lib) names = lib.items.filter(i => i.cat === 'controlnet').map(i => i.name);
+    if (lib) { items = lib.items; names = items.filter(i => i.cat === 'controlnet').map(i => i.name); }
     if (comp) rows = Object.fromEntries(comp.components.filter(c => c.kind === 'model').map(c => [c.id, c]));
     emit('cn-models');
   }).finally(() => { loading = null; });
@@ -45,8 +48,8 @@ export async function downloadCn(kind) {
     const r = await installComponents([CN[kind].id], 'missing');
     if (r.error && !r.job) throw new Error(r.error);
     S.componentsJob = r.job; line = 'начинаю загрузку…';
-    log('info', `ControlNet: загрузка ${row?.package || CN[kind].id} (${row?.size || '2,5 ГБ'}) — прогресс и в «Компонентах»`);
-  } catch (e) { log('error', `ControlNet: ${e.message}`); }
+    log('info', `${CN[kind].title}: загрузка ${row?.package || CN[kind].id}${row?.size ? ` (${row.size})` : ''} — прогресс и в «Компонентах»`);
+  } catch (e) { log('error', `${CN[kind].title}: ${e.message}`); }
   emit('cn-models');
 }
 

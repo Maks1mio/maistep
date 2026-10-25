@@ -223,3 +223,31 @@ def inpaint(model, positive, negative, vae, image, mask, seed, steps, cfg, sampl
     if patch:
         ui["patch"] = box
     return {"image": {"file": f}, "seed": seed, "ui": ui}
+
+
+@node("sd.canvas", title="Canvas Generate", cat="Sampling",
+      inputs={"model": ("MODEL", {}), "positive": ("CONDITIONING", {}), "negative": ("CONDITIONING", {}),
+              "vae": ("VAE", {}),
+              "image": ("IMAGE", {"hint": "layers composite inside the frame (RGBA): transparent — outpaint"}),
+              "mask": ("IMAGE", {"optional": True, "hint": "inpaint masks: white — change, gray — lower denoise limit"}),
+              **_sampler_inputs(),
+              "denoise": ("FLOAT", {"default": 0.75, "min": 0.05, "max": 1, "step": 0.05,
+                                    "hint": "img2img / inpaint strength"}),
+              "fill": ("FLOAT", {"default": 0.85, "min": 0.3, "max": 1, "step": 0.05,
+                                 "hint": "outpaint strength of the empty part (prefilled by LaMa); 1 — a new picture"}),
+              "resolution": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 64,
+                                     "hint": "the frame is scaled to this side (by area); 0 — model native"}),
+              "edge": ("INT", {"default": 16, "min": 0, "max": 128,
+                               "hint": "coherence: ring around the mask redrawn with fading strength, px"}),
+              "blur": ("INT", {"default": 16, "min": 0, "max": 128, "hint": "soft edge of the result, px"})},
+      outputs={"image": "IMAGE", "seed": "INT"},
+      volatile=lambda a: a.get("seed", 0) < 0,
+      hint="Generates inside a canvas frame like InvokeAI Canvas: the mode follows the frame contents — empty → "
+           "txt2img, partly transparent → outpaint (LaMa infill), no mask → img2img, mask → inpaint (gradient mask with a "
+           "coherence ring). The result is the frame as PNG with transparency outside the changed area.")
+def canvas_generate(model, positive, negative, vae, image, seed, steps, cfg, sampler_name, scheduler, denoise,
+                    resolution, edge, blur, ctx, mask=None, fill=0.85):
+    seed = random.randint(0, 2**50) if seed < 0 else int(seed)
+    f, info = D.canvas(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, sampler_name, scheduler,
+                       denoise, resolution, edge, blur, fill)
+    return {"image": {"file": f}, "seed": seed, "ui": {"images": [f], "canvas": info}}

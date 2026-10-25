@@ -5,6 +5,7 @@ import { S, on, emit, doc } from './store.js';
 
 const NODES_KEY = 'maistep-nodes'; // последний каталог — чтобы граф рисовался и при выключенном сервере
 const base = () => `http://localhost:${S.server.port}`;
+export const serverBase = base;
 const log = (level, text) => emit('log', { src: 'run', level, text });
 let es = null, retry = 0;
 

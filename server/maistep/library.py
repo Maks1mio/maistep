@@ -31,6 +31,7 @@ MODEL_EXT = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx", "
 PREVIEW_EXT = (".preview.jpeg", ".preview.jpg", ".preview.png", ".preview.webp", ".jpeg", ".jpg", ".png", ".webp")
 APP_MODELS = ROOT / "models"
 APP_SUBDIRS = ("checkpoints", "loras", "vae", "embeddings", "upscale_models", "controlnet")
+EXTRA_CATS = ("inpaint",)
 
 
 def _auto_roots():
@@ -141,6 +142,10 @@ def sources():
             for cat, subs in sec["cats"].items():
                 for sub in subs:
                     pairs.append((str(base), cat, base / sub.strip("/\\")))
+            # категории maistep, которых нет в yaml (LaMa для outpaint качается в <корень>/inpaint)
+            for cat in EXTRA_CATS:
+                if cat not in sec["cats"]:
+                    pairs.append((str(base), cat, base / cat))
     for r in s.get("model_roots") or []:
         _add_dir(roots, pairs, Path(os.path.expanduser(os.path.expandvars(r))), "добавлена", "remove")
     for r in _auto_roots():

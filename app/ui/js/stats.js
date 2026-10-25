@@ -143,7 +143,7 @@ const LIMITS = [
     fmt: v => (v ? `${v} МП` : 'без предела'), tip: '1920×1080 = 2.1 МП, SDXL 1024×1024 = 1.0 МП' },
 ];
 
-function limitsBox(cur) {
+export function limitsBox(cur) {
   const vals = { ...cur };
   // сохраняется, когда ползунок отпущен (change); пока тянут — только подпись и заливка
   const save = async () => {

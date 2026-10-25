@@ -16,18 +16,18 @@ import { initCodeEditor } from './codeedit.js';
 import { initUIKit } from './uikit.js';
 import { initComponents, showComponents, componentsStartupCheck } from './components.js';
 import { initCivitai, showCivitai } from './civitai.js';
-import { initAgent, showAgent } from './agent.js';
+import { initAgent, showAgent, showChat } from './agent.js';
 import { initNaizer, showNaizer } from './naizer.js';
 import { initTocolar, showTocolar } from './tocolar.js';
 import { initPersist, restore, autosaveOn, setAutosave } from './persist.js';
 import { initTooltips, messageBox } from './kit.js';
 import { initBackend, queuePrompt, interrupt, clearQueue, reloadNodes, api, updateStatus } from './backend.js';
-import { providersDialog } from './providers.js';
+import { openSettings } from './settings.js';
 import { initMagic } from './magic.js';
 import { initImages } from './images.js';
 import { initPromptWeights } from './promptedit.js';
 import { initContextMenu } from './ctxmenu.js';
-import { initStats, toggleStats, statsShown, limitsDialog, logsReport, openLogs } from './stats.js';
+import { initStats, toggleStats, statsShown, logsReport, openLogs } from './stats.js';
 
 const $ = id => document.getElementById(id);
 const log = (level, text, src = 'editor') => emit('log', { src, level, text });
@@ -96,14 +96,14 @@ const MENU = [
     [() => `${autosaveOn() ? '✓ ' : ''}Автосохранение`, '', () => setAutosave(!autosaveOn())],
     ['Перезагрузить проект с диска', '', () => reloadProject()],
     '-',
-    ['Провайдеры LLM…', '', providersDialog],
+    ['Настройки…', 'Ctrl+,', () => openSettings()],
   ]],
   ['Правка', [['Отменить', 'Ctrl+Z', undo], ['Повторить', 'Ctrl+Y', redo]]],
   ['Вид', [
     ['Workflow', '1', () => openWorkspace('graph')], ['Results', '2', () => openWorkspace('results')],
     ['Models', '3', () => openWorkspace('library')], ['Civitai', '4', () => openWorkspace('civitai')], ['CodeEditor', '5', () => openWorkspace('code')],
     ['Компоненты и обновления', '6', () => openWorkspace('components')], ['ImageNaizer', '7', () => openWorkspace('naizer')],
-    ['ToColar', '8', () => openWorkspace('tocolar')], ['UI Kit', '9', () => openWorkspace('uikit')], '-',
+    ['ToColar', '8', () => openWorkspace('tocolar')], ['AI Chat', '0', () => openWorkspace('chat')], ['UI Kit', '9', () => openWorkspace('uikit')], '-',
     ['Вписать граф', 'F', fit],
     [() => `${statsShown() ? '✓ ' : ''}Статистика системы (CPU, RAM, GPU)`, 'Ctrl+Shift+M', toggleStats],
     ['Сбросить раскладку рабочей области', '', () => resetLayout()],
@@ -116,7 +116,7 @@ const MENU = [
   ['Сервер', [
     ['Запустить', 'F5', startServer], ['Остановить', 'Shift+F5', stopServer], ['Перезапустить', 'Ctrl+F5', restartServer], '-',
     ['Перезагрузить ноды', '', reloadNodes], ['Пересканировать модели', '', () => loadLibrary(true)], ['Освободить память (выгрузить модели)', '', freeMemory], '-',
-    ['Производительность и лимиты…', '', limitsDialog], '-',
+    ['Производительность и лимиты…', '', () => openSettings('perf')], ['MCP-серверы…', '', () => openSettings('mcp')], ['llama.cpp…', '', () => openSettings('llama')], '-',
     ['Компоненты и обновления…', '', () => openWorkspace('components')],
     ['Открыть API в браузере', '', () => openExternal(`http://localhost:${S.server.port}/api/nodes`)],
   ]],
@@ -169,7 +169,7 @@ function serverPopup() {
     h('hr'),
     popItem('refresh', 'Перезагрузить ноды (custom_nodes)', '', reloadNodes, !on_),
     popItem('delete', 'Освободить память (выгрузить модели)', '', freeMemory, !on_),
-    popItem('settings', 'Провайдеры LLM…', '', providersDialog, !on_),
+    popItem('settings', 'Настройки…', 'Ctrl+,', () => openSettings(), false),
     popItem('externalLink', 'Открыть API в браузере', '', () => openExternal(`http://localhost:${S.server.port}/`), !on_));
 }
 
@@ -214,12 +214,14 @@ function keys(e) {
   const k = e.key.toLowerCase(), typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
   if (e.ctrlKey && k === 's') { e.preventDefault(); saveAll(); return; }
   if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); if (e.shiftKey) interrupt(); else queuePrompt(); return; }
+  if (e.ctrlKey && e.key === ',') { e.preventDefault(); openSettings(); return; }
   if (e.ctrlKey && k === 'n') { e.preventDefault(); newWorkflow(); return; }
   if (e.ctrlKey && !typing && k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
   if (e.ctrlKey && !typing && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
   if (e.key === 'F5') { e.preventDefault(); if (e.ctrlKey) restartServer(); else if (e.shiftKey) stopServer(); else startServer(); return; }
   if (e.key === 'F7') { e.preventDefault(); checkGraph(); return; }
   if (e.ctrlKey && e.shiftKey && k === 'm') { e.preventDefault(); toggleStats(); return; }
+  if (!typing && !e.ctrlKey && !e.altKey && e.key === '0') { openWorkspace('chat'); return; }
   if (!typing && !e.ctrlKey && !e.altKey && /^[1-9]$/.test(e.key)) { openWorkspace(['graph', 'results', 'library', 'civitai', 'code', 'components', 'naizer', 'tocolar', 'uikit'][+e.key - 1]); return; }
   if (!typing && graphKeys(e)) { e.preventDefault(); return; }
   if (e.key === 'Escape' && !typing) select(null);
@@ -258,6 +260,7 @@ async function boot() {
   addView('components', 'Компоненты', () => { setCtxQuiet('components'); showComponents(); });
   addView('naizer', 'ImageNaizer', () => { setCtxQuiet('naizer'); showNaizer(); });
   addView('tocolar', 'ToColar', showTocolar);
+  addView('chat', 'AI Chat', showChat);
   initUIKit(); // addView('uikit') — последней вкладкой
   addView('agent', 'AI Agent', showAgent, 'ai'); // панель, не рабочая область: ставится в любую область через ⋮
   startDock();
@@ -271,6 +274,8 @@ async function boot() {
   $('tb-results').onclick = () => openWorkspace('results');
   $('tb-components').onclick = () => openWorkspace('components');
   $('tb-check').onclick = checkGraph;
+  $('tb-settings').onclick = () => openSettings();
+  on('port-changed', v => setPort(v));
   $('tb-server').onclick = e => { e.stopPropagation(); serverPopup(); };
   $('tb-project').onclick = e => { e.stopPropagation(); projectPopup(); };
   $('tb-stop').onclick = stopServer;

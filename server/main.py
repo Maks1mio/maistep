@@ -36,8 +36,20 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   POST /api/update/download    скачать изменившиеся файлы в update/staging (применяет ядро при перезапуске)
   GET  /api/agent/chats | chat?id=   диалоги AI Agent (user/chats/)
   POST /api/agent/chat { id?, title, provider, model, effort, wf, hidden } | delete { id } | stop { id }
+  GET  /api/agent/procs?chat= | proc_output?id=&tail= · POST /api/agent/proc_stop | proc_forget { id }  фоновые процессы агента
+  POST /api/agent/rewind { id, index } | retry { id, workflows } | fork { id, index }  как в Claude: откат, повтор, ветка
   POST /api/agent/send { id, text, images: [input/…], workflows: { id: граф } }  ход агента (SSE agent)
+  POST /api/agent/client { req, ok, result|error } | approve { req, ok, always }  ответы окна и разрешения
+  GET  /api/agent/characters · POST /api/agent/character { id?, name, … } | character_delete { id }
+  POST /api/agent/character_photo { id, scene?, framing? }  фото персонажа (аватар) → { images }
+  GET  /api/agent/context?id= | projects | git?cwd= | diff?cwd=&path=   правая панель AI Chat
+  POST /api/agent/projects { add | remove } | git_switch { cwd, branch }
+  GET  /api/fs/dirs?path=      обзор дисков и папок ПК (выбор папки проекта)
+  POST /api/fs/mkdir { parent, name } | rename { path, name } | trash { path } (корзина) | reveal { path } (проводник)
+  GET  /api/mcp · POST /api/mcp { servers } | mcp/import { text } | mcp/test { name }   MCP-серверы (коннекторы)
+  GET  /api/llamacpp | llamacpp/models · POST /api/llamacpp { …настройки } | llamacpp/start | llamacpp/stop
   GET  /view?file=output/a.png файл из input/ или output/
+  GET  /agentfs/<диалог>/<№ папки>/<путь>  файл проекта для браузера AI Chat (только папки, выданные диалогу)
   GET  /events                 SSE: status, start, executing, progress, preview, stream, executed, error, done, log, nodes,
                                components, comp-log, agent, update
 """
@@ -60,6 +72,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "server"))
 
 from maistep import registry, executor, providers, library, components, civitai, agent, magic, updater, sysmon, logs  # noqa: E402
+from maistep import workspace, mcp, llamacpp  # noqa: E402
 from maistep.registry import Cancelled  # noqa: E402
 
 for d in ("input", "output", "user", "workflows", "custom_nodes"):
@@ -361,6 +374,35 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(updater.status())
         if u.path == "/api/agent/chats":
             return self.json(agent.chats())
+        try:
+            if u.path == "/api/agent/context":
+                return self.json(agent.context(qs.get("id")))
+            if u.path == "/api/agent/projects":
+                return self.json(workspace.recent())
+            if u.path == "/api/agent/git":
+                return self.json(workspace.git_info(qs.get("cwd")))
+            if u.path == "/api/agent/diff":
+                return self.json({"diff": workspace.git_diff(qs.get("cwd"), qs.get("path") or "")})
+            if u.path == "/api/fs/dirs":
+                return self.json(workspace.dirs(qs.get("path")))
+            if u.path == "/api/mcp":
+                return self.json(mcp.status())
+            if u.path == "/api/agent/procs":
+                return self.json(agent.procs.listing(qs.get("chat")))
+            if u.path == "/api/agent/proc_output":
+                return self.json(agent.procs.output(qs.get("id"), qs.get("tail") or 400))
+            if u.path == "/api/mcp/config":
+                return self.json(mcp.config())
+            if u.path == "/api/llamacpp":
+                return self.json(llamacpp.status())
+            if u.path == "/api/llamacpp/models":
+                return self.json(llamacpp.ggufs())
+        except KeyError:
+            return self.json({"error": "нет такого диалога"}, 404)
+        except Exception as e:
+            return self.json({"error": f"{type(e).__name__}: {e}"}, 400)
+        if u.path == "/api/agent/characters":
+            return self.json(agent.T.characters())
         if u.path == "/api/agent/chat":
             try:
                 c = agent.load(qs.get("id"))
@@ -372,6 +414,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(civitai_get(u.path[len("/api/civitai/"):], qs))
             except Exception as e:
                 return self.json({"error": str(e)}, 400)
+        if u.path.startswith("/agentfs/"):
+            parts = u.path.split("/", 4)  # '', agentfs, диалог, № папки, путь
+            try:
+                p = agent.agentfs(parts[2], parts[3], parts[4] if len(parts) > 4 else "")
+            except (KeyError, ValueError, IndexError, FileNotFoundError, PermissionError) as e:
+                return self.json({"error": f"{type(e).__name__}: {e}"}, 404)
+            data = p.read_bytes()
+            self._head(200, mimetypes.guess_type(p.name)[0] or "application/octet-stream", len(data), {"cache-control": "no-cache"})
+            return self.wfile.write(data)
         if u.path == "/view":
             p = safe_file(qs.get("file"))
             if not p:
@@ -419,6 +470,42 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(civitai_post(u.path[len("/api/civitai/"):], data))
             except Exception as e:
                 return self.json({"error": str(e)}, 400)
+        try:
+            if u.path == "/api/agent/projects":
+                if data.get("remove"):
+                    return self.json(workspace.forget(data["remove"]))
+                return self.json(workspace.touch(data.get("add")))
+            if u.path == "/api/agent/proc_stop":
+                return self.json(agent.procs.stop(data.get("id")))
+            if u.path == "/api/agent/proc_forget":
+                return self.json(agent.procs.forget(data.get("id")))
+            if u.path == "/api/fs/mkdir":
+                return self.json(workspace.mkdir(data.get("parent"), data.get("name")))
+            if u.path == "/api/fs/rename":
+                return self.json(workspace.rename(data.get("path"), data.get("name")))
+            if u.path == "/api/fs/trash":
+                return self.json(workspace.trash(data.get("path")))
+            if u.path == "/api/fs/reveal":
+                return self.json(workspace.reveal(data.get("path")))
+            if u.path == "/api/agent/git_switch":
+                return self.json(workspace.git_switch(data.get("cwd"), data.get("branch")))
+            if u.path == "/api/mcp":
+                return self.json(mcp.save_config(data.get("servers") or {}))
+            if u.path == "/api/mcp/import":
+                return self.json(mcp.import_json(data.get("text") or "{}"))
+            if u.path == "/api/mcp/test":
+                try:
+                    return self.json(mcp.test(data.get("name")))
+                except Exception:
+                    return self.json(mcp.status())
+            if u.path == "/api/llamacpp":
+                return self.json(llamacpp.save(data))
+            if u.path == "/api/llamacpp/start":
+                return self.json(llamacpp.start(wait=data.get("wait") or 0))
+            if u.path == "/api/llamacpp/stop":
+                return self.json(llamacpp.stop())
+        except Exception as e:
+            return self.json({"error": f"{type(e).__name__}: {e}"}, 400)
         if u.path.startswith("/api/agent/"):
             op = u.path[len("/api/agent/"):]
             try:
@@ -428,8 +515,27 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json(agent.delete(data.get("id")))
                 if op == "stop":
                     return self.json(agent.stop(data.get("id")))
+                if op == "rewind":
+                    return self.json(agent.rewind(data.get("id"), data.get("index", 0)))
+                if op == "retry":
+                    return self.json(agent.retry(data.get("id"), data.get("workflows") or {}))
+                if op == "fork":
+                    return self.json(agent.fork(data.get("id"), data.get("index", 0)))
+                if op in ("client", "approve"):
+                    return self.json(agent.answer(data.get("req"), data))
+                if op == "character":
+                    return self.json(agent.T.char_upsert(data))
+                if op == "character_delete":
+                    return self.json(agent.T.char_delete(data.get("id")))
+                if op == "character_photo":
+                    c = agent.T.character(data.get("id"))
+                    text, imgs = agent.T.char_photo(agent.run_now, c, data.get("scene") or "", data.get("framing") or "portrait")
+                    if not imgs:
+                        return self.json({"error": text.split("FAILED: ")[-1][:400]}, 400)
+                    return self.json({"images": imgs, "text": text})
                 if op == "send":
-                    return self.json(agent.send(data.get("id"), data.get("text", ""), data.get("images") or [], data.get("workflows") or {}))
+                    return self.json(agent.send(data.get("id"), data.get("text", ""), data.get("images") or [], data.get("workflows") or {},
+                                               data.get("label")))
             except KeyError:
                 return self.json({"error": "нет такого диалога"}, 404)
             except Exception as e:
@@ -542,6 +648,10 @@ def main():
     srv = Server((a.host, a.port), Handler)
     srv.daemon_threads = True
     log("info", f"maistep server: http://{a.host}:{a.port}  (Python {sys.version.split()[0]}, проект {ROOT})")
+    import atexit
+    atexit.register(mcp.stop_all)
+    atexit.register(llamacpp.stop)
+    atexit.register(agent.procs.stop_all)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

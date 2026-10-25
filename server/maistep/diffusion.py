@@ -96,8 +96,10 @@ SCHEDULERS = {
     "karras": {"use_karras_sigmas": True},
     "exponential": {"use_exponential_sigmas": True},
     "beta": {"use_beta_sigmas": True},
-    "simple": {"timestep_spacing": "simple"},
-    "sgm_uniform": {"timestep_spacing": "sgm_uniform"},
+    # в diffusers только linspace/leading/trailing; sgm_uniform и simple ComfyUI ≈ trailing (так diffusers советует
+    # для Lightning/Hyper) — прежние «simple»/«sgm_uniform» принимались from_config и падали уже в set_timesteps
+    "simple": {"timestep_spacing": "trailing"},
+    "sgm_uniform": {"timestep_spacing": "trailing"},
     "ddim_uniform": {"timestep_spacing": "trailing"},
 }
 UPSCALE = ["nearest-exact", "bilinear", "area", "bicubic"]
@@ -929,12 +931,25 @@ def _unet_back(torch, ctx, shape, b):
                 "mode both running a server): Сервер → «Освободить память» in the other one, or reduce size/batch.", "warn")
 
 
+def _next_t(sched, i, t):
+    """Таймстеп после шага i (None — шаг последний). У большинства планировщиков step_index уже указывает на
+    следующий шаг; у остальных (DDIM…) — поиск текущего t в расписании (img2img начинает с середины timesteps)."""
+    ts = sched.timesteps
+    si = getattr(sched, "step_index", None)
+    if si is None:
+        k = (ts == t).nonzero()
+        si = int(k[-1]) + 1 if len(k) else i + 1
+    return ts[si:si + 1] if si < len(ts) else None
+
+
 def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, scheduler, denoise, noise_mask=None,
-           control_box=None):
+           control_box=None, gradient=False):
     """KSampler. denoise=1 — txt2img (из шума), меньше — img2img по латенту. steps — сколько шагов реально
     выполнится (как в ComfyUI: при denoise<1 расписание считается на steps/denoise).
     noise_mask (1×1×h×w в масштабе латента, 1 — перерисовать) — как SetLatentNoiseMask в ComfyUI: после каждого шага
     вне маски возвращается исходный латент, зашумлённый до уровня следующего шага (так же делает inpaint-пайплайн).
+    gradient — маска как у Canvas InvokeAI: значение — своя сила denoise пикселя; пиксель держится исходным, пока
+    уровень шума выше его силы, потом сэмплируется (края маски — мягко и без мути от смешивания латентов).
     control_box — какой кусок картинки сэмплируется (Inpaint Region): подсказки ControlNet обрезаются так же."""
     torch, diffusers, _ = _packages()
     if positive.sdxl != negative.sdxl:
@@ -1009,11 +1024,13 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         def cb(_pipe, i, _timestep, kw):
             logs.watchdog(STALL)  # шаг прошёл — сторож заново
             if nmask is not None:
-                ts = _pipe.scheduler.timesteps
-                keep = init
-                if i + 1 < len(ts):
-                    keep = _pipe.scheduler.add_noise(init, noise, ts[i + 1:i + 2])
-                kw["latents"] = (1 - nmask) * keep + nmask * kw["latents"]
+                nt = _next_t(_pipe.scheduler, i, _timestep)
+                keep = init if nt is None else _pipe.scheduler.add_noise(init, noise, nt)
+                if gradient:
+                    thr = 0.0 if nt is None else float(nt[0]) / _pipe.scheduler.config.num_train_timesteps
+                    kw["latents"] = torch.where(nmask > thr, kw["latents"], keep)
+                else:
+                    kw["latents"] = (1 - nmask) * keep + nmask * kw["latents"]
             if duty < 1:
                 if dev == "cuda":
                     torch.cuda.synchronize()
@@ -1366,3 +1383,184 @@ def inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, 
     result = src.copy()
     result.paste(Image.composite(gen, src.crop(crop), paste), crop[:2])
     return save_pils(ctx, [result], "inpaint", int(seed))[0], box
+
+
+# ---------- холст (как Canvas InvokeAI) ----------
+def _lama_path():
+    """big-lama.pt (компонент inpaint-lama) в библиотеке; None — не скачана."""
+    for it in L.index()["items"]:
+        if it["cat"] == "inpaint" and "lama" in Path(it["path"]).name.lower():
+            return Path(it["path"])
+    return None
+
+
+def _lama(ctx, rgb, alpha):
+    """Заполнение прозрачного LaMa (как infill «lama» InvokeAI): продолжает края картинки правдоподобным
+    содержимым — SD потом дорабатывает его с силой denoise. None — модели нет."""
+    import numpy as np
+    path = _lama_path()
+    if path is None:
+        return None
+    torch, _, Image = _packages()
+    W, H = rgb.size
+    with _lock:
+        m = _state.get("lama")
+        if m is None or _state.get("lama_path") != str(path):
+            t0 = time.time()
+            m = torch.jit.load(str(path), map_location="cpu").eval()
+            _state["lama"], _state["lama_path"] = m, str(path)
+            if ctx:
+                ctx.log(f"LaMa loaded: {path.name} ({time.time() - t0:.1f} s)")
+        # на видеокарту — только если место есть (рядом с SDXL на 8 ГБ — часто нет), иначе CPU (несколько секунд)
+        dev = "cpu"
+        if torch.cuda.is_available():
+            try:
+                if torch.cuda.mem_get_info()[0] > 1.5 * 2**30:
+                    dev = "cuda"
+            except Exception:
+                pass
+        # LaMa ждёт стороны кратные 8
+        pw, ph = (8 - W % 8) % 8, (8 - H % 8) % 8
+        img = np.pad(np.asarray(rgb, dtype=np.float32) / 255.0, ((0, ph), (0, pw), (0, 0)), mode="reflect")
+        hole = np.pad((np.asarray(alpha) < 128).astype(np.float32), ((0, ph), (0, pw)), mode="edge")
+        x = torch.from_numpy(img).permute(2, 0, 1)[None]
+        mk = torch.from_numpy(hole)[None, None]
+        t0 = time.time()
+        try:
+            m.to(dev)
+            with torch.inference_mode():
+                out = m(x.to(dev), mk.to(dev))[0].permute(1, 2, 0).float().cpu().numpy()
+        finally:
+            m.to("cpu")
+            if dev == "cuda":
+                torch.cuda.empty_cache()
+        if ctx:
+            ctx.log(f"LaMa infill {W}×{H}: {time.time() - t0:.1f} s ({dev})")
+    out = np.clip(out[:H, :W] * 255, 0, 255).astype(np.uint8)
+    # непрозрачное — как было, полупрозрачное — смесь
+    a = np.asarray(alpha, dtype=np.float32)[..., None] / 255.0
+    res = np.asarray(rgb, dtype=np.float32) * a + out.astype(np.float32) * (1 - a)
+    return Image.fromarray(np.clip(res, 0, 255).astype(np.uint8), "RGB")
+
+
+def _infill(rgb, alpha):
+    """Прозрачное заполняется размытыми цветами соседей (пирамида с premultiplied alpha) — основа outpaint."""
+    import numpy as np
+    from PIL import Image
+    a = np.asarray(alpha, dtype=np.float32)[..., None] / 255.0
+    if a.min() >= 0.999:
+        return rgb
+    W, H = rgb.size
+    acc = np.asarray(rgb, dtype=np.float32) * a
+    fill = np.full((H, W, 3), 127.0, dtype=np.float32)
+    done = a[..., 0] > 0.999
+    s = 2
+    while not done.all() and s < max(W, H) * 4:
+        w, h = max(1, W // s), max(1, H // s)
+
+        def up(x):
+            return np.asarray(Image.fromarray(x).resize((w, h), Image.BOX).resize((W, H), Image.BILINEAR), dtype=np.float32)
+        lv_a = up(a[..., 0])
+        take = ~done & (lv_a > 1e-3)
+        if take.any():
+            lv_c = np.stack([up(acc[..., c]) for c in range(3)], -1) / np.maximum(lv_a, 1e-3)[..., None]
+            fill[take] = lv_c[take]
+            done |= take
+        s *= 2
+    out = acc + (1 - a) * fill
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+
+
+def canvas(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, sampler, scheduler, denoise,
+           resolution=0, edge=16, blur=16, fill=0.85):
+    """Генерация в рамке холста, как Canvas InvokeAI. image — композит слоёв в рамке (RGBA), mask — маски inpaint
+    (белое — менять; серое — предел силы). Режим — по содержимому рамки: всё прозрачно — txt2img; есть прозрачное —
+    outpaint (прозрачное продолжается LaMa и дорабатывается с силой fill: с силой 1 модель рисует новую картинку
+    поверх, а не продолжение); маски пусты — img2img; иначе inpaint.
+    Рамка масштабируется к родному размеру модели (мелкая — вверх: больше деталей, крупная — вниз) и обратно.
+    Маска градиентная: сила пикселя = min(denoise, маска); вокруг маски кольцо edge px со спадом силы (coherence) —
+    шов перерисовывается мягко. Результат — PNG рамки: альфа = где менялось + растушёвка blur px наружу.
+    Возвращает (файл, {"mode", "w", "h"})."""
+    import numpy as np
+    _torch, _diffusers, Image = _packages()
+    from PIL import ImageFilter
+    torch = _torch
+    root = ctx.root if ctx else ROOT
+    with Image.open(root / image["file"]) as im:
+        src = im.convert("RGBA")
+    W, H = src.size
+    alpha = src.getchannel("A")
+    msk = Image.new("L", (W, H), 0)
+    if mask and mask.get("file"):
+        with Image.open(root / mask["file"]) as im:
+            m = im.convert("RGBA")
+            msk = Image.composite(m.convert("L"), Image.new("L", m.size, 0), m.getchannel("A"))
+        if msk.size != (W, H):
+            msk = msk.resize((W, H), Image.BILINEAR)
+    amin, amax = alpha.getextrema()
+    has_mask = msk.getextrema()[1] > 2
+    mode = "txt2img" if amax == 0 else "outpaint" if amin < 255 else "inpaint" if has_mask else "img2img"
+    denoise = min(1.0, max(0.05, float(denoise)))
+    res = int(resolution) or (1024 if positive.sdxl else 640)
+    k = min(4.0, (res * res / (W * H)) ** 0.5)
+    tw, th = max(64, int(round(W * k / 8)) * 8), max(64, int(round(H * k / 8)) * 8)
+    if ctx:
+        ctx.log(f"canvas: {mode}, frame {W}×{H} → {tw}×{th}" + ("" if mode == "txt2img" else f", denoise {denoise}"))
+        ctx.preview_meta = {"box": {"x": 0, "y": 0, "w": W, "h": H, "W": W, "H": H}}
+    if mode == "txt2img":
+        lat = empty_latent(tw, th, 1)
+        out = sample(ctx, model, positive, negative, lat, seed, steps, cfg, sampler, scheduler, 1.0)
+        gen = decode_pils(ctx, vae, out)[0].resize((W, H), Image.LANCZOS)
+        return save_pils(ctx, [gen.convert("RGBA")], "naizer", int(seed))[0], {"mode": mode, "w": W, "h": H}
+    # пустое: LaMa продолжает картинку (InvokeAI по умолчанию — lama), без неё — размытые цвета краёв
+    infill, hole = "", min(1.0, max(0.05, float(fill)))
+    rgb = None
+    if amin < 255:
+        try:
+            rgb = _lama(ctx, src.convert("RGB"), alpha)
+            infill = "lama" if rgb is not None else ""
+        except Exception as ex:  # LaMa — улучшение, не обязательное
+            _dbg("lama", ex)
+            if ctx:
+                ctx.log(f"LaMa failed ({type(ex).__name__}: {ex}) — blur infill")
+        if rgb is None:
+            infill = "blur"
+            if ctx:
+                ctx.log("outpaint without LaMa (component inpaint-lama): blur infill — the empty part is drawn almost anew")
+    if rgb is None:
+        rgb = _infill(src.convert("RGB"), alpha)
+    part = rgb.resize((tw, th), Image.LANCZOS)
+    lat = encode_pil(ctx, vae, part)
+    if mode == "img2img":
+        out = sample(ctx, model, positive, negative, lat, seed, steps, cfg, sampler, scheduler, denoise)
+        gen = decode_pils(ctx, vae, out)[0].resize((W, H), Image.LANCZOS)
+        return save_pils(ctx, [gen.convert("RGBA")], "naizer", int(seed))[0], {"mode": mode, "w": W, "h": H}
+    # сила пикселя: маска (предел) × denoise; прозрачное — hole
+    v = np.minimum(np.asarray(msk, dtype=np.float32) / 255.0, denoise)
+    v = np.maximum(v, (1.0 - np.asarray(alpha, dtype=np.float32) / 255.0) * hole)
+    v[v < 2 / 255] = 0
+    vimg = Image.fromarray((v * 255).astype(np.uint8), "L")
+    e = max(0, int(edge))
+    if mode == "outpaint":  # стык старой картинки с дорисованным — шире, иначе виден шов (разный свет и резкость)
+        e = max(e, min(W, H) // 16)
+    if e:
+        ring = vimg.filter(ImageFilter.MaxFilter(min(e, 31) // 2 * 2 + 1)).filter(ImageFilter.GaussianBlur(e / 2))
+        vimg = Image.fromarray(np.maximum(np.asarray(vimg), np.asarray(ring)), "L")
+    lm = vimg.resize((tw // 8, th // 8), Image.BILINEAR)
+    nm = torch.tensor(np.asarray(lm, dtype=np.float32) / 255.0).view(1, 1, th // 8, tw // 8)
+    top = float(nm.max())
+    if top <= 0:
+        raise ValueError("nothing to change inside the frame — paint an inpaint mask or move the frame")
+    out = sample(ctx, model, positive, negative, lat, seed, steps, cfg, sampler, scheduler, top, noise_mask=nm,
+                 gradient=True)
+    gen = decode_pils(ctx, vae, out)[0].resize((W, H), Image.LANCZOS)
+    # альфа: всё, что менялось, + растушёвка наружу (снаружи латент — исходный, так что шов не виден)
+    changed = vimg.point(lambda x: 255 if x > 2 else 0)
+    b = max(0, int(blur))
+    paste = changed
+    if b:
+        soft = changed.filter(ImageFilter.MaxFilter(min(b, 31) // 2 * 2 + 1)).filter(ImageFilter.GaussianBlur(b / 2))
+        paste = Image.fromarray(np.maximum(np.asarray(changed), np.asarray(soft)), "L")
+    layer = gen.convert("RGBA")
+    layer.putalpha(paste)
+    return save_pils(ctx, [layer], "naizer", int(seed))[0], {"mode": mode, "w": W, "h": H, "infill": infill}

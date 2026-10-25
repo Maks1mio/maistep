@@ -5,6 +5,7 @@
 // Сервер — /api/civitai/* (server/maistep/civitai.py), прогресс — SSE «civitai». Фильтры помнит localStorage.
 // NSFW — один режим: скрыт (модели и картинки NSFW не показываются нигде, в том числе в карточке — полная карточка
 // с Civitai приходит со всеми картинками), размыт, открыт.
+import { openSettings } from './settings.js';
 import { h, debounce, prompt, confirmBox } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector } from './inspector.js';
@@ -421,23 +422,8 @@ function onJob(j) {
   if (S.sel?.kind === 'civmodel' && S.sel.id === j.model?.id) emit('civitai-sel');
 }
 
-// ---------- настройки ----------
-async function settingsDialog() {
-  const c = conf || await api('/api/civitai/settings').catch(() => ({}));
-  const r = await prompt('Настройки Civitai', [
-    { key: 'api_key', label: `Ключ API${c.has_key ? ` (сейчас ${c.api_key})` : ''} — civitai.com → Account → API Keys`, value: '' },
-    { key: 'connections', label: 'Соединений на файл (1–16)', value: String(c.connections || 4) },
-    { key: 'concurrent', label: 'Одновременных загрузок (1–4)', value: String(c.concurrent || 1) },
-    { key: 'speed_limit', label: 'Предел скорости, МБ/с (0 — без ограничения; на все загрузки вместе)', value: String(c.speed_limit || 0) },
-    { key: 'verify', label: 'Проверять SHA256 после загрузки', type: 'select', value: c.verify === false ? '0' : '1', options: [['1', 'да'], ['0', 'нет']] },
-    { key: 'preview', label: 'Сохранять превью рядом с моделью', type: 'select', value: c.preview === false ? '0' : '1', options: [['1', 'да'], ['0', 'нет']] },
-  ], 'Сохранить');
-  if (!r) return;
-  const body = { connections: +r.connections || 4, concurrent: +r.concurrent || 1, speed_limit: Math.max(0, +String(r.speed_limit).replace(',', '.') || 0), verify: r.verify === '1', preview: r.preview === '1' };
-  if (r.api_key) body.api_key = r.api_key;
-  try { conf = await api('/api/civitai/settings', body); log('ok', 'настройки Civitai сохранены'); } catch (e) { log('error', e.message); }
-  redraw();
-}
+// ---------- настройки — раздел общего окна ----------
+const settingsDialog = () => openSettings('civitai');
 
 // кнопка ждёт ответа сервера: сразу видно, что нажатие принято
 function busyBtn(b, text = 'Добавляю…') {
@@ -568,6 +554,7 @@ export function initCivitai() {
   registerInspector('civmodel', civInspector);
   on('civitai', d => { if (d.job) onJob(d.job); if (d.jobs) { jobs.clear(); for (const j of d.jobs) jobs.set(j.id, j); redraw(); } });
   on('civitai-sel', () => emit('select', S.sel));
+  on('civitai-settings', async () => { conf = await api('/api/civitai/settings').catch(() => conf); redraw(); });
   on('select', s => { if (gridEl) gridEl.querySelectorAll('.ltile').forEach(t => t.classList.toggle('sel', s?.kind === 'civmodel' && t.dataset.id === String(s.id))); });
   on('server', s => { if (s.running) setTimeout(loadMeta, 800); else { meta = null; render(); } });
   addEventListener('view', e => { if (e.detail === 'civitai') render(); });

@@ -3,7 +3,7 @@ import { h } from './util.js';
 import { icon } from './icons.js';
 import { on } from './store.js';
 
-const SRC = [['all', 'Все'], ['server', 'Сервер'], ['run', 'Запуски'], ['editor', 'Редактор'], ['check', 'Проверка']];
+const SRC = [['all', 'Все'], ['server', 'Сервер'], ['run', 'Запуски'], ['editor', 'Редактор'], ['check', 'Проверка'], ['agent', 'Агент']];
 const lines = [];
 let filter = 'all', errOnly = false;
 const box = () => document.getElementById('console');
@@ -23,6 +23,13 @@ export function log(src, level, text) {
   if (b.childElementCount > 1500) b.firstElementChild.remove();
   if (atEnd) body.scrollTop = body.scrollHeight;
   counts();
+}
+
+// последние строки для AI-агента (инструмент app_console): «чч:мм:сс [источник] уровень: текст»
+export function recentLog(n = 80, src = 'all', errors = false) {
+  const pick = lines.filter(l => (src === 'all' || l.src === src) && (!errors || l.level === 'error' || l.level === 'warn'));
+  const out = pick.slice(-Math.max(1, Math.min(300, n | 0)));
+  return out.length ? out.map(l => `${l.time} [${l.src}] ${l.level}: ${l.text}`).join('\n') : '(пусто)';
 }
 
 const visible = l => (filter === 'all' || l.src === filter) && (!errOnly || l.level === 'error' || l.level === 'warn');

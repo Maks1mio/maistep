@@ -21,6 +21,8 @@ export function h(tag, attrs = {}, ...kids) {
   return e;
 }
 
+// replaceChildren без null/false (сам DOM превращает их в текст «null»)
+export const fill = (el, ...kids) => el.replaceChildren(...kids.flat().filter(k => k != null && k !== false));
 export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const round = (v, n = 3) => Math.round(v * 10 ** n) / 10 ** n;

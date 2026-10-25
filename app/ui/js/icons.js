@@ -32,7 +32,7 @@ export const ICONS = {
   key: 'oj/keyframe', curve: 'oj/curve', loop: 'rerunAutomatically', keyboard: 'keyboard', code: 'fileTypes/javaScript', json: 'fileTypes/json', link: 'link', target: 'general/locate',
   // объекты редактора (дерево Hierarchy, вкладки)
   blueprint: 'graphLayout', event: 'lightning', flow: 'conditionalStatement', node: 'nodes/plugin', python: 'fileTypes/python',
-  ai: 'aiAssistant', settings2: 'general/settings', spark: 'toolwindow/spark',
+  ai: 'aiAssistant', settings2: 'general/settings', spark: 'toolwindow/spark', profile: 'cwmUsers',
 };
 
 // Полный список путей (icons/index.json, пересобирается: node -e "…" — см. editor/README.md)

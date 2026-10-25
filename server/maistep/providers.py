@@ -9,6 +9,7 @@ kind:
     anthropic  — API Anthropic (официальный SDK)
     openai     — любой OpenAI-совместимый API (OpenAI, LM Studio, OpenRouter, vLLM)
     ollama     — локальная Ollama
+    llamacpp   — локальный llama.cpp (llama-server, OpenAI-совместимый; запускает llamacpp.py)
 Встроенные anthropic / openai / ollama есть всегда (ключи из переменных окружения), настроенные их перекрывают.
 """
 import json
@@ -28,6 +29,7 @@ BUILTIN = {
     "anthropic": {"name": "Anthropic", "kind": "anthropic", "base_url": "https://api.anthropic.com", "env": "ANTHROPIC_API_KEY"},
     "openai": {"name": "OpenAI-совместимый", "kind": "openai", "base_url": "https://api.openai.com/v1", "env": "OPENAI_API_KEY"},
     "ollama": {"name": "Ollama", "kind": "ollama", "base_url": "http://localhost:11434"},
+    "llamacpp": {"name": "llama.cpp (локально)", "kind": "llamacpp", "base_url": "http://127.0.0.1:8088/v1"},
 }
 
 _lock = threading.Lock()
@@ -65,6 +67,9 @@ def providers(settings=None):
     out = {}
     for pid, b in BUILTIN.items():
         out[pid] = {**b, "api_key": os.environ.get(b.get("env", ""), "") if b.get("env") else ""}
+    port = (s.get("llamacpp") or {}).get("port")
+    if port:
+        out["llamacpp"]["base_url"] = f"http://127.0.0.1:{int(port)}/v1"
     for pid, p in (s.get("providers") or {}).items():
         base = out.get(pid, {"name": pid, "kind": "openai"})
         out[pid] = {**base, **{k: v for k, v in p.items() if v not in (None, "")}}
@@ -92,7 +97,7 @@ def public(settings=None):
     return {
         "default_provider": default_provider(s),
         "providers": {pid: {**{k: v for k, v in p.items() if k not in ("api_key", "env")},
-                            "has_key": bool(p.get("api_key")),
+                            "has_key": bool(p.get("api_key")) or p.get("kind") in ("ollama", "llamacpp"),
                             "api_key": (MASK + p["api_key"][-4:]) if p.get("api_key") else "",
                             "builtin": pid in BUILTIN, "env": p.get("env", "")} for pid, p in ps.items()},
         "translate": s.get("translate") or {},
@@ -172,6 +177,18 @@ def _fetch(pid, p):
         tags = _get_json(f"{base}/api/tags", timeout=5).get("models", [])
         return [{"id": t["name"], "name": t["name"], "company": "local", "series": t.get("details", {}).get("family", ""), "owned_by": "ollama",
                  "vision": False, "reasoning": False, "tools": False, "context": None, "max_output": None, "multiplier": None, "provider": pid} for t in tags]
+    if kind == "llamacpp":
+        data = _get_json(f"{base}/models", timeout=3)
+        n_ctx = None
+        try:
+            n_ctx = (_get_json(f"{base[:-3] if base.endswith('/v1') else base}/props", timeout=3)
+                     .get("default_generation_settings") or {}).get("n_ctx")
+        except Exception:
+            pass
+        return [{"id": m["id"], "name": m["id"].replace("\\", "/").split("/")[-1], "company": "local", "series": "gguf",
+                 "owned_by": "llamacpp", "vision": False, "reasoning": False, "tools": True,
+                 "context": n_ctx or (m.get("meta") or {}).get("n_ctx_train"), "max_output": None, "multiplier": None,
+                 "provider": pid} for m in data.get("data") or []]
     if kind == "anthropic":
         if not key:
             raise RuntimeError("нет ключа")
@@ -243,6 +260,8 @@ def route(p, model_id, meta=None):
     kind = p.get("kind")
     if kind in ("anthropic", "ollama", "openai"):
         return kind
+    if kind == "llamacpp":
+        return "openai"
     # proxy: Claude — через Messages API, остальное — через chat/completions
     owned = (meta or {}).get("owned_by", "")
     return "anthropic" if owned == "anthropic" or model_id.startswith("claude") else "openai"

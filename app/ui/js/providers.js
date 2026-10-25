@@ -1,110 +1,103 @@
-// Настройки → Провайдеры: список провайдеров LLM (CheapVibeCode, Anthropic, OpenAI-совместимые, Ollama, свои),
-// адрес, ключ, тип, провайдер по умолчанию. Ключи хранит сервер в user/settings.json; UI видит их только замаскированными.
-// «Проверить» сохраняет и запрашивает каталог моделей.
-import { h, field, text, check, select as sel } from './util.js';
+// Настройки → Провайдеры LLM: список провайдеров (CheapVibeCode, Anthropic, OpenAI-совместимые, Ollama, llama.cpp, свои),
+// адрес, ключ, тип, провайдер по умолчанию; ниже — перевод промптов. Ключи хранит сервер в user/settings.json, UI видит их
+// только замаскированными. Раздел окна настроек (settings.js): providersPanel() → { el, apply }.
+import { h, fill } from './util.js';
 import { S, emit } from './store.js';
 import { icon } from './icons.js';
 import { getSettings, saveSettings, getModels } from './backend.js';
-import { dropdown } from './kit.js';
+import { dropdown, onOff } from './kit.js';
 import { modelPicker } from './modelpick.js';
+import { row, input, hint } from './settings.js';
 
-const KINDS = [['proxy', 'агрегатор (Claude + OpenAI-совместимые)'], ['openai', 'OpenAI-совместимый'], ['anthropic', 'Anthropic API'], ['ollama', 'Ollama (локально)']];
+const KINDS = [['proxy', 'Агрегатор (Claude + OpenAI-совместимые)'], ['openai', 'OpenAI-совместимый'], ['anthropic', 'Anthropic API'],
+  ['ollama', 'Ollama (локально)'], ['llamacpp', 'llama.cpp (локально)']];
+const LOCAL = new Set(['ollama', 'llamacpp']);
 const log = (level, text) => emit('log', { src: 'editor', level, text });
 
-export async function providersDialog() {
-  if (!S.server.running) return log('warn', 'настройки хранит сервер — запустите его');
-  let st;
-  try { st = await getSettings(); } catch (e) { return log('error', `настройки: ${e.message}`); }
+export async function providersPanel() {
+  const st0 = await getSettings();
+  let st = st0;
   const edits = {};               // pid → изменённые поля (null — удалить)
-  let cur = st.default_provider, def = st.default_provider;
+  let cur = st.default_provider, def = st.default_provider, dirty = false;
   let tr = { enabled: true, provider: st.default_provider, model: '', ...(st.translate || {}) };
-  const listEl = h('div.plist'), form = h('div.pform'), trEl = h('div.pform.ptrans');
+  const listEl = h('div.st-plist'), form = h('div.st-pform'), trEl = h('div.st-sub');
   const prov = pid => ({ ...st.providers[pid], ...edits[pid] });
+  const touch = () => { dirty = true; };
 
   function drawList() {
     listEl.replaceChildren(...Object.keys(st.providers).filter(pid => edits[pid] !== null).map(pid => {
       const p = prov(pid);
-      return h(`div.it${pid === cur ? '.on' : ''}`, { onclick: () => { cur = pid; drawList(); drawForm(); } },
-        h('span', {}, p.name || pid), pid === def ? h('span.mbadge', {}, 'по умолчанию') : null, h('span.grow'),
-        h('span.dim', {}, p.has_key || p.api_key ? '🔑' : p.kind === 'ollama' ? '' : 'нет ключа'));
-    }), h('button', { style: { marginTop: '8px' }, onclick: addProvider }, icon('add', { size: 14 }), 'Провайдер'));
+      return h(`div.st-pit${pid === cur ? '.on' : ''}`, { onclick: () => { cur = pid; drawList(); drawForm(); } },
+        icon(LOCAL.has(p.kind) ? 'nodes/desktop' : 'ai', { size: 16 }), h('span.t', {}, p.name || pid),
+        pid === def ? h('span.st-badge', {}, 'по умолч.') : null,
+        !p.has_key && !p.api_key && !LOCAL.has(p.kind) ? h('span.st-dim', { 'data-tip': 'Нет ключа' }, icon('general/locked', { size: 14 })) : null);
+    }), h('div.ui-tb', {}, h('button.b.txt', { onclick: addProvider }, icon('add', { size: 16 }), 'Провайдер')));
   }
 
   function drawForm() {
     const p = prov(cur);
-    const set = (k, v) => { (edits[cur] ||= {})[k] = v; if (k === 'name') drawList(); };
-    const key = h('input', { type: 'password', value: p.api_key || '', placeholder: p.env ? `пусто — из ${p.env}` : 'API key', spellcheck: false, autocomplete: 'off' });
+    const set = (k, v) => { (edits[cur] ||= {})[k] = v; touch(); if (k === 'name' || k === 'kind') { drawList(); if (k === 'kind') drawForm(); } };
+    const key = input(p.api_key || '', v => set('api_key', v), { type: 'password', placeholder: p.env ? `пусто — из ${p.env}` : 'API key' });
     key.addEventListener('focus', () => { if (key.value.startsWith('••••')) key.select(); });
-    key.addEventListener('input', () => set('api_key', key.value));
-    const status = h('div.hint');
+    const status = h('div.st-hint');
     const m = S.models[cur];
     if (m?.models?.length) status.textContent = `в каталоге: ${m.models.length} моделей`;
-    form.replaceChildren(
-      h('h3', {}, icon('ai', { size: 16 }), p.name || cur, h('span.dim', {}, ` · ${cur}`)),
-      field('Название', text(p.name, v => set('name', v))),
-      field('Тип', sel(p.kind || 'openai', KINDS, v => set('kind', v))),
-      field('Base URL', text(p.base_url, v => set('base_url', v), { placeholder: 'https://…/v1' })),
-      p.kind === 'ollama' ? null : field('Ключ', h('div.row', { style: { flex: 1 } }, key,
-        h('button.icon', { 'data-tip': 'Показать / скрыть', onclick: () => { key.type = key.type === 'password' ? 'text' : 'password'; } }, icon('show', { size: 14 })))),
-      h('div.hint', {}, p.kind === 'proxy' ? 'Claude — через <base>/messages (SDK anthropic), остальные — через <base>/chat/completions, каталог — <base>/models'
-        : p.kind === 'anthropic' ? 'Официальный API Anthropic; пустой ключ — ANTHROPIC_API_KEY или `ant auth login`'
-          : p.kind === 'ollama' ? 'Локальные модели: <base>/api/chat, список — <base>/api/tags' : 'Любой OpenAI-совместимый API: <base>/chat/completions, каталог — <base>/models'),
-      h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap' } },
-        h('button', { onclick: async () => { await apply(); status.textContent = 'проверка…'; const r = await getModels(cur, true); status.textContent = r?.error ? `ошибка: ${r.error}` : `ок — моделей: ${r?.models?.length ?? 0}`; } }, icon('check', { size: 14 }), 'Сохранить и проверить'),
-        h('button', { disabled: cur === def, onclick: () => { def = cur; drawList(); drawForm(); } }, 'По умолчанию'),
-        p.builtin ? null : h('button', { onclick: () => { edits[cur] = null; cur = def === cur ? 'anthropic' : def; drawList(); drawForm(); drawTr(); } }, icon('delete', { size: 14 }), 'Удалить')),
+    fill(form,
+      h('div.st-h', {}, p.name || cur, h('span.st-dim', {}, ` · ${cur}`)),
+      row('Название', input(p.name, v => set('name', v))),
+      row('Тип', dropdown(p.kind || 'openai', KINDS, v => set('kind', v), { width: 300 })),
+      row('Base URL', input(p.base_url, v => set('base_url', v), { placeholder: 'https://…/v1' })),
+      LOCAL.has(p.kind) ? null : row('Ключ', h('div.st-line', {}, key,
+        h('div.ui-tb', {}, h('button.b', { 'data-tip': 'Показать / скрыть', onclick: () => { key.type = key.type === 'password' ? 'text' : 'password'; } }, icon('show', { size: 16 }))))),
+      hint(p.kind === 'proxy' ? 'Claude — через <base>/messages (SDK anthropic), остальные — через <base>/chat/completions, каталог — <base>/models.'
+        : p.kind === 'anthropic' ? 'Официальный API Anthropic; пустой ключ — ANTHROPIC_API_KEY.'
+          : p.kind === 'ollama' ? 'Локальные модели: <base>/api/chat, список — <base>/api/tags. Без инструментов — простой чат.'
+            : p.kind === 'llamacpp' ? 'llama-server с OpenAI-совместимым API и инструментами. Запуск и модель — раздел «llama.cpp».'
+              : 'Любой OpenAI-совместимый API: <base>/chat/completions, каталог — <base>/models.'),
+      h('div.st-btns', {},
+        h('button.ui-btn.secondary', { onclick: async () => { await apply(); status.textContent = 'проверка…'; const r = await getModels(cur, true); status.textContent = r?.error ? `ошибка: ${r.error}` : `ок — моделей: ${r?.models?.length ?? 0}`; } }, 'Сохранить и проверить'),
+        h('button.ui-btn.secondary', { disabled: cur === def, onclick: () => { def = cur; touch(); drawList(); drawForm(); } }, 'По умолчанию'),
+        p.builtin ? null : h('button.ui-btn.secondary', { onclick: () => { edits[cur] = null; touch(); cur = def === cur ? 'anthropic' : def; drawList(); drawForm(); drawTr(); } }, 'Удалить')),
       status);
   }
 
   function drawTr() {
     const provs = Object.entries(st.providers).filter(([pid]) => edits[pid] !== null).map(([pid, p]) => [pid, p.name || pid]);
-    const mIn = h('input', { type: 'text', value: tr.model || '', readOnly: true, placeholder: 'авто (flash/mini/…)' });
-    const pick = h('button.icon', { 'data-tip': 'Выбрать модель перевода из каталога', onclick: () => modelPicker(pick, {
-      provider: tr.provider || def, value: tr.model || '', onPick: id => { tr.model = id; drawTr(); },
-    }) }, icon('search', { size: 14 }));
-    const auto = h('button', { disabled: !tr.model, 'data-tip': 'Подбирать автоматически', onclick: () => { tr.model = ''; drawTr(); } }, 'авто');
-    trEl.replaceChildren(
-      h('h3', { style: { marginTop: '12px' } }, icon('ai', { size: 16 }), 'Перевод промптов'),
-      h('div.hint', {}, 'Русский и смешанный русско-английский текст переводится на английский перед CLIP Text Encode и Generate Image. Теги, веса и <lora:…> сохраняются.'),
-      h('div.f', {}, h('label', {}, 'включён'), h('div.v', {}, check(tr.enabled !== false, v => { tr.enabled = v; drawTr(); }))),
-      h('div.f', {}, h('label', {}, 'провайдер'), h('div.v', {}, dropdown(tr.provider || def, provs, v => {
-        tr.provider = v; tr.model = ''; drawTr();
-      }, { width: 170 }))),
-      h('div.f', {}, h('label', {}, 'модель'), h('div.v', {}, mIn, pick, auto)),
-      h('div.hint', {}, 'Пустая модель — подобрать автоматически (flash / mini / haiku); ключ и адрес — у провайдера выше.'));
+    const pick = h('button.ui-dd.link', { type: 'button', onclick: () => modelPicker(pick, {
+      provider: tr.provider || def, value: tr.model || '', onPick: id => { tr.model = id; touch(); drawTr(); },
+    }) }, h(`span.t${tr.model ? '' : '.ph'}`, {}, tr.model || 'авто (flash / mini / haiku)'), h('span.chev', {}, icon('down', { size: 16 })));
+    fill(trEl,
+      h('div.st-h', {}, 'Перевод промптов'),
+      hint('Русский и смешанный текст переводится на английский перед CLIP Text Encode и Generate Image. Теги, веса и <lora:…> сохраняются.'),
+      row('Включён', onOff(tr.enabled !== false, v => { tr.enabled = v; touch(); })),
+      row('Провайдер', dropdown(tr.provider || def, provs, v => { tr.provider = v; tr.model = ''; touch(); drawTr(); }, { width: 220 })),
+      row('Модель', h('div.st-line', {}, pick, tr.model ? h('button.ui-btn.secondary.slim', { onclick: () => { tr.model = ''; touch(); drawTr(); } }, 'авто') : null)));
   }
 
-
-  async function addProvider() {
-    const id = (prompt('id провайдера (латиница, цифры, - _):', 'my-provider') || '').trim();
+  function addProvider() {
+    const id = (window.prompt('id провайдера (латиница, цифры, - _):', 'my-provider') || '').trim();
     if (!/^[\w-]+$/.test(id) || st.providers[id]) return;
     st.providers[id] = { name: id, kind: 'openai', base_url: '', has_key: false };
     edits[id] = { name: id, kind: 'openai', base_url: '' };
-    cur = id; drawList(); drawForm(); drawTr();
+    cur = id; touch(); drawList(); drawForm(); drawTr();
   }
 
   async function apply() {
+    if (!dirty) return true;
     const body = { default_provider: def, providers: edits,
       translate: { enabled: tr.enabled !== false, provider: tr.provider || '', model: tr.model || '' } };
     try {
       st = await saveSettings(body);
       for (const k of Object.keys(edits)) delete edits[k];
       tr = { enabled: true, provider: st.default_provider, model: '', ...(st.translate || {}) };
-      drawTr();
+      dirty = false;
+      drawList(); drawTr();
+      emit('providers-changed', st);
       log('ok', 'провайдеры сохранены: user/settings.json');
-      drawList();
       return true;
     } catch (e) { log('error', `провайдеры: ${e.message}`); return false; }
   }
 
-  const close = () => bg.remove();
-  const bg = h('div.modal-bg', { onmousedown: e => { if (e.target === bg) close(); } },
-    h('div.modal.pdialog', { onkeydown: e => { if (e.key === 'Escape') close(); e.stopPropagation(); } },
-      h('h3', {}, 'Провайдеры LLM'),
-      h('div.pbody', {}, listEl, h('div', {}, form, trEl)),
-      h('div.btns', {}, h('button', { onclick: close }, 'Закрыть'), h('button.primary', { onclick: async () => { if (await apply()) close(); } }, 'Сохранить'))));
-  document.body.append(bg);
-  drawList();
-  drawForm();
-  drawTr();
+  drawList(); drawForm(); drawTr();
+  return { el: h('div', {}, h('div.st-pbody', {}, listEl, form), trEl), apply };
 }
