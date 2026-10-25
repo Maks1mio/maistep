@@ -17,9 +17,9 @@ from collections import deque
 from pathlib import Path
 
 from . import library as L
+from . import lifetime
 from . import providers as P
 
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 DEFAULTS = {"bin": "", "model": "", "ctx": 16384, "ngl": 99, "port": 8088, "extra": "", "autostart": True}
 _state = {"proc": None, "log": deque(maxlen=200), "started": 0, "args": None}
 _lock = threading.Lock()
@@ -133,8 +133,8 @@ def start(wait=0):
                 "--port", str(cfg["port"]), "--jinja"] + shlex.split(cfg.get("extra") or "", posix=os.name != "nt")
         _state["log"].clear()
         _state["log"].append("$ " + " ".join(args))
-        _state["proc"] = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                          creationflags=NO_WINDOW, cwd=str(Path(exe).parent))
+        _state["proc"] = lifetime.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                        cwd=str(Path(exe).parent))
         _state["started"], _state["args"] = time.time(), args
         threading.Thread(target=_pump, args=(_state["proc"],), daemon=True).start()
     t0 = time.time()
@@ -156,7 +156,9 @@ def stop():
             try:
                 p.wait(5)
             except subprocess.TimeoutExpired:
-                p.kill()
+                lifetime.kill(p)
+        if p:
+            lifetime.release(p)
     return status()
 
 

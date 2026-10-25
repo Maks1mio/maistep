@@ -362,6 +362,61 @@ def enqueue(model_id, version_id, file_id=None, root=None, filename=None):
     return j.snap()
 
 
+def plan(source, model_type=None, filename=None):
+    """Что скачает агент (без загрузки): ссылка/ID Civitai или прямая ссылка на файл (Hugging Face и т.п.)."""
+    source = (source or "").strip()
+    m = re.search(r"civitai\.com/api/download/models/(\d+)", source)
+    if m:
+        source = f"v{m.group(1)}"
+    if re.match(r"^(v?\d+)$", source) or re.search(r"civitai\.com/(models|model-versions)/", source):
+        mdl = resolve(source)
+        v = next((x for x in mdl["versions"] if x["id"] == mdl.get("focus_version")), None) or (mdl["versions"] or [None])[0]
+        if not v:
+            raise ValueError("the model has no versions")
+        f = next((x for x in v["files"] if x["primary"]), None) or (v["files"] or [None])[0]
+        if not f or not f.get("url"):
+            raise ValueError("the version has no downloadable files")
+        folder, cat = _folder_for(mdl["type"])
+        return {"kind": "civitai", "model_id": mdl["id"], "version_id": v["id"], "file_id": f["id"], "type": mdl["type"],
+                "cat": cat, "name": _safe_name(filename or f["name"]), "size": f.get("size") or 0, "base": v.get("base"),
+                "title": f"{mdl['name']} · {v['name']}", "trained": v.get("trained") or [], "installed": f.get("installed"),
+                "dest": str(folder / _safe_name(filename or f["name"]))}
+    if not re.match(r"^https://", source):
+        raise ValueError("expected a Civitai link/id or a direct https link to a model file")
+    t = next((k for k in FOLDER if k.lower() == str(model_type or "").lower()), None)
+    if not t:
+        raise ValueError(f"for a direct link pass type: one of {', '.join(FOLDER)}")
+    name = _safe_name(filename or urllib.parse.unquote(urllib.parse.urlparse(source).path.rsplit("/", 1)[-1]))
+    if not re.search(r"\.(safetensors|ckpt|pt|pth|bin|gguf|onnx)$", name, re.I):
+        raise ValueError(f"«{name}» does not look like a model file — pass filename")
+    folder, cat = _folder_for(t)
+    return {"kind": "url", "url": source, "type": t, "cat": cat, "name": name, "size": 0, "title": name,
+            "trained": [], "installed": (folder / name).exists(), "dest": str(folder / name)}
+
+
+def start(p):
+    """Поставить в очередь «Загрузки» то, что вернул plan()."""
+    if p["kind"] == "civitai":
+        return enqueue(p["model_id"], p["version_id"], p["file_id"], filename=p["name"])
+    f = {"id": "url:" + p["url"], "name": p["name"], "size": 0, "url": p["url"]}
+    with _lock:
+        for j in _jobs:
+            if j.state in ("queued", "running", "verifying") and j.file.get("id") == f["id"]:
+                return j.snap()
+        j = Job({"id": None, "name": p["name"], "type": p["type"]}, {"id": None, "name": "", "base": None, "images": []},
+                f, Path(p["dest"]), p["name"])
+        _jobs.append(j)
+    _broadcast(j)
+    _pump()
+    return j.snap()
+
+
+def job(job_id):
+    with _lock:
+        j = next((x for x in _jobs if x.id == job_id), None)
+        return j and j.snap()
+
+
 def cancel(job_id):
     with _lock:
         for j in _jobs:
@@ -456,8 +511,8 @@ def reveal(job_id):
     p = Path(j.dest)
     target = p if p.exists() else p.parent
     if os.name == "nt":
-        import subprocess
-        subprocess.Popen(["explorer", "/select,", str(target)] if target.is_file() else ["explorer", str(target)])
+        from . import lifetime
+        lifetime.detach(["explorer", "/select,", str(target)] if target.is_file() else ["explorer", str(target)])
     return {"ok": True}
 
 
@@ -537,7 +592,7 @@ _limit = _Limiter()
 
 def _dl_url(url):
     key = settings()["api_key"]
-    if key:
+    if key and re.match(r"^https?://([\w-]+\.)*civitai\.com/", url):  # ключ Civitai — только самому Civitai
         url += ("&" if "?" in url else "?") + "token=" + urllib.parse.quote(key)
     return url
 
@@ -549,8 +604,10 @@ def _open(url, start=None, end=None, timeout=60):
     try:
         return urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
+        if e.code in (401, 403) and "civitai.com" in url:
             raise RuntimeError("Civitai refused the download — this model needs an API key (Civitai → Settings)") from None
+        if e.code in (401, 403):
+            raise RuntimeError(f"HTTP {e.code}: the site refused the download (login or access token required)") from None
         raise RuntimeError(f"HTTP {e.code}: {e.reason}") from None
 
 

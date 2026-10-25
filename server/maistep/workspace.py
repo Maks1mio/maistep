@@ -11,6 +11,8 @@ import threading
 import time
 from pathlib import Path
 
+from . import lifetime
+
 ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / "user" / "agent.json"
 MAX_RECENT = 20
@@ -159,10 +161,7 @@ def trash(path):
 
 def reveal(path):
     p = norm(path)
-    if os.name == "nt":
-        os.startfile(str(p))  # noqa: S606 — открыть в проводнике
-    else:
-        subprocess.Popen(["xdg-open", str(p)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    lifetime.detach(["explorer", str(p)] if os.name == "nt" else ["xdg-open", str(p)])
     return {"ok": True}
 
 

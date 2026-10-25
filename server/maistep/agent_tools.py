@@ -21,7 +21,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from . import magic
+from . import lifetime, magic
 from .registry import NODES
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -138,9 +138,18 @@ def _get(url, timeout=25, limit=4 << 20, ua=None):
     req = urllib.request.Request(url, headers={"user-agent": ua or UA, "accept-language": "ru,en;q=0.8"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read(limit), r.headers.get_content_type() or "", r.geturl()
+            ctype = r.headers.get_content_type() or ""
+            if not TEXTUAL.search(ctype) and not ctype.startswith("image/"):
+                # файл (модель, архив…): не читаем — иначе модель видит мусор и думает, что «скачала»
+                size = int(r.headers.get("content-length") or 0)
+                raise RuntimeError(f"binary file ({ctype}{f', {size / 2**20:.0f} MB' if size else ''}) — web_fetch reads "
+                                   "pages, it does NOT download or save files. To install a model use download_model.")
+            return r.read(limit), ctype, r.geturl()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code} {e.reason}") from None
+
+
+TEXTUAL = re.compile(r"^(text/|application/([\w.+-]*\+)?(json|xml|javascript|ecmascript|x-www-form-urlencoded)$)|^$")
 
 
 def _text_of(markup):
@@ -360,10 +369,9 @@ def strip_detach(command):
 
 def run_command(acc, command, timeout=120, stop=None):
     env = cmd_env(acc)
-    flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
     t0 = time.time()
-    pr = subprocess.Popen(command, shell=True, cwd=acc.cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          stdin=subprocess.DEVNULL, creationflags=flags)
+    pr = lifetime.Popen(command, shell=True, cwd=acc.cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL)
     # вывод читает поток: отсоединённый внук (start /b, nohup …) держит трубу открытой, и чтение после выхода
     # оболочки висело бы, пока он жив
     chunks = []
@@ -373,12 +381,11 @@ def run_command(acc, command, timeout=120, stop=None):
     killed = False
     while pr.poll() is None:
         if (stop and stop.is_set()) or time.time() - t0 > limit:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(pr.pid)], capture_output=True, creationflags=flags)
-            pr.kill()
+            lifetime.kill(pr)
             killed = True
             break
         time.sleep(0.2)
+    lifetime.release(pr)
     reader.join(1.5)
     out = b"".join(chunks).decode("utf-8", "replace")
     status = "killed (timeout or stop)" if killed else f"exit {pr.returncode}"

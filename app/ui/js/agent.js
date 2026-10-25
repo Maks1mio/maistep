@@ -236,13 +236,13 @@ const TOOL_LABEL = { list_workflows: 'Список воркфлоу', get_workfl
   app: 'Действие в окне', list_files: 'Файлы', read_file: 'Читает файл', search_code: 'Ищет в коде', edit_file: 'Правит файл',
   write_file: 'Пишет файл', run_command: 'Команда', run_js: 'JS в окне', send_photo: 'Фото', todo_write: 'Список задач',
   process_output: 'Вывод процесса', process_stop: 'Останавливает процесс', process_list: 'Процессы', app_console: 'Читает консоль',
-  browser_open: 'Открывает в браузере' };
+  browser_open: 'Открывает в браузере', find_models: 'Ищет на Civitai', download_model: 'Скачивает модель' };
 
 // mcp__сервер__инструмент → «MCP сервер · инструмент»
 const toolLabel = n => TOOL_LABEL[n] || (n.startsWith('mcp__') ? `MCP ${n.slice(5).replace('__', ' · ')}` : n);
 function toolArg(t) {
   const i = t.input || {};
-  const a = i.id || i.file || i.path || i.query || i.url || i.action || i.command || i.image || i.cat || i.type || i.pattern || i.prompt || i.scene || '';
+  const a = i.id || i.file || i.path || i.query || i.url || i.source || i.action || i.command || i.image || i.cat || i.type || i.pattern || i.prompt || i.scene || '';
   return String(a).slice(0, 90);
 }
 // ---------- вызовы инструментов: группа с итогом, как у Claude («Изменил agent.js +12 −3, прочитал 2 файла ▸») ----------

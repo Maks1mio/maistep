@@ -13,7 +13,9 @@ import time
 import uuid
 from collections import deque
 
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+from . import lifetime
+
+NO_WINDOW = lifetime.NO_WINDOW
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")  # цвета и заголовки терминала
 PORT = re.compile(r"(?:https?://)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{2,5})")
 _procs = {}
@@ -46,6 +48,7 @@ def _pump(p):
             _emit("agent", {"chat": p["chat"], "kind": "proc_log", "id": p["id"], "lines": buf[-40:]})
             buf, last = [], time.time()
     p["proc"].wait()
+    lifetime.release(p["proc"])
     if buf:
         _emit("agent", {"chat": p["chat"], "kind": "proc_log", "id": p["id"], "lines": buf[-40:]})
     p["out"].append(f"[завершён, код {p['proc'].returncode}]")
@@ -53,9 +56,8 @@ def _pump(p):
 
 
 def start(command, cwd, chat, env=None):
-    kw = {"creationflags": NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
-    proc = subprocess.Popen(command, shell=True, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, **kw)
+    proc = lifetime.Popen(command, shell=True, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          stdin=subprocess.DEVNULL)
     p = {"id": uuid.uuid4().hex[:8], "chat": chat, "command": command, "cwd": str(cwd), "started": time.time(),
          "port": None, "proc": proc, "out": deque(maxlen=2000)}
     with _lock:

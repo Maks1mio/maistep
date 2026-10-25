@@ -36,6 +36,7 @@ import uuid
 from pathlib import Path
 
 from . import agent_tools as T
+from . import civitai
 from . import executor
 from . import library as L
 from . import llamacpp
@@ -370,6 +371,7 @@ Workflow JSON: {"title", "about", "nodes": [{"id", "type", "x", "y", "props": {i
 An input marked * is a widget: its value lives in props unless a link is connected to it. Inputs marked ? are optional.
 One link per input. Types must match (STRING also accepts INT/FLOAT/JSON). Lay new nodes out left→right, ~340 px apart.
 Model names (ckpt_name, lora_name, vae_name) must be real files — look them up with list_models.
+Missing model (a character/style LoRA, a checkpoint): find it with find_models (or web_search), then install it with download_model — it goes through the app's Downloads queue and returns the exact name for props. Never claim a model is downloaded or installed unless download_model returned «installed»; if a download fails, say so plainly and offer alternatives (another version, a similar LoRA from the library). edit_workflow/run_workflow report missing models as issues.
 
 Use the tools to read and change workflows instead of asking the user to do it by hand. Changes appear in the editor \
 immediately and can be undone with Ctrl+Z. Running a workflow can take minutes (image generation) — run it only when \
@@ -562,6 +564,23 @@ TOOLS = [
                       "required": ["cat"]}},
     {"name": "node_info", "description": "Full description of a node type: hint, inputs with options/limits, outputs.",
      "input_schema": {"type": "object", "properties": {"type": {"type": "string"}}, "required": ["type"]}},
+    {"name": "find_models",
+     "description": "Search Civitai for models (LoRA, checkpoints, …): ids, versions with base model, trigger words, "
+                    "file name and size, and whether it is already installed. Then install with download_model.",
+     "input_schema": {"type": "object", "properties": {
+         "query": {"type": "string"}, "type": {"type": "string", "description": "LORA | Checkpoint | LoCon | TextualInversion | VAE | Controlnet | Upscaler"},
+         "base": {"type": "string", "description": "base model filter, e.g. Illustrious, Pony, SDXL 1.0, SD 1.5"},
+         "count": {"type": "integer"}}, "required": ["query"]}},
+    {"name": "download_model",
+     "description": "Install a model into the user's library through the app's Downloads queue (the user sees progress "
+                    "in Civitai → Загрузки) and wait until it is done. Returns the exact name to put into props "
+                    "(lora_name, ckpt_name…). This is the ONLY way to install a model — web_fetch does not save files. "
+                    "Needs the user's approval.",
+     "input_schema": {"type": "object", "properties": {
+         "source": {"type": "string", "description": "Civitai model/version link or id (123, v456), or a direct https "
+                                                     "link to a .safetensors file (Hugging Face …/resolve/…)"},
+         "type": {"type": "string", "description": "for direct links: LORA | Checkpoint | VAE | Controlnet | Upscaler | TextualInversion"},
+         "filename": {"type": "string"}}, "required": ["source"]}},
 ]
 
 _LORAS = {"type": "array", "description": "LoRAs from list_models loras", "items": {"type": "object", "properties": {
@@ -894,12 +913,56 @@ def run_tool(ctx, name, inp):
         if q:
             names = [n for n in names if q in n.lower()]
         return json.dumps(names[:300], ensure_ascii=False) + (f"\n… {len(names) - 300} more" if len(names) > 300 else ""), []
+    if name == "find_models":
+        return _find_models(inp), []
+    if name == "download_model":
+        return _download_model(ctx, inp), []
     if name == "node_info":
         d = NODES.get(inp["type"])
         if not d:
             raise KeyError(f"unknown node type {inp['type']}")
         return json.dumps({"type": inp["type"], **d.to_json()}, ensure_ascii=False, default=str), []
     return run_more(ctx, name, inp)
+
+
+def _find_models(inp):
+    r = civitai.search(inp["query"], [inp["type"]] if inp.get("type") else None, [inp["base"]] if inp.get("base") else None,
+                       nsfw=True, limit=max(1, min(10, int(inp.get("count") or 6))))
+    out = []
+    for m in r["items"]:
+        vs = []
+        for v in m["versions"][:3]:
+            f = next((x for x in v["files"] if x["primary"]), None) or (v["files"] or [{}])[0]
+            vs.append({"version": v["id"], "name": v["name"], "base": v["base"], "trigger": v["trained"][:6],
+                       "file": f.get("name"), "mb": round((f.get("size") or 0) / 2**20), "installed": v["installed"],
+                       "early_access": v["early"] or None})
+        out.append({"id": m["id"], "name": m["name"], "type": m["type"], "url": m["url"],
+                    "downloads": m["stats"]["downloads"], "versions": vs})
+    return json.dumps(out, ensure_ascii=False) if out else "nothing found — try fewer words or without the base filter"
+
+
+def _download_model(ctx, inp):
+    p = civitai.plan(inp["source"], inp.get("type"), inp.get("filename"))
+    key = lambda x: os.path.normcase(os.path.normpath(x))  # noqa: E731
+    lib = {key(it["path"]): it["name"] for it in L.index()["items"] if it["cat"] == p["cat"]}
+    if p["installed"] or key(p["dest"]) in lib:
+        name = lib.get(key(p["dest"])) or p["name"]
+        return f"already installed: {p['cat']}/{name} — use «{name}»"
+    size = f", {p['size'] / 2**20:.0f} МБ" if p["size"] else ""
+    _approve(ctx, "download_model", inp, f"Скачать {p['title']} → {p['cat']}/{p['name']}{size}")
+    j = civitai.start(p)
+    ev(ctx.chat["id"], "status", text=f"загрузка {p['name']} — Civitai → Загрузки")
+    while j and j["state"] in ("queued", "running", "verifying"):
+        if ctx.stop.is_set():
+            return f"stopped waiting; the download continues in Civitai → Загрузки ({p['name']})"
+        time.sleep(1)
+        j = civitai.job(j["id"])
+    if not j or j["state"] != "done":
+        raise RuntimeError(f"download {(j or {}).get('state', 'lost')}: {(j or {}).get('error') or 'no details'}")
+    lib = {key(it["path"]): it["name"] for it in L.index(refresh=True)["items"] if it["cat"] == p["cat"]}
+    name = lib.get(key(j["dest"])) or p["name"]
+    trig = f"; trigger words: {', '.join(p['trained'])}" if p["trained"] else ""
+    return f"installed: {p['cat']}/{name} ({j['total'] / 2**20:.0f} MB) — use «{name}»{trig}"
 
 
 def run_more(ctx, name, inp):

@@ -72,7 +72,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "server"))
 
 from maistep import registry, executor, providers, library, components, civitai, agent, magic, updater, sysmon, logs  # noqa: E402
-from maistep import workspace, mcp, llamacpp  # noqa: E402
+from maistep import workspace, mcp, llamacpp, lifetime  # noqa: E402
 from maistep.registry import Cancelled  # noqa: E402
 
 for d in ("input", "output", "user", "workflows", "custom_nodes"):
@@ -634,6 +634,7 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 3300)))
     ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     a = ap.parse_args()
+    lifetime.bind()  # до любых дочерних процессов: они не переживут сервер
     logs.setup()
     sysmon.configure(lambda: Q.running if Q else None, low_memory, lambda level, text: log("info", f"[{level}] {text}"))
     sysmon.start()

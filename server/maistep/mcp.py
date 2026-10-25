@@ -22,11 +22,11 @@ import uuid
 from collections import deque
 from pathlib import Path
 
+from . import lifetime
 from . import providers as P
 
 ROOT = Path(__file__).resolve().parents[2]
 PROTOCOL = "2025-06-18"
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 _lock = threading.Lock()
 _clients = {}  # имя → Client
 
@@ -87,8 +87,8 @@ class Client:
             argv = ["cmd", "/c", exe, *args]
         else:
             argv = [exe, *args]
-        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     cwd=c.get("cwd") or None, env=env, creationflags=NO_WINDOW, bufsize=0)
+        self.proc = lifetime.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   cwd=c.get("cwd") or None, env=env, bufsize=0)
         threading.Thread(target=self._read_out, daemon=True).start()
         threading.Thread(target=self._read_err, daemon=True).start()
 
@@ -229,7 +229,9 @@ class Client:
             except Exception:
                 pass
             if p.poll() is None:
-                p.kill()
+                lifetime.kill(p)
+        if p:
+            lifetime.release(p)
         self.session = None
         if not keep_state:
             self.state = "stopped"

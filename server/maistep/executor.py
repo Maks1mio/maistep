@@ -60,6 +60,19 @@ def needed(wf):
     return targets, seen
 
 
+def _models(cat):
+    from . import library
+    try:
+        return set(library.names(cat))
+    except Exception:  # библиотека недоступна — не мешаем запуску, ошибку покажет сама нода
+        return _Any()
+
+
+class _Any:
+    def __contains__(self, _):
+        return True
+
+
 def check(wf, only_needed=False):
     """Список замечаний [{node, message}] без исполнения; only_needed — только ноды, которые исполнятся."""
     issues = []
@@ -76,6 +89,10 @@ def check(wf, only_needed=False):
         for k, (t, opts) in d.inputs.items():
             if not opts.get("widget") and not opts.get("optional") and (n["id"], k) not in linked:
                 issues.append({"node": n["id"], "message": f"вход «{k}» ({t}) не подключён"})
+            elif opts.get("picker") == "library_model" and (n["id"], k) not in linked:
+                name = (n.get("props") or {}).get(k, opts.get("default"))
+                if name and name not in _models(opts.get("cat")):
+                    issues.append({"node": n["id"], "message": f"{k}: модели «{name}» нет в библиотеке ({opts.get('cat')})"})
     for l in wf.get("links", []):
         a, b = nodes.get(l["from"]), nodes.get(l["to"])
         if l.get("to") not in keep:
