@@ -1,6 +1,6 @@
 {
   "name": "maistep",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "maistep — нодовый редактор AI-пайплайнов (в духе ComfyUI): окно Tauri + Python-сервер исполнения",
   "type": "module",
   "private": true,

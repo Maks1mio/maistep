@@ -143,6 +143,9 @@ def run(wf, runner, root):
         raise GraphError("граф пуст")
     order, ins = _order(wf, targets)
     values, keys, results = {}, {}, {}
+    # A volatile node (seed = -1, time, random number) produces a new value on every run, so the cache
+    # must be bypassed for it and for everything downstream: otherwise VAE Decode returns the previous run's image.
+    dynamic = {}  # nid -> result is non-deterministic (recompute, do not write to cache)
     for nid in order:
         runner.cancel_check()
         n = nodes[nid]
@@ -150,22 +153,26 @@ def run(wf, runner, root):
         if n.get("mode") == "mute":
             values[nid] = {k: None for k in d.outputs}
             keys[nid] = "mute"
+            dynamic[nid] = False
             continue
         props = n.get("props") or {}
         args, key_parts = {}, [n["type"]]
         links_in = {l["in"]: l for l in ins.get(nid, [])}
+        inherited = False
         for k, (t, opts) in d.inputs.items():
             if k in links_in:
                 l = links_in[k]
                 args[k] = _coerce(t, values[l["from"]].get(l["out"]))
                 key_parts.append(f"{k}<{keys[l['from']]}.{l['out']}")
+                inherited = inherited or dynamic.get(l["from"], False)
             else:
                 args[k] = _coerce(t, props.get(k, opts.get("default")))
                 key_parts.append(f"{k}={json.dumps(args[k], sort_keys=True, ensure_ascii=False, default=str)}")
         key = hashlib.sha1("|".join(key_parts).encode()).hexdigest()
         keys[nid] = key
         volatile = d.volatile(args) if callable(d.volatile) else d.volatile
-        if not volatile and key in CACHE:
+        dynamic[nid] = bool(volatile) or inherited
+        if not dynamic[nid] and key in CACHE:
             values[nid], ui = CACHE[key]
             results[nid] = ui
             runner.emit("executed", {"node": nid, "output": ui, "cached": True})
@@ -193,7 +200,7 @@ def run(wf, runner, root):
         ui["_time"] = round(time.time() - t0, 3)
         values[nid] = out
         results[nid] = ui
-        if not volatile:
+        if not dynamic[nid]:
             if len(CACHE) > CACHE_LIMIT:
                 CACHE.pop(next(iter(CACHE)))
             CACHE[key] = (out, ui)
