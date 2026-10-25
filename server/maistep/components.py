@@ -500,7 +500,14 @@ def _summary(rows):
 # ---------- модели (файлы весов, не pip) ----------
 # models в components.json: файл с Hugging Face (url, sha256, bytes) → папка категории библиотеки, куда качает и
 # Civitai (civitai._folder_for). Установленной считается модель с таким именем файла в любой папке категории.
+def _bundle_have(c, f):
+    base = ROOT / c["dir"]
+    return (base / f["path"]).is_file() or bool(f.get("alt") and (base / f["alt"]).is_file())
+
+
 def _model_path(c, refresh=False):
+    if c.get("files"):  # набор файлов в своей папке (MangaNinja): установлена, когда на месте все
+        return str(ROOT / c["dir"]) if all(_bundle_have(c, f) for f in c["files"]) else None
     from maistep import library as L
     for it in L.index(refresh)["items"]:
         if it["cat"] == c["cat"] and Path(it["path"]).name.lower() == c["file"].lower():
@@ -511,13 +518,13 @@ def _model_path(c, refresh=False):
 def _model_row(c):
     path = _model_path(c)
     return {
-        "id": c["id"], "kind": "model", "title": c.get("title") or c["file"], "package": c["file"],
+        "id": c["id"], "kind": "model", "title": c.get("title") or c.get("file") or c["id"], "package": c.get("file") or c["id"],
         "group": c.get("group") or "Модели", "tabs": c.get("tabs") or [], "required": bool(c.get("required")),
         "note": c.get("note") or "", "size": c.get("size") or "", "installed": "скачана" if path else None,
         "installed_base": None, "recommended": "", "latest": None, "latest_newer": False,
-        "status": "ok" if path else "missing", "index_url": None, "pypi": False, "spec": c["file"],
+        "status": "ok" if path else "missing", "index_url": None, "pypi": False, "spec": c.get("file") or c["id"],
         "variant": None, "variants": None, "installed_variant": None, "problem": None,
-        "path": path, "cat": c["cat"], "page": c.get("page"), "license": c.get("license"),
+        "path": path, "cat": c.get("cat"), "page": c.get("page"), "license": c.get("license"),
         "starter": bool(c.get("starter")), "bytes": int(c.get("bytes") or 0),
     }
 
@@ -561,6 +568,8 @@ def _download_model(job, c):
     import hashlib
     from maistep import civitai
     from maistep import library as L
+    if c.get("files"):
+        return _download_bundle(job, c)
     if _model_path(c, refresh=True):
         job.log(f"{c['file']}: уже есть в библиотеке")
         return
@@ -593,6 +602,29 @@ def _download_model(job, c):
     L.index(refresh=True)
     _emit("library-changed", {})
     job.log(f"готово: {dest}")
+
+
+def _download_bundle(job, c):
+    """Набор файлов модели в свою папку (dir от корня maistep): каждый — с докачкой .part и проверкой размера."""
+    base = ROOT / c["dir"]
+    for f in c["files"]:
+        if _bundle_have(c, f):
+            continue
+        dest = base / f["path"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(dest.name + ".part")
+        pos = part.stat().st_size if part.exists() else 0
+        if f.get("bytes") and pos > int(f["bytes"]):
+            part.unlink()
+            pos = 0
+        job.log(f"$ download {f['url']}\n  → {dest}" + (f" (докачка с {pos / 2**20:.0f} МБ)" if pos else ""))
+        if not (f.get("bytes") and pos == int(f["bytes"])):
+            _fetch_file(job, f, part, pos)
+        size = part.stat().st_size
+        if f.get("bytes") and size != int(f["bytes"]):
+            raise RuntimeError(f"{f['path']}: скачан не полностью ({size} из {f['bytes']} байт)")
+        os.replace(part, dest)
+    job.log(f"готово: {base}")
 
 
 def status(refresh=False, deep=False):

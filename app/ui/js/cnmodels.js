@@ -14,17 +14,21 @@ export const CN = {
   tile: { id: 'controlnet-tile', title: 'ControlNet Tile', find: [/tile/i, /union/i] },
   // не ControlNet, но качается так же: LaMa — заполнение пустого при outpaint в ImageNaizer
   lama: { id: 'inpaint-lama', title: 'LaMa', cat: 'inpaint', find: [/lama/i] },
+  // набор файлов в models/manganinja (не библиотека): готова, когда компонент «скачан»
+  ninja: { id: 'manganinja', title: 'MangaNinja', bundle: true },
 };
 let names = null, items = [], rows = {}, line = '', loading = null;
 const log = (level, text) => emit('log', { src: 'editor', level, text });
 
 export const cnNames = () => names;
 export const cnRow = kind => rows[CN[kind].id] || null;
+export const ninjaReady = () => rows.manganinja?.status === 'ok';
 export const cnBusy = kind => S.componentsJob?.state === 'running' && (S.componentsJob.ids || []).includes(CN[kind].id);
 
 // выбранный файл (если он есть в библиотеке) или первый подходящий виду
 export function cnPick(kind, want = '') {
   if (!names) return '';
+  if (CN[kind].bundle) return rows[CN[kind].id]?.status === 'ok' ? CN[kind].id : '';
   const cat = CN[kind].cat || 'controlnet', list = items.filter(i => i.cat === cat).map(i => i.name);
   if (want && list.includes(want)) return want;
   for (const re of CN[kind].find) { const n = list.find(x => re.test(x)); if (n) return n; }

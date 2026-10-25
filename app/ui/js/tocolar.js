@@ -11,7 +11,7 @@ import { icon } from './icons.js';
 import { api, upload, fileUrl, getSettings, getModels } from './backend.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage, transferHasImage } from './images.js';
 import { libraryPicker } from './library.js';
-import { cnNames, cnPick, loadCn, cnMissing } from './cnmodels.js';
+import { cnNames, cnPick, loadCn, cnMissing, ninjaReady } from './cnmodels.js';
 import { modelPicker } from './modelpick.js';
 import { dropdown } from './kit.js';
 import { fetchRec } from './magic.js';
@@ -24,7 +24,7 @@ const COLOR_NEG = 'monochrome, greyscale, black and white, sepia, desaturated, l
 const DEF = {
   items: [], sel: 0, ckpt: '', prompt: '', cast: '', negative: '', auto: true, llmProvider: '', llmModel: '',
   denoise: 0.7, strength: 1.1, shading: 0.55, megapixels: 1.0, seed: -1, steps: null, cfg: null, split: 0.5,
-  cn: true, cnModel: '', cnStrength: 0.8, cnEnd: 0.8, cnDenoise: 1.0, v: 3,
+  cn: true, cnModel: '', cnStrength: 1, cnEnd: 1, cnDenoise: 1.0, regions: true, tune: true, engine: 'ninja', refs: [], v: 3,
 };
 
 // vision-LLM: две строки — повторяющиеся персонажи и цвета именно этой страницы
@@ -55,8 +55,10 @@ function load() {
   s.items = (Array.isArray(s.items) ? s.items : []).map(it => ({
     src: it.src, out: it.out || null, outs: Array.isArray(it.outs) ? it.outs : (it.out ? [it.out] : []),
     status: it.status === 'run' ? 'new' : it.status || 'new', prompt: it.prompt ?? null, zoom: it.zoom || 1,
+    kind: it.kind || null,
   })).filter(it => it.src);
   s.sel = clamp(s.sel | 0, 0, Math.max(0, s.items.length - 1));
+  s.refs = (Array.isArray(s.refs) ? s.refs : []).filter(Boolean);
   return s;
 }
 const keep = () => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch {} };
@@ -72,9 +74,76 @@ function add(files) {
   const have = new Set(st.items.map(i => i.src));
   const fresh = files.filter(f => f && !have.has(f));
   if (!fresh.length) return;
-  st.items.push(...fresh.map(src => ({ src, out: null, outs: [], status: 'new', prompt: null, zoom: 1 })));
+  st.items.push(...fresh.map(src => ({ src, out: null, outs: [], status: 'new', prompt: null, zoom: 1, kind: null })));
   st.sel = st.items.length - fresh.length;
   keep(); render();
+  for (const it of st.items) if (fresh.includes(it.src)) classify(it);
+}
+
+// ---------- автонастройка: какая это картинка и как её красить ----------
+// Смотрим на уменьшенную копию прямо в окне: есть ли цвет, сколько штрихов (темнее округи) и серого тона.
+// Числа — из прогона настоящей страницы (2026-10-26): ControlNet 0.8 с отпусканием на 80 % шагов давал генерации
+// уйти от страницы (чужие предметы и цвета волос), 1.0 до конца держит композицию; тени больше 0.35 на манге
+// с тоном проявляли «призраки» генерации.
+const KINDS = {
+  lineart: { label: 'лайнарт / скетч', p: { cn: true, cnStrength: 1, cnEnd: 1, cnDenoise: 1, shading: 0.5, strength: 1.1, regions: true, hint: 'invert' } },
+  manga: { label: 'манга с тоном', p: { cn: true, cnStrength: 1, cnEnd: 1, cnDenoise: 1, shading: 0.35, strength: 1.1, regions: true, hint: 'invert' } },
+  gray: { label: 'серая картинка без линий', p: { cn: false, denoise: 0.6, shading: 0, strength: 1.1, regions: false } },
+  color: { label: 'уже цветная', p: { cn: true, cnStrength: 0.7, cnEnd: 0.7, cnDenoise: 1, shading: 0.3, strength: 1, regions: false, hint: 'edges' } },
+};
+async function classify(it) {
+  try {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = fileUrl(it.src);
+    await img.decode();
+    const k = Math.min(1, 640 / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(8, Math.round(img.naturalWidth * k)), hh = Math.max(8, Math.round(img.naturalHeight * k));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = hh;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.drawImage(img, 0, 0, w, hh);
+    const d = x.getImageData(0, 0, w, hh).data, n = w * hh;
+    const L = new Float32Array(n);
+    let chroma = 0;
+    for (let i = 0; i < n; i++) {
+      const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+      L[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+      chroma += Math.max(r, g, b) - Math.min(r, g, b);
+    }
+    // среднее по окну 9×9 (интегральное изображение): штрих — заметно темнее округи, тон — серое в среднем
+    const S1 = new Float64Array((w + 1) * (hh + 1));
+    for (let y = 0; y < hh; y++) for (let xx = 0, row = 0; xx < w; xx++) {
+      row += L[y * w + xx];
+      S1[(y + 1) * (w + 1) + xx + 1] = S1[y * (w + 1) + xx + 1] + row;
+    }
+    const R = 4;
+    let lines = 0, tone = 0;
+    for (let y = 0; y < hh; y++) for (let xx = 0; xx < w; xx++) {
+      const y0 = Math.max(0, y - R), y1 = Math.min(hh, y + R + 1), x0 = Math.max(0, xx - R), x1 = Math.min(w, xx + R + 1);
+      const m = (S1[y1 * (w + 1) + x1] - S1[y0 * (w + 1) + x1] - S1[y1 * (w + 1) + x0] + S1[y0 * (w + 1) + x0]) / ((y1 - y0) * (x1 - x0));
+      if (m - L[y * w + xx] > 25) lines++;
+      if (m > 45 && m < 205) tone++;
+    }
+    const f = { chroma: chroma / n, lines: lines / n, tone: tone / n };
+    it.kind = f.chroma > 18 ? 'color' : f.lines < 0.02 && f.tone > 0.35 ? 'gray' : f.tone > 0.18 ? 'manga' : 'lineart';
+    it.stats = { chroma: +f.chroma.toFixed(1), lines: +f.lines.toFixed(3), tone: +f.tone.toFixed(3) };
+  } catch {
+    it.kind = 'manga'; // не прочиталась (сервер выключен) — самый частый случай
+  }
+  keep();
+  if (viewEl?.isConnected) render();
+}
+// параметры запуска: автоподбор по типу картинки или ручные из панели
+function params(it) {
+  const man = { cn: st.cn, cnStrength: st.cnStrength, cnEnd: st.cnEnd, cnDenoise: st.cnDenoise, denoise: st.denoise,
+    shading: st.shading ?? 0.55, strength: st.strength, regions: st.regions !== false, hint: 'invert' };
+  const P = st.tune ? { ...man, ...(KINDS[it?.kind || 'manga'] || KINDS.manga).p } : man;
+  // MangaNinja — для линий (лайнарт, манга); серое без линий и уже цветное красит SDXL
+  const lines = !st.tune || ['manga', 'lineart'].includes(it?.kind || 'manga');
+  P.engine = lines && ninjaReady() && (st.tune || st.engine === 'ninja') ? 'ninja' : 'sd';
+  P.ref = P.engine === 'ninja' ? st.refs[0] || null : null; // свой цветной референс — без SDXL
+  return P;
 }
 async function addFromDisk(list) {
   const out = [];
@@ -220,8 +289,9 @@ async function invent(it, quiet = false) {
 function graph(it) {
   const q = rec?.ok ? rec.prompt : { positive: 'masterpiece, best quality', negative: 'lowres, worst quality, bad anatomy' };
   const p = rec?.ok ? rec.params : {};
+  const P = params(it);
   const L = (from, out, to, inn) => ({ from, out, to, in: inn });
-  const cn = st.cn && cnName();
+  const cn = P.cn && cnName();
   const nodes = [
     { id: 'ckpt', type: 'sd.checkpoint', props: { ckpt_name: ckptName() } },
     { id: 'skip', type: 'sd.clip_skip', props: { stop_at_clip_layer: rec?.clip_skip || -2 } },
@@ -232,11 +302,12 @@ function graph(it) {
     // латент страницы: при denoise 1 он задаёт только размер (txt2img), ниже — img2img от серой страницы
     { id: 'enc', type: 'sd.vae_encode', props: {} },
     { id: 'ks', type: 'sd.ksampler', props: { seed: st.seed, steps: st.steps ?? p.steps ?? 25, cfg: st.cfg ?? p.cfg ?? 6,
-      sampler_name: p.sampler_name || 'euler_ancestral', scheduler: p.scheduler || 'normal', denoise: cn ? st.cnDenoise : st.denoise } },
+      sampler_name: p.sampler_name || 'euler_ancestral', scheduler: p.scheduler || 'normal', denoise: cn ? P.cnDenoise : P.denoise } },
     { id: 'dec', type: 'sd.vae_decode', props: {} },
     // с ControlNet контуры генерации совпадают с оригиналом — цвет можно сглаживать меньше и брать больше светотени
-    { id: 'keep', type: 'image.keep_lines', props: { strength: st.strength, shading: st.shading ?? 0.55, smooth: cn ? 3 : 5,
-      prefix: `colored_${stem(it.src)}` } },
+    // по областям: линии оригинала делят страницу, каждая область — один цвет генерации (не заходит за линии)
+    { id: 'keep', type: 'image.keep_lines', props: { strength: P.strength, shading: P.shading, smooth: cn ? 3 : 5,
+      regions: P.regions, prefix: `colored_${stem(it.src)}` } },
   ];
   const links = [L('ckpt', 'clip', 'skip', 'clip'), L('skip', 'clip', 'pos', 'clip'), L('skip', 'clip', 'neg', 'clip'),
     L('img', 'image', 'fit', 'image'), L('fit', 'image', 'enc', 'pixels'), L('ckpt', 'vae', 'enc', 'vae'),
@@ -244,14 +315,28 @@ function graph(it) {
     L('ks', 'latent', 'dec', 'samples'), L('ckpt', 'vae', 'dec', 'vae'), L('img', 'image', 'keep', 'lines')];
   if (cn) {
     nodes.push(
-      { id: 'lines', type: 'image.lineart', props: { mode: 'invert', threshold: 160, blur: 0 } },
+      { id: 'lines', type: 'image.lineart', props: { mode: P.hint, threshold: 160, blur: 0 } },
       { id: 'cnl', type: 'sd.controlnet_load', props: { control_net_name: cn } },
-      { id: 'cna', type: 'sd.controlnet_apply', props: { strength: st.cnStrength, start_percent: 0, end_percent: st.cnEnd } });
+      { id: 'cna', type: 'sd.controlnet_apply', props: { strength: P.cnStrength, start_percent: 0, end_percent: P.cnEnd } });
     links.push(L('fit', 'image', 'lines', 'image'), L('pos', 'conditioning', 'cna', 'positive'), L('neg', 'conditioning', 'cna', 'negative'),
       L('cnl', 'control_net', 'cna', 'control_net'), L('lines', 'image', 'cna', 'image'),
       L('cna', 'positive', 'ks', 'positive'), L('cna', 'negative', 'ks', 'negative'));
   } else {
     links.push(L('pos', 'conditioning', 'ks', 'positive'), L('neg', 'conditioning', 'ks', 'negative'));
+  }
+  if (P.engine === 'ninja') {
+    // MangaNinja по панелям: референс — свой цветной арт (тогда SDXL не нужен) или SDXL-раскраска этой страницы
+    const ninja = { id: 'ninja', type: 'sd.manganinja', props: { aligned: !P.ref, per_panel: true, steps: 30, guidance: 9, seed: st.seed } };
+    const keepNode = nodes.find(n => n.id === 'keep');
+    if (P.ref) {
+      return { id: 'tocolar', title: `ToColar: ${name(it.src)}`, targets: ['keep'],
+        nodes: [nodes.find(n => n.id === 'img'), { id: 'ref', type: 'image.load', props: { file: P.ref } }, ninja, keepNode],
+        links: [L('img', 'image', 'ninja', 'page'), L('ref', 'image', 'ninja', 'reference'),
+          L('ninja', 'image', 'keep', 'colors'), L('img', 'image', 'keep', 'lines')] };
+    }
+    nodes.push(ninja);
+    const i = links.findIndex(l => l.to === 'keep' && l.in === 'colors');
+    links.splice(i, 1, L('img', 'image', 'ninja', 'page'), L('dec', 'image', 'ninja', 'reference'), L('ninja', 'image', 'keep', 'colors'));
   }
   return { id: 'tocolar', title: `ToColar: ${name(it.src)}`, nodes, links, targets: ['keep'] };
 }
@@ -259,9 +344,10 @@ function graph(it) {
 async function start(only = null) {
   if (job) return;
   if (!S.server.running) { log('warn', 'сервер не запущен'); emit('server-start'); return; }
-  if (!ckptName()) return log('warn', 'выберите чекпоинт (лучше аниме: Illustrious, Pony, NoobAI)');
-  if (st.cn && cnNames() == null) await loadCn();
-  if (st.cn && !cnName()) {
+  if (!ckptName() && !(st.refs.length && ninjaReady())) return log('warn', 'выберите чекпоинт (лучше аниме: Illustrious, Pony, NoobAI)');
+  const needCn = st.items.some(i => (only == null || i === st.items[only]) && params(i).cn && !params(i).ref);
+  if (needCn && cnNames() == null) await loadCn();
+  if (needCn && !cnName()) {
     log('warn', 'ControlNet не установлен — скачайте модель (справа, «Контуры») или выключите ControlNet');
     render();
     return;
@@ -280,13 +366,15 @@ async function next(only = null) {
   it.status = 'run';
   st.sel = index;
   render();
-  if (st.auto && it.prompt == null) {
+  if (st.auto && it.prompt == null && !params(it).ref) {
     me.phase = 'prompt'; render();
     const ok = await invent(it, true);
     if (!ok) log('warn', 'автоцвета не сработали — раскрашиваю по общим подсказкам');
     if (job !== me) return;
     if (stopAll) { if (it.status === 'run') it.status = 'new'; keep(); job = null; render(); return; }
   }
+  if (!it.kind) await classify(it);
+  if (job !== me) return;
   const pid = uid();
   me.phase = 'sd';
   me.pid = pid;
@@ -294,7 +382,10 @@ async function next(only = null) {
   try {
     await api('/api/prompt', { id: pid, workflow: graph(it) });
     if (job === me) me.posted = true;
-    const how = st.cn && cnName() ? `ControlNet ${st.cnStrength} до ${st.cnEnd}` : `img2img denoise ${st.denoise}`;
+    const P = params(it);
+    const how = (P.ref ? 'MangaNinja по референсу' : (P.cn && cnName() ? `ControlNet ${P.cnStrength} до ${P.cnEnd}` : `img2img denoise ${P.denoise}`)
+      + (P.engine === 'ninja' ? ' → MangaNinja' : ''))
+      + (st.tune ? ` · авто: ${KINDS[it.kind || 'manga'].label}` : '');
     log('info', `раскраска ${name(it.src)} · ${how}${it.prompt ? ` · ${it.prompt.slice(0, 80)}` : ''}`);
   } catch (e) {
     it.status = 'err'; job = null;
@@ -422,6 +513,69 @@ function contours() {
   return out;
 }
 
+// референс цвета для MangaNinja: цветной арт тех же персонажей — цвета берутся с него, SDXL не нужен
+function refField() {
+  const ref = st.refs[0];
+  const set = f => { st.refs = f ? [f] : []; keep(); render(); };
+  const disk = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onchange: async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (f) try { set(await upload(f)); } catch (err) { log('error', `референс: ${err.message}`); }
+  } });
+  const pick = h('button.ui-btn.secondary.slim', { type: 'button', onclick: () => imagePicker(pick, { onPick: set }) }, icon('image', { size: 14 }), 'Из проекта');
+  return field('Референс цвета (MangaNinja)', h('div.tc-ref', {},
+    ref ? h('div.tc-ref-it', {}, h('img', { src: fileUrl(ref), alt: '', draggable: false }), h('span.t', {}, name(ref)),
+      h('span.ui-tb', {}, h('button.b', { 'data-tip': 'Убрать референс', onclick: () => set(null) }, icon('closeSmall', { size: 16 })))) : null,
+    h('div.tc-row', {}, h('button.ui-btn.secondary.slim', { type: 'button', onclick: () => disk.click() }, icon('open', { size: 14 }), 'С диска…'), disk, pick)),
+  ref ? 'цвета персонажей — с этой картинки, для всех страниц' : 'цветной арт тех же персонажей (обложка, кадр из аниме); без него — по раскраске SDXL');
+}
+
+// ручные настройки (автоподбор выключен)
+function manual(p) {
+  return [
+    field('Негатив', textarea(st.negative, v => { st.negative = v; keep(); }, rec?.ok ? rec.prompt.negative : 'lowres, worst quality')),
+    ninjaReady() ? h('div.tc-auto', {}, h('label.tc-check', { 'data-tip': 'После SDXL (или сразу по вашему референсу) MangaNinja перекрашивает каждую панель, строго по линиям' },
+      check(st.engine === 'ninja', v => { st.engine = v ? 'ninja' : 'sd'; keep(); render(); }), 'MangaNinja по панелям')) : null,
+    ...contours(),
+    field('Насыщенность', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1.6, step: 0.05, value: st.strength,
+      oninput: e => { st.strength = Number(e.target.value); e.target.nextSibling.textContent = st.strength.toFixed(2); keep(); } }), h('b', {}, st.strength.toFixed(2))),
+      'слабый цвет генерации подтягивается автоматически'),
+    field('Тени', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: st.shading ?? 0.55,
+      oninput: e => { st.shading = Number(e.target.value); e.target.nextSibling.textContent = st.shading.toFixed(2); keep(); } }), h('b', {}, (st.shading ?? 0.55).toFixed(2))),
+      '0 — плоская заливка, 1 — вся светотень генерации; линии всегда из оригинала'),
+    h('div.tc-auto', {}, h('label.tc-check', { 'data-tip': 'Линии страницы делят её на области, каждая берёт один цвет генерации: '
+      + 'цвет не заходит за линии, без пятен. Выключено — цвет генерации попиксельно, со сглаживанием' },
+    check(st.regions !== false, v => { st.regions = v; keep(); }), 'цвет по областям (не заходит за линии)')),
+    h('div.tc-sec', {}, 'Генерация'),
+    h('div.tc-row', {},
+      field('Размер, Мп', num('megapixels', { min: 0.3, max: 2.5, step: 0.1 })),
+      field('Seed', num('seed', { min: -1, step: 1 }))),
+    h('div.tc-row', {},
+      field('Шаги', num('steps', { min: 1, max: 100, step: 1, ph: p.steps ?? 25 })),
+      field('CFG', num('cfg', { min: 0, max: 30, step: 0.5, ph: p.cfg ?? 6 }))),
+  ];
+}
+
+// автоподбор: что увидели на картинке и с чем будем красить
+function autoInfo(it) {
+  if (!it) return [h('div.tc-hint', {}, 'добавьте картинку — настройки подберутся под неё')];
+  const k = KINDS[it.kind];
+  if (!k) return [h('div.tc-hint', {}, 'смотрю на картинку…')];
+  const P = params(it);
+  const how = P.ref ? 'MangaNinja по вашему референсу, по панелям'
+    : (P.cn ? `SDXL: контуры ControlNet ${P.cnStrength}, тени ${P.shading}` : `SDXL img2img ${P.denoise}, без ControlNet`)
+      + (P.engine === 'ninja' ? ' → MangaNinja по панелям' : '');
+  const out = [h('div.tc-kind', {}, h('b', {}, k.label), h('span', {}, `${how}${P.regions ? ', цвет по областям' : ''}`))];
+  if (!ninjaReady() && cnNames() != null && ['manga', 'lineart'].includes(it.kind)) {
+    out.push(cnMissing('ninja', { why: 'Точнее держит линии и цвета персонажей по референсу (лицензия CC BY-NC — только некоммерческое).',
+      fallback: 'необязательно: без неё красит SDXL' }));
+  }
+  if (P.cn && !P.ref && !cnName()) {
+    out.push(cnMissing('lines', { why: 'Нужна для раскраски по линиям (SDXL Illustrious / NoobAI / Pony).',
+      fallback: 'или выключите автоподбор и ControlNet — раскраска пойдёт img2img' }));
+  }
+  return out;
+}
+
 function sidebar() {
   const ck = ckptName();
   const p = rec?.ok ? rec.params : {};
@@ -436,6 +590,7 @@ function sidebar() {
     field('Чекпоинт', ckBtn, rec?.ok ? `Magic: ${rec.profile || 'рекомендация'}` : 'аниме-чекпоинт (SDXL Illustrious/Pony) — лучше всего для манги'),
     h('div.tc-sec', {}, 'Цвет'),
     h('div.tc-auto', {}, h('label.tc-check', {}, check(st.auto, v => { st.auto = v; keep(); render(); }), 'придумывать цвета самому'), llmLine()),
+    ninjaReady() ? refField() : null,
     field('Персонажи (все страницы)', textarea(st.cast, v => { st.cast = v; keep(); }, 'blonde hair, blue eyes, light skin, white shirt — повторяющиеся персонажи', 2)),
     field('Подсказка (все страницы)', textarea(st.prompt, v => { st.prompt = v; keep(); }, 'краски сцены: красное платье, закат, зелёная трава', 2),
       'по-русски тоже можно — промпт переведёт LLM'),
@@ -447,21 +602,11 @@ function sidebar() {
         onclick: () => { if (it && !llmBusy) invent(it); } }, icon('spark', { size: 14 }), llmBusy ? 'Думаю…' : 'Придумать цвета'),
       h('button.ui-btn.secondary.slim', { type: 'button', disabled: !st.cast && !st.prompt, title: 'Очистить общие подсказки',
         onclick: () => { st.cast = ''; st.prompt = ''; keep(); render(); } }, 'Очистить')),
-    field('Негатив', textarea(st.negative, v => { st.negative = v; keep(); }, rec?.ok ? rec.prompt.negative : 'lowres, worst quality')),
-    ...contours(),
-    field('Насыщенность', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1.6, step: 0.05, value: st.strength,
-      oninput: e => { st.strength = Number(e.target.value); e.target.nextSibling.textContent = st.strength.toFixed(2); keep(); } }), h('b', {}, st.strength.toFixed(2))),
-      'слабый цвет генерации подтягивается автоматически'),
-    field('Тени', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: st.shading ?? 0.55,
-      oninput: e => { st.shading = Number(e.target.value); e.target.nextSibling.textContent = st.shading.toFixed(2); keep(); } }), h('b', {}, (st.shading ?? 0.55).toFixed(2))),
-      '0 — плоская заливка, 1 — вся светотень генерации; линии всегда из оригинала'),
-    h('div.tc-sec', {}, 'Генерация'),
-    h('div.tc-row', {},
-      field('Размер, Мп', num('megapixels', { min: 0.3, max: 2.5, step: 0.1 })),
-      field('Seed', num('seed', { min: -1, step: 1 }))),
-    h('div.tc-row', {},
-      field('Шаги', num('steps', { min: 1, max: 100, step: 1, ph: p.steps ?? 25 })),
-      field('CFG', num('cfg', { min: 0, max: 30, step: 0.5, ph: p.cfg ?? 6 }))),
+    h('div.tc-sec', {}, 'Настройка'),
+    h('div.tc-auto', {}, h('label.tc-check', { 'data-tip': 'ToColar сам смотрит на картинку (лайнарт, манга с тоном, серая без линий, '
+      + 'уже цветная) и ставит ControlNet, тени и способ переноса цвета. Выключите, чтобы настроить руками' },
+    check(st.tune, v => { st.tune = v; keep(); render(); }), 'подбирать настройки сам')),
+    ...(st.tune ? autoInfo(it) : manual(p)),
     h('div.tc-hint', {}, 'Линии, тон и текст берутся из оригинала — меняется только цвет. Результаты — в output/ (colored_*) и в Results.'));
 }
 
@@ -488,6 +633,7 @@ const statusText = (it, i) => {
 const runText = () => {
   if (!job) return '';
   if (job.phase === 'prompt') return 'vision-LLM описывает страницу';
+  if (job.phase === 'ninja' && job.max) return `MangaNinja: шаг ${job.step} / ${job.max}`;
   if (!job.max) return job.posted ? 'в очереди…' : 'запуск…';
   return `шаг ${job.step} / ${job.max}`;
 };
@@ -657,6 +803,7 @@ export function showTocolar() {
   render();
   if (!rec) loadRec();
   if (st.auto) ensureLlm();
+  for (const it of st.items) if (!it.kind && S.server.running) classify(it);
   if (cnNames() == null) loadCn();
 }
 
@@ -664,7 +811,8 @@ export function initTocolar() {
   viewEl = document.getElementById('v-tocolar');
   for (const it of st.items) if (it.status === 'run') it.status = 'new'; // запуск прервался вместе с окном
   on('run-progress', d => {
-    if (!job || !job.pid || d.prompt_id !== job.pid || d.node !== 'ks') return;
+    if (!job || !job.pid || d.prompt_id !== job.pid || !['ks', 'ninja'].includes(d.node)) return;
+    job.phase = d.node === 'ninja' ? 'ninja' : 'sd';
     job.step = d.value; job.max = d.max;
     updateRun();
   });

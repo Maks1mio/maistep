@@ -102,6 +102,23 @@ def image_lineart(image, mode, threshold, blur, ctx):
     return {"file": p.relative_to(ctx.root).as_posix()}
 
 
+def _walls(lum, k, level=20):
+    """Границы областей страницы: штрих — то, что заметно темнее своей округи (тонкие серые линии тоже), плюс
+    сплошная тушь. Скринтон и серый тон почти равны округе — не режут области на крошки; пылинки и обрывки
+    меньше ~3×3 px при 1 Мп выкидываются. Щели в 1 px между штрихами закрываются."""
+    import numpy as np
+    from scipy import ndimage as nd
+    lum = lum.astype(np.float32)
+    inv = 255 - lum
+    line = (inv - nd.gaussian_filter(inv, 2.5 * k)) > level
+    lab, n = nd.label(line)
+    if n:
+        keep = np.bincount(lab.ravel(), minlength=n + 1) >= max(6, 8 * k * k)
+        keep[0] = False
+        line = keep[lab]
+    return nd.binary_dilation(line | (lum < 70), iterations=max(1, round(0.75 * k)))
+
+
 def _edges(gray):
     """Линии цветной картинки без модели: разность гауссиан (тёмнее окрестности — штрих), как XDoG у
     аниме-препроцессоров, но проще. Белые линии на чёрном; масштаб — от 1 Мп."""
@@ -123,22 +140,35 @@ def _edges(gray):
               "smooth": ("INT", {"default": 5, "min": 0, "max": 32, "hint": "chroma smoothing, px at 1 MP: color regions blend, "
                                                                            "speckles and misaligned details fade; 0 — as generated"}),
               "balance": ("BOOLEAN", {"default": True, "hint": "boost faint colors of the generation to a readable saturation"}),
+              "regions": ("BOOLEAN", {"default": True, "hint": "flat color per region: the original's lines split the page into "
+                                                             "areas, each takes one color of the generation — color never crosses "
+                                                             "a line; off — smoothed color pixel by pixel"}),
               "prefix": ("STRING", {"default": "colored"})},
       outputs={"image": "IMAGE"},
       hint="Takes lightness from the original and color from the generated image (Lab): lines, screentones and "
            "lettering stay exactly as drawn, only the color (and, with shading, its shadows) is added. Chroma is smoothed "
-           "and faint colors are balanced, so a shy generation still gives a colored page. Saves a PNG to output/ at the original size.")
-def image_keep_lines(lines, colors, strength, shading, prefix, ctx, smooth=5, balance=True):
+           "and faint colors are balanced, so a shy generation still gives a colored page. The generation's overall tint "
+           "(a bluish or yellow page) is removed. Saves a PNG to output/ at the original size.")
+def image_keep_lines(lines, colors, strength, shading, prefix, ctx, smooth=5, balance=True, regions=True):
     from PIL import Image, ImageChops, ImageFilter
     base = _open(ctx, lines)
     W, H = base.size
     col = _open(ctx, colors).resize((W, H), Image.LANCZOS).convert("LAB")
-    L = base.convert("LAB").getchannel("L")  # светлота оригинала: линии, тон, текст
+    L = L0 = base.convert("LAB").getchannel("L")  # светлота оригинала: линии, тон, текст
     Lg, a, b = col.split()
+    a, b = _white_balance(Lg, a, b)
     if shading > 0:  # тени генерации только темнее оригинала: тёмные линии и тон не светлеют
         lg = Lg.filter(ImageFilter.GaussianBlur(1.0 * max(0.5, (W * H / 1e6) ** 0.5)))  # своя штриховка генерации не задваивает линии
         L = ImageChops.darker(L, Image.blend(L, lg, shading))
-    _gain, a, b = _chroma_gain(a, b, smooth, balance)
+    flat = _region_chroma(L0, a, b, smooth) if regions else None
+    if flat:
+        a, b, paper = flat
+        if paper is not None:  # поля листа — светлота оригинала, без теней генерации
+            L = Image.composite(L0, L, paper)
+        if balance:
+            a, b = _boost(a, b)
+    else:
+        _gain, a, b = _chroma_gain(a, b, smooth, balance)
     if abs(strength - 1) > 0.001:  # насыщенность — вокруг нейтрального, поверх авто-баланса
         lut = [max(0, min(255, round(128 + (v - 128) * strength))) for v in range(256)]
         a, b = a.point(lut), b.point(lut)
@@ -197,6 +227,122 @@ def _chroma_gain(a, b, smooth, balance):
         aw = aw.resize((W, H), Image.BICUBIC)
         bw = bw.resize((W, H), Image.BICUBIC)
     return gain, aw, bw
+
+
+def _white_balance(Lg, a, b, amount=0.85, cap=25):
+    """Общий оттенок генерации (вся страница синеватая / жёлтая) → нейтраль: самые светлые места генерации —
+    блики, бумага, баблы — должны быть белыми. Сдвигаем a/b на их медианный оттенок (с потолком)."""
+    try:
+        import numpy as np
+    except ImportError:
+        return a, b
+    lg = np.asarray(Lg)
+    top = lg >= np.percentile(lg, 85)
+    if top.sum() < 100:
+        return a, b
+    out = []
+    for ch in (a, b):
+        v = np.asarray(ch).astype(np.int16)
+        shift = float(np.clip(np.median(v[top]) - 128, -cap, cap)) * amount
+        out.append(_img(np.clip(v - round(shift), 0, 255)))
+    return out[0], out[1]
+
+
+def _img(arr):
+    from PIL import Image
+    import numpy as np
+    return Image.fromarray(np.asarray(arr, dtype=np.uint8), "L")
+
+
+def _region_chroma(L0, a, b, smooth):
+    """Цвет по областям, как заливка флэтов: линии оригинала делят страницу на области, каждая получает один цвет —
+    медиану цвета генерации внутри неё. Цвет не заходит за линии, крап и сдвиг контуров генерации не дают пятен.
+    Крупные области и пёстрые (линии не замкнулись, фон с переходами) — сглаженный цвет генерации, как раньше.
+    Нужны numpy и scipy (идут с torch/torchsde); без них — None и прежний путь."""
+    try:
+        import numpy as np
+        from scipy import ndimage as nd
+    except ImportError:
+        return None
+    from PIL import Image
+    W, H = L0.size
+    s = min(1.0, (2_000_000 / (W * H)) ** 0.5)  # считаем не больше ~2 Мп
+    w2, h2 = max(1, round(W * s)), max(1, round(H * s))
+    k = max(0.5, (w2 * h2 / 1e6) ** 0.5)  # 1 px при 1 Мп
+    lum = np.asarray(L0.resize((w2, h2), Image.BOX) if s < 1 else L0)
+    ca = np.asarray(a.resize((w2, h2), Image.BOX) if s < 1 else a).astype(np.float32) - 128
+    cb = np.asarray(b.resize((w2, h2), Image.BOX) if s < 1 else b).astype(np.float32) - 128
+    wall = _walls(lum, k)
+    lab, n = nd.label(~wall)
+    if n == 0:
+        return None
+    area = np.bincount(lab.ravel(), minlength=n + 1)
+    tiny = area < max(24, 50 * k * k)
+    tiny[0] = True
+    lab[tiny[lab]] = 0
+    if not lab.any():
+        return None
+    # линии и крошки достаются ближайшей области — цвет у штриха тот же, что по обе стороны
+    idx = nd.distance_transform_edt(lab == 0, return_distances=False, return_indices=True)
+    full = lab[tuple(idx)]
+    vote = np.where(wall, 0, full)  # голосуют только пиксели внутри областей, не на линиях
+    ids = np.unique(full)
+    ma = np.zeros(n + 1, np.float32)
+    mb = np.zeros(n + 1, np.float32)
+    ma[ids] = nd.median(ca, vote, ids)
+    mb[ids] = nd.median(cb, vote, ids)
+    ma, mb = np.nan_to_num(ma), np.nan_to_num(mb)
+    # согласие: доля пикселей области с цветом рядом с её медианой
+    agree = np.ones(n + 1, np.float32)
+    near = (np.hypot(ca - ma[full], cb - mb[full]) < 12).astype(np.float32)
+    agree[ids] = nd.mean(near, vote, ids)
+    area = np.bincount(full.ravel(), minlength=n + 1)
+    # одной заливкой — только небольшие замкнутые области, где почти все согласны с медианой (глаза, бабл, галстук,
+    # пенал); крупные на настоящих страницах обычно слиты через щель в линиях (волосы + фон, рукав + стена) — там
+    # одна медиана красит пол-панели чужим цветом, поэтому им сглаженный цвет генерации попиксельно, как раньше
+    flat = ((area <= 0.03 * w2 * h2) & (np.nan_to_num(agree) >= 0.55))[full]
+    r = max(1.0, float(smooth) * k)
+    fa = np.where(flat, ma[full], nd.gaussian_filter(ca, r))
+    fb = np.where(flat, mb[full], nd.gaussian_filter(cb, r))
+    # поля листа вокруг панелей: пустая бумага (белая вместе с округой), связанная с краем страницы, — её не красим.
+    # Через щель в рамке панели «пустота» не просачивается, в отличие от областей
+    rr = max(2, round(5 * k))
+    blank = nd.minimum_filter(lum, size=2 * rr + 1) > 235
+    bl, bn = nd.label(blank)
+    paper = None
+    if bn:
+        side = np.unique(np.concatenate([bl[0], bl[-1], bl[:, 0], bl[:, -1]]))
+        side = side[side > 0]
+        sizes = np.bincount(bl.ravel(), minlength=bn + 1)
+        side = side[sizes[side] > 0.01 * w2 * h2]
+        if side.size:
+            paper = nd.binary_dilation(np.isin(bl, side), iterations=rr + max(1, round(2 * k)))  # до рамки панели
+            fa[paper], fb[paper] = 0, 0
+    # шов между областями — на линии (она тёмная, цвет там почти не виден); лёгкое смягчение против лесенки
+    fa, fb = nd.gaussian_filter(fa, 0.6 * k), nd.gaussian_filter(fb, 0.6 * k)
+    out = []
+    for ch in (fa, fb):
+        im = _img(np.clip(np.rint(ch + 128), 0, 255))
+        out.append(im.resize((W, H), Image.BICUBIC) if s < 1 else im)
+    if paper is not None:
+        pm = _img(paper * 255)
+        out.append(pm.resize((W, H), Image.NEAREST) if s < 1 else pm)
+    else:
+        out.append(None)
+    return out[0], out[1], out[2]
+
+
+def _boost(a, b, target=30.0, most=2.5):
+    """Бледная генерация → читаемая насыщенность (вокруг нейтрали: оттенок уже снят), сильный цвет не трогаем."""
+    import numpy as np
+    ca = np.asarray(a).astype(np.float32) - 128
+    cb = np.asarray(b).astype(np.float32) - 128
+    c = np.hypot(ca, cb)
+    dev = float(np.percentile(c, 98))
+    gain = min(most, max(1.0, target / max(dev, 1.0)))
+    if gain <= 1.001:
+        return a, b
+    return _img(np.clip(np.rint(ca * gain + 128), 0, 255)), _img(np.clip(np.rint(cb * gain + 128), 0, 255))
 
 
 @node("image.generate_openai", title="Generate Image (OpenAI)", cat="Image",

@@ -164,6 +164,39 @@ def vae_encode(pixels, vae, ctx):
     return D.vae_encode(ctx, vae, pixels)
 
 
+@node("sd.manganinja", title="MangaNinja Colorize", cat="Image",
+      inputs={"page": ("IMAGE", {"hint": "black-and-white page or line art"}),
+              "reference": ("IMAGE", {"hint": "colored reference: a colored version of this page (aligned) or a colored "
+                                              "picture of the characters"}),
+              "aligned": ("BOOLEAN", {"default": True, "hint": "on — the reference is this same page colored (each panel takes "
+                                                                "its own piece); off — a separate picture used for every panel"}),
+              "per_panel": ("BOOLEAN", {"default": True, "hint": "color every panel separately at the model's 512 px"}),
+              "steps": ("INT", {"default": 30, "min": 5, "max": 100}),
+              "guidance": ("FLOAT", {"default": 9.0, "min": 1, "max": 20, "step": 0.5,
+                                     "hint": "how closely the colors follow the reference"}),
+              "seed": ("INT", {"default": -1, "min": -1, "max": 2**31})},
+      outputs={"image": "IMAGE"},
+      volatile=lambda a: a.get("seed", 0) < 0,
+      hint="MangaNinja (ali-vilab, CVPR 2025; CC BY-NC 4.0 — non-commercial): transfers the colors of a reference onto "
+           "line art and follows the lines very closely. Weights — models/manganinja (Components). Feed the result "
+           "to Keep Lines as colors.")
+def manganinja(page, reference, aligned, per_panel, steps, guidance, seed, ctx):
+    from maistep import ninja
+    from PIL import Image
+    gone = ninja.missing()
+    if gone:
+        raise FileNotFoundError(f"MangaNinja: no weights ({', '.join(gone[:3])}…) — Components → MangaNinja")
+    with Image.open(ctx.root / page["file"]) as p, Image.open(ctx.root / reference["file"]) as r:
+        out = ninja.colorize_page(p.convert("RGB"), r.convert("RGB"), aligned=aligned, per_panel=per_panel, steps=steps,
+                                  guidance=guidance, seed=None if seed < 0 else int(seed), log=ctx.log,
+                                  progress=ctx.progress, stop=lambda: ctx._run.cancel.is_set())
+    import time
+    path = ctx.input_dir / f"tocolar_ninja_{time.strftime('%Y%m%d_%H%M%S')}_{random.randint(0, 9999):04d}.png"
+    out.save(path)
+    rel = path.relative_to(ctx.root).as_posix()
+    return {"image": {"file": rel}, "ui": {"images": [rel]}}
+
+
 def _sampler_inputs(seed_hint="-1 — new random seed every run"):
     return {"seed": ("INT", {"default": -1, "min": -1, "max": 2**50, "hint": seed_hint}),
             "steps": ("INT", {"default": 25, "min": 1, "max": 200}),

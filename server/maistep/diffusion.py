@@ -20,10 +20,12 @@
     true  — model-offload от accelerate: на GPU только текущий модуль (медленнее, минимальный пик);
     false — всё на GPU.
 VAE — по образцу ComfyUI (comfy/sd.py, model_management.py): dtype auto = bf16 там, где карта умеет (у SDXL-VAE
-нет NaN, перекаст в fp32 не нужен), иначе fp16; перед VAE-операцией оценивается память, и если рядом с UNet
-места мало — UNet временно уходит на CPU (на Windows нехватка не даёт OOM, а уводит память в sysmem: секунды
-превращаются в минуты). Если места мало и без UNet — тайлы; NaN → повтор в fp32. Старое vae_fp16=false = fp32.
-keep=false — выгружать модель после каждого VAE Decode.
+нет NaN, перекаст в fp32 не нужен), иначе fp16; перед VAE-операцией оценивается память. Места мало — сначала тайлы
+(тайл 512 px, ~1 ГБ вместо ~4 ГБ полного декода): UNet остаётся на GPU, а не ездит в RAM и обратно по 5 ГБ на
+каждую картинку. И только если не влезают и тайлы — UNet временно уходит на CPU (на Windows нехватка не даёт OOM,
+а уводит память в sysmem: секунды превращаются в минуты), совсем не влезло — VAE на CPU. Решение принимается по
+замеренному пику для этого разрешения и dtype (см. _vae_run), а не только по оценке ComfyUI. NaN → повтор в fp32.
+Старое vae_fp16=false = fp32. keep=false — выгружать модель после каждого VAE Decode.
 
 AMD (ROCm-сборка torch, тот же API torch.cuda) — как в ComfyUI: на RDNA3+ MIOpen выключен (cudnn.enabled=False,
 свёртки так быстрее; MAISTEP_ENABLE_MIOPEN=1 — вернуть), в VAE внимание без SDPA (на AMD оно падает на больших
@@ -34,7 +36,6 @@ AMD (ROCm-сборка torch, тот же API torch.cuda) — как в ComfyUI:
 gpu_load — паузы между шагами сэмплера. Запас RAM следит sysmon и при нехватке прерывает запуск.
 """
 import gc
-import math
 import os
 import re
 import sys
@@ -107,7 +108,8 @@ UPSCALE = ["nearest-exact", "bilinear", "area", "bicubic"]
 _lock = threading.RLock()
 _state = {"key": None, "pipe": None, "i2i": None, "i2i_cls": None, "loras": {}, "layout": None, "device": None,
           "dtype": None, "vae_dtype": None, "unet_at": None, "ckpt": None, "sdxl": False, "vaes": {}, "cns": {},
-          "cn_pipes": {}, "vae_peak": {}}
+          "cn_pipes": {}, "vae_peak": {}, "sample_peak": {}}
+_cap_applied = [None]  # какой потолок VRAM уже применён к аллокатору (None — не применяли)
 
 
 class NotInstalled(RuntimeError):
@@ -279,7 +281,8 @@ def _vae_flags(vae, slicing=None, tiling=None):
 
 def _drop():
     _state.update(key=None, pipe=None, i2i=None, i2i_cls=None, loras={}, layout=None, device=None, dtype=None,
-                  vae_dtype=None, unet_at=None, ckpt=None, sdxl=False, vaes={}, cns={}, cn_pipes={}, vae_peak={})
+                  vae_dtype=None, unet_at=None, ckpt=None, sdxl=False, vaes={}, cns={}, cn_pipes={}, vae_peak={},
+                  sample_peak={})
     gc.collect()
 
 
@@ -353,6 +356,13 @@ def _vae_need(kind, h, w, dtype):
     return 2178 * (h // 8) * (w // 8) * 64 * size   # по латенту
 
 
+def _vae_tile_need(dtype):
+    """Место на тайловый декод — по одному тайлу (512 px), а не по всей картинке: 1024×1024 это ~4,3 ГБ полного
+    декода против ~1,1 ГБ с тайлами. Тайлы в разы дешевле, чем перенос UNet в RAM и обратно (5 ГБ по PCIe на 8 ГБ
+    картах), поэтому сначала пробуем их, и только потом трогаем UNet."""
+    return _vae_need("decode", 512, 512, dtype)
+
+
 def _free(torch, device):
     """Свободно на GPU: драйвер + отложенное в кэше torch (как get_free_memory в ComfyUI); с потолком VRAM —
     не больше, чем осталось до него."""
@@ -365,12 +375,22 @@ def _free(torch, device):
 
 
 def _vram_cap(torch, device):
-    """Потолок VRAM для torch: выше — OutOfMemory (и повтор тайлами), а не переполнение в системную память."""
+    """Потолок VRAM для torch: выше — OutOfMemory (и повтор тайлами), а не переполнение в системную память.
+    Без потолка (0 — по умолчанию, 100 — тоже) аллокатор не трогаем: set_per_process_memory_fraction(1.0) на
+    Windows всё равно ограничивает процесс всей памятью карты, включая занятую рабочим столом и браузером, —
+    так было до 0.1.5, и на NVIDIA это работало лучше."""
     if device != "cuda":
         return
     pct = sysmon.limits()["vram_max_pct"]
+    capped = 0 < pct < 100
+    if not capped and _cap_applied[0] is None:
+        return
+    frac = pct / 100 if capped else 1.0
+    if _cap_applied[0] == frac:
+        return
     try:
-        torch.cuda.set_per_process_memory_fraction(pct / 100 if 0 < pct < 100 else 1.0)
+        torch.cuda.set_per_process_memory_fraction(frac)
+        _cap_applied[0] = frac
     except Exception as e:
         _dbg("vram cap", e)
 
@@ -920,15 +940,40 @@ def _unet_back(torch, ctx, shape, b):
         torch.cuda.empty_cache()
     _unet_to(torch, st["device"])
     moved = time.time() - t0
-    free, need = _free(torch, st["device"]), _sample_need(shape, st["sdxl"])
+    # замер с прошлого раза точнее оценки _sample_need (та переоценивает в разы: 0.7 ГБ против 0.2 на 512×512)
+    need = st["sample_peak"].get((shape[-2], shape[-1], b)) or _sample_need(shape, st["sdxl"])
+    free = _free(torch, st["device"])
     _dbg("sample: UNet на GPU за", round(moved, 2), "с; свободно", round(free / 2**30, 2), "ГБ, нужно ~", round(need / 2**30, 2), "ГБ")
     if moved > 4 and ctx:
         ctx.log(f"UNet returned to GPU in {moved:.1f} s", "warn")
     if free < need and ctx:
-        total = torch.cuda.mem_get_info(st["device"])[1]
-        ctx.log(f"low free VRAM: {free / 2**30:.1f} GB of {total / 2**30:.1f} GB (need ~{need / 2**30:.1f} GB) — sampling may spill "
-                "into system memory and get very slow. Another process may hold a model (e.g. the app window and the web "
-                "mode both running a server): Сервер → «Освободить память» in the other one, or reduce size/batch.", "warn")
+        driver_free, total = torch.cuda.mem_get_info(st["device"])
+        alloc, res = torch.cuda.memory_allocated(st["device"]), torch.cuda.memory_reserved(st["device"])
+        other = max(0, total - driver_free - res)  # рабочий стол, браузеры, другие серверы — не наш torch
+        brief = sysmon.gpu_brief()
+        ctx.log(f"low free VRAM: {free / 2**30:.1f} GB of {total / 2**30:.1f} GB (need ~{need / 2**30:.1f} GB; torch "
+                f"allocated {alloc / 2**30:.1f}, reserved {res / 2**30:.1f}, other processes ~{other / 2**30:.1f}) — "
+                "sampling may spill into system memory and get very slow. Another process may hold a model (e.g. the app "
+                "window and the web mode both running a server): Сервер → «Освободить память» in the other one, close "
+                "browser/overlay hardware acceleration, or reduce size/batch."
+                + (f" GPU: {brief}." if brief else ""), "warn")
+
+
+def _pair_embeds(torch, pe, npe):
+    """Эмбеддинги positive/negative к одной длине (батч CFG требует равенства): короткий повторяется, если длина
+    длинного кратна его длине (обычный случай 77 ↔ 231), иначе добивается пустыми токенами. Длина не растёт выше
+    самого длинного из двух — раньше здесь было общее кратное, и 3 куска против 2 давали 6 (вдвое дороже внимание)."""
+    if pe.shape[1] == npe.shape[1]:
+        return pe, npe
+    lo, hi = sorted((pe.shape[1], npe.shape[1]))
+    if hi % lo == 0:
+        return pe.repeat(1, hi // pe.shape[1], 1), npe.repeat(1, hi // npe.shape[1], 1)
+
+    def pad(x):
+        if x.shape[1] >= hi:
+            return x
+        return torch.cat([x, x.new_zeros(x.shape[0], hi - x.shape[1], x.shape[2])], 1)
+    return pad(pe), pad(npe)
 
 
 def _next_t(sched, i, t):
@@ -985,10 +1030,10 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
             return x.to(device=dev, dtype=dt).repeat(b, *([1] * (x.ndim - 1)))
         pe, npe = rep(positive.embeds), rep(negative.embeds)
         # эмбеддинги разной длины (длинный промпт — несколько кусков по 77) — как ComfyUI: короче повторяется до
-        # общего кратного (нули вместо этого внимание тоже «видит», и картинка смещается)
-        if pe.shape[1] != npe.shape[1]:
-            n = math.lcm(pe.shape[1], npe.shape[1])
-            pe, npe = pe.repeat(1, n // pe.shape[1], 1), npe.repeat(1, n // npe.shape[1], 1)
+        # длины длинного, если она кратна. Общее кратное (0.1.6–0.1.8) при 3 кусках против 2 давало 6 кусков —
+        # вдвое больше самого длинного промпта: внимание и память росли в разы, а картинка менялась. Не кратны —
+        # добиваем пустыми токенами (как было до 0.1.6), лишних кусков не добавляем никогда.
+        pe, npe = _pair_embeds(torch, pe, npe)
         call = {"prompt_embeds": pe, "negative_prompt_embeds": npe, "guidance_scale": float(cfg),
                 "num_images_per_prompt": 1, "output_type": "latent",
                 "generator": torch.Generator(device="cpu").manual_seed(int(seed))}
@@ -1056,6 +1101,9 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         orig = active.encode_prompt
         active.encode_prompt = _fixed_encode(values)
         t0 = tick[0] = time.time()
+        peak_base = torch.cuda.memory_allocated(dev) if dev == "cuda" else 0
+        if dev == "cuda":
+            torch.cuda.reset_peak_memory_stats(dev)
         logs.watchdog(STALL * 2)  # первый шаг дольше: прогрев ядер (MIOpen/cuDNN)
         try:
             with torch.inference_mode():
@@ -1070,11 +1118,21 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         finally:
             active.encode_prompt = orig
             logs.stop_watchdog()
+        peak = 0
+        if dev == "cuda":
+            peak = max(1, torch.cuda.max_memory_allocated(dev) - peak_base)
+            st["sample_peak"][(latent.samples.shape[-2], latent.samples.shape[-1], b)] = peak
         took = time.time() - t0
         _dbg("sampling", round(took, 2), "с")
         if ctx:
             ctx.progress(steps, steps)
-            ctx.log(f"sampling: {took:.1f} s, {took / steps:.2f} s/step")
+            ctx.log(f"sampling: {took:.1f} s, {took / steps:.2f} s/step"
+                    + (f", активации {peak / 2**30:.1f} ГБ" if peak else ""))
+            g = sysmon.gpu_now()
+            if sysmon.slow_clock(g):
+                ctx.log(f"GPU считает на низкой частоте ({sysmon.gpu_brief()}): карта в низком P-state, это не "
+                        "сэмплер — частая причина «стало в 10 раз медленнее». Помогает перезапуск/переустановка "
+                        "драйвера NVIDIA (или закрыть аппаратно-ускоренные приложения и дать карте остыть).", "warn")
         return Latent(out.to("cpu", torch.float32), seed=int(seed))
 
 
@@ -1124,70 +1182,71 @@ def _cap_note(torch, dev, need):
 
 
 def _vae_run(torch, vae, need, fn, ctx=None, key=None):
-    """VAE-операция с местом под неё: при нехватке UNet уходит на CPU, если и так мало — тайлы.
-    Оценка из ComfyUI (см. _vae_need) — нижняя граница: фактический пик декода на больших разрешениях и на ROCm
-    выше, поэтому пик запоминается для этого разрешения и dtype и следующий раз считается от него.
-    OOM → кэш, UNet на CPU, тайлы; не влезло и так — VAE на CPU (медленно, но не ошибка).
-    NaN (проблемный VAE в fp16) → повтор в fp32."""
+    """VAE-операция с местом под неё. Порядок попыток — от дешёвой к дорогой:
+    как есть → тайлы (UNet остаётся на GPU: тайл ~1,1 ГБ против 4,3 ГБ полного декода 1024²) → UNet в RAM →
+    UNet в RAM + тайлы → VAE на CPU (медленно, но не ошибка).
+    Раньше UNet уходил в RAM всегда, как только не хватало места под полный декод: на 8 ГБ картах это 2×5 ГБ по PCIe
+    на каждую картинку и модель оставалась в RAM до следующего запуска — теперь UNet трогаем только когда и тайлы
+    не влезают. Фактический пик запоминается отдельно для полного и тайлового декода (это точнее оценки _vae_need,
+    она — нижняя граница), и следующий раз решение принимается по замеру.
+    OOM → следующая попытка; NaN (проблемный VAE в fp16) → повтор в fp32."""
     st = _state
     dev = next(vae.parameters()).device
     if dev.type != "cuda" or st.get("layout") == "offload":
         return fn()
     peaks = st["vae_peak"]
-    peak_key = (key, str(vae.dtype).replace("torch.", ""))
-    need = max(int(need), peaks.get(peak_key, 0))
-    # Кэш аллокатора — не гарантия: нужный блок из обрывков не собрать («reserved but unallocated»), а с потолком
-    # VRAM новый кусок может уже не влезть. Отдаём кэш драйверу — тогда _free считает по-честному.
-    try:
-        total = torch.cuda.mem_get_info(dev)[1]
-        pct = sysmon.limits()["vram_max_pct"]
-        cap = total * (pct / 100 if 0 < pct < 100 else 1.0)
-        if torch.cuda.memory_reserved(dev) + need > cap:
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
-    if _free(torch, dev) < need:
-        _unet_to(torch, "cpu")
-    tiled = _free(torch, dev) < need
-    _vae_flags(vae, tiling=tiled)
-    _dbg("vae: нужно", round(need / 2**30, 2), "ГБ, свободно", round(_free(torch, dev) / 2**30, 2), "ГБ, тайлы", tiled)
+    pk = (key, str(vae.dtype).replace("torch.", ""))
+    full_need = peaks.get(pk + (False,)) or int(need)
+    tile_need = min(full_need, peaks.get(pk + (True,)) or _vae_tile_need(vae.dtype))
+    free = _free(torch, dev)
 
-    def measure():
+    # (тайлы, переносить ли UNet в RAM) — первое, что влезает в свободное место
+    attempts = []
+    if free >= full_need:
+        attempts.append((False, False))
+    elif free >= tile_need:
+        attempts.append((True, False))
+    attempts += [(False, True), (True, True)]
+    _dbg("vae: нужно", round(full_need / 2**30, 2), "ГБ (тайлы", round(tile_need / 2**30, 2), "ГБ), свободно",
+         round(free / 2**30, 2), "ГБ, UNet на", st.get("unet_at"))
+
+    def measure(tiled):
         torch.cuda.reset_peak_memory_stats(dev)
         base = torch.cuda.memory_allocated(dev)
         out = fn()
-        peaks[peak_key] = max(need, torch.cuda.max_memory_allocated(dev) - base)
+        peaks[pk + (tiled,)] = max(1, torch.cuda.max_memory_allocated(dev) - base)
         return out
 
-    try:
-        out = measure()
-    except Exception as e:
-        if not _is_oom(torch, e):
-            raise
-        note = _cap_note(torch, dev, need)
-        if ctx:
-            ctx.log("VAE: не хватило VRAM — освобождаю UNet и включаю тайлы")
-        torch.cuda.empty_cache()
-        _unet_to(torch, "cpu")
-        torch.cuda.empty_cache()
-        _vae_flags(vae, tiling=True)
-        try:
-            out = measure()
-        except Exception as e2:
-            if not _is_oom(torch, e2):
-                raise
-            if ctx:
-                ctx.log("VAE: и с тайлами не влезло — считаю на CPU (медленно)")
-            with torch.inference_mode(False), torch.no_grad():
-                vae.to("cpu")
+    out, note, moved = None, "", False
+    for tiled, move in attempts:
+        if move and not moved:
             torch.cuda.empty_cache()
-            try:
-                out = fn()
-            except Exception as e3:
-                raise RuntimeError(f"{e3}{note}") from e3
-            finally:
-                with torch.inference_mode(False), torch.no_grad():
-                    vae.to(dev)
+            _unet_to(torch, "cpu")
+            moved = True
+            if ctx:
+                ctx.log("VAE: мало места — на время операции освобождаю UNet (вернётся перед сэмплингом)")
+        _vae_flags(vae, tiling=tiled)
+        try:
+            out = measure(tiled)
+            break
+        except Exception as e:
+            if not _is_oom(torch, e):
+                raise
+            note = note or _cap_note(torch, dev, full_need)
+            torch.cuda.empty_cache()
+    if out is None:
+        if ctx:
+            ctx.log("VAE: и с тайлами не влезло — считаю на CPU (медленно)")
+        with torch.inference_mode(False), torch.no_grad():
+            vae.to("cpu")
+        torch.cuda.empty_cache()
+        try:
+            out = fn()
+        except Exception as e3:
+            raise RuntimeError(f"{e3}{note}") from e3
+        finally:
+            with torch.inference_mode(False), torch.no_grad():
+                vae.to(dev)
     if torch.isnan(out).any() and vae.dtype != torch.float32:
         if ctx:
             ctx.log("VAE produced NaN — retrying in fp32")
@@ -1231,7 +1290,7 @@ def encode_pil(ctx, vae, pil):
             logs.watchdog(STALL)
             try:
                 lat = _vae_run(torch, m, _vae_need("encode", h, w, m.dtype), run, ctx,
-                               key=("encode", w, h)).float()
+                               key=("encode", w, h, 1)).float()
             finally:
                 logs.stop_watchdog()
         _dbg("vae encode", round(time.time() - t0, 2), "с")
@@ -1291,17 +1350,19 @@ def decode_pils(ctx, vae, latent):
         with torch.inference_mode():
             logs.watchdog(STALL)
             try:
-                img = _vae_run(torch, m, _vae_need("decode", h, w, m.dtype), run, ctx, key=("decode", w, h))
+                img = _vae_run(torch, m, _vae_need("decode", h, w, m.dtype), run, ctx,
+                               key=("decode", w, h, latent.samples.shape[0]))
             finally:
                 logs.stop_watchdog()
         _dbg("vae decode", round(time.time() - t0, 2), "с")
         if ctx:
             ctx.log(f"VAE decode {w}×{h}: {time.time() - t0:.1f} s ({str(m.dtype).replace('torch.', '')})")
         pils = _processor(diffusers).postprocess(img.to("cpu", torch.float32), output_type="pil")
+        del img
         if not _opts(ctx)["keep"]:
             _drop()
         try:
-            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()  # кэш декода — драйверу: следующему сэмплингу нужен ровный кусок под активации
         except Exception:
             pass
     return pils

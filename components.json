@@ -141,6 +141,19 @@
         "note": "Сэмплер dpmpp_sde (DPMSolverSDEScheduler в diffusers)"
       },
       {
+        "id": "einops",
+        "title": "einops",
+        "package": "einops",
+        "group": "Генерация",
+        "tabs": [
+          "tocolar"
+        ],
+        "recommended": "0.8.2",
+        "required": false,
+        "size": "~60 КБ",
+        "note": "MangaNinja в ToColar"
+      },
+      {
         "id": "huggingface-hub",
         "title": "Hugging Face Hub",
         "package": "huggingface-hub",
@@ -289,6 +302,111 @@
       "page": "https://github.com/advimman/lama",
       "license": "Apache-2.0",
       "note": "Outpaint в ImageNaizer, как в InvokeAI: пустая часть рамки сначала продолжается LaMa по краям картинки, потом SD дорабатывает её с силой denoise — картинка продолжается, а не рисуется новая поверх"
+    },
+    {
+      "id": "manganinja",
+      "title": "MangaNinja (раскраска по референсу)",
+      "group": "Модели",
+      "tabs": [
+        "tocolar"
+      ],
+      "dir": "models/manganinja",
+      "files": [
+        {
+          "path": "ninja/denoising_unet.pth",
+          "url": "https://huggingface.co/Johanan0528/MangaNinjia/resolve/main/denoising_unet.pth",
+          "bytes": 3438370164,
+          "alt": "ninja/denoising_unet.fp16.safetensors"
+        },
+        {
+          "path": "ninja/reference_unet.pth",
+          "url": "https://huggingface.co/Johanan0528/MangaNinjia/resolve/main/reference_unet.pth",
+          "bytes": 3438320160,
+          "alt": "ninja/reference_unet.fp16.safetensors"
+        },
+        {
+          "path": "ninja/controlnet.pth",
+          "url": "https://huggingface.co/Johanan0528/MangaNinjia/resolve/main/controlnet.pth",
+          "bytes": 1445255634,
+          "alt": "ninja/controlnet.fp16.safetensors"
+        },
+        {
+          "path": "ninja/point_net.pth",
+          "url": "https://huggingface.co/Johanan0528/MangaNinjia/resolve/main/point_net.pth",
+          "bytes": 103252178,
+          "alt": "ninja/point_net.fp16.safetensors"
+        },
+        {
+          "path": "clip/config.json",
+          "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/config.json",
+          "bytes": 4519
+        },
+        {
+          "path": "clip/merges.txt",
+          "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/merges.txt",
+          "bytes": 524619
+        },
+        {
+          "path": "clip/preprocessor_config.json",
+          "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/preprocessor_config.json",
+          "bytes": 316
+        },
+        {
+          "path": "clip/special_tokens_map.json",
+          "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/special_tokens_map.json",
+          "bytes": 389
+        },
+        {
+          "path": "clip/tokenizer.json",
+          "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/tokenizer.json",
+          "bytes": 2224003
+        },
+        {
+          "path": "clip/tokenizer_config.json",
+          "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/tokenizer_config.json",
+          "bytes": 905
+        },
+        {
+          "path": "clip/vocab.json",
+          "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/vocab.json",
+          "bytes": 961143
+        },
+        {
+          "path": "clip/model.safetensors",
+          "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/model.safetensors",
+          "bytes": 1710540580
+        },
+        {
+          "path": "controlnet/config.json",
+          "url": "https://huggingface.co/lllyasviel/control_v11p_sd15_lineart/resolve/main/config.json",
+          "bytes": 998
+        },
+        {
+          "path": "sd/unet/config.json",
+          "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/unet/config.json",
+          "bytes": 743
+        },
+        {
+          "path": "sd/scheduler/scheduler_config.json",
+          "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/scheduler/scheduler_config.json",
+          "bytes": 308
+        },
+        {
+          "path": "sd/vae/config.json",
+          "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/vae/config.json",
+          "bytes": 547
+        },
+        {
+          "path": "sd/vae/diffusion_pytorch_model.safetensors",
+          "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/vae/diffusion_pytorch_model.safetensors",
+          "bytes": 334643276
+        }
+      ],
+      "bytes": 10474100482,
+      "size": "9.8 ГБ",
+      "page": "https://github.com/ali-vilab/MangaNinjia",
+      "license": "CC BY-NC 4.0 (некоммерческая)",
+      "note": "ToColar: переносит цвета с референса на линии страницы точнее SDXL; ~5 ГБ VRAM (fp16). При первой загрузке веса сохраняются в fp16 (.fp16.safetensors), исходные .pth можно удалить"
     }
   ]
 }

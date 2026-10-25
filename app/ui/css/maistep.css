@@ -645,6 +645,13 @@ pre.agb-diff .a { color: var(--p-green-7); } pre.agb-diff .d { color: var(--p-re
 .tc-rng b { font: 500 12px/16px var(--ui-mono); min-width: 32px; text-align: right; }
 .tc-ck.ui-dd { width: 100%; }
 .tc-auto { display: flex; flex-direction: column; gap: 5px; }
+.tc-kind { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: var(--ui-radius); background: var(--ui-bg1); border: 1px solid var(--ui-border); }
+.tc-kind b { font: 600 12px/16px var(--ui-sans); color: var(--ui-fg); }
+.tc-kind span { font: 400 12px/16px var(--ui-sans); color: var(--ui-fg-dim); }
+.tc-ref { display: flex; flex-direction: column; gap: 6px; }
+.tc-ref-it { display: flex; align-items: center; gap: 8px; padding: 4px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-bg1); }
+.tc-ref-it img { width: 44px; height: 44px; object-fit: cover; border-radius: var(--ui-radius); }
+.tc-ref-it .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 12px/16px var(--ui-sans); color: var(--ui-fg-dim); }
 .cn-miss { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-bg1); font: 400 12px/16px var(--ui-sans); }
 .tc-check { display: flex; align-items: center; gap: 6px; font: 400 12px/16px var(--ui-sans); color: var(--ui-fg); cursor: pointer; }
 .tc-llm { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; color: var(--ui-fg-dim); }

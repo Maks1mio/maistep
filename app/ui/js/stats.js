@@ -33,6 +33,8 @@ function flags(s) {
     ram: lim.ram_reserve_gb > 0 && s.ram_total - s.ram_used < lim.ram_reserve_gb * GB * 1.5,
     vram: !!g && pct(g.vram_used, g.vram_total) >= cap - 3,
     temp: g?.temp >= 85,
+    // занята, но частота ниже половины максимума — карта в низком P-state (драйвер/питание), счёт в разы медленнее
+    clock: !!g && g.clock && g.clock_max && (g.util || 0) >= 80 && g.clock < g.clock_max * 0.5,
     cap,
   };
 }
@@ -120,8 +122,12 @@ function drawMetrics(s) {
     { bad: f.ram, mark: lim.ram_reserve_gb > 0 ? 1 - (lim.ram_reserve_gb * GB) / s.ram_total : 0 });
   mp.ramS.upd(hist.map(x => x.ram_used), s.ram_total);
   if (g) {
+    // температура, частота и мощность — по частоте видно низкий P-state («GPU 100%, но 48 °C» — карта не разогналась)
+    const extra = [g.temp != null ? `${Math.round(g.temp)}°C` : '',
+                   g.clock ? `${Math.round(g.clock)}${g.clock_max ? `/${Math.round(g.clock_max)}` : ''} МГц` : '',
+                   g.power ? `${Math.round(g.power)} Вт` : ''].filter(Boolean).map(x => ` · ${x}`).join('');
     mp.g.upd(g.util != null ? `${Math.round(g.util)}%` : '—', (g.util || 0) / 100,
-      { extra: g.temp != null ? ` · ${Math.round(g.temp)}°C` : '', extraBad: f.temp, mark: lim.gpu_load < 100 ? lim.gpu_load / 100 : 0 });
+      { extra, extraBad: f.temp || f.clock, mark: lim.gpu_load < 100 ? lim.gpu_load / 100 : 0 });
     mp.gS.upd(hist.map(x => x.gpu), 100);
     mp.vram.upd(`${gb(g.vram_used)} / ${gb(g.vram_total)} ГБ`, pct(g.vram_used, g.vram_total) / 100,
       { bad: f.vram, mark: f.cap < 100 ? f.cap / 100 : 0 });

@@ -1,9 +1,11 @@
 """Статистика системы и лимиты нагрузки — только стандартная библиотека (ctypes / /proc / sysfs / nvidia-smi).
 
 sample(): CPU %, RAM системы, RAM процесса сервера (в нём работает torch), видеокарта — загрузка, температура,
-VRAM (NVIDIA — nvidia-smi; AMD на Linux — sysfs amdgpu; иначе — VRAM из torch, если он уже загружен), память torch.
+частота, мощность, VRAM (NVIDIA — NVML через ctypes, без процесса nvidia-smi; AMD на Linux — sysfs amdgpu; иначе —
+VRAM из torch, если он уже загружен), память torch.
 Фоновый поток снимает показатели раз в секунду, пока их смотрят (/api/stats) или идёт запуск; во время запуска
-раз в 5 с пишет строку в лог (после зависания системы видно, что кончилось — RAM или VRAM).
+раз в 5 с пишет строку в лог (после зависания системы видно, что кончилось — RAM или VRAM). По частоте и мощности
+видно низкий P-state карты («GPU 100%, 48 °C» — счёт в десятки раз медленнее, это не код maistep).
 
 Лимиты (user/settings.json → "limits", UI — «Сервер → Производительность и лимиты…»):
   ram_reserve_gb  — сколько RAM оставлять свободной: меньше — запуск прерывается (иначе система уходит в своп
@@ -14,6 +16,7 @@ VRAM (NVIDIA — nvidia-smi; AMD на Linux — sysfs amdgpu; иначе — VRA
   max_mp          — предел размера картинки в мегапикселях (0 — без предела).
 """
 import collections
+import ctypes
 import json
 import os
 import re
@@ -156,21 +159,110 @@ def _ram():
 
 # ---------- видеокарта ----------
 _smi = shutil.which("nvidia-smi")
+_NVML = None          # (lib, handle) или False — NVML не поднялся
+_smi_cache = [0.0, None]   # nvidia-smi — запасной путь: зовём не чаще раза в 2 с (запуск процесса ~80 мс)
+
+
+class _NvmlUtil(ctypes.Structure):
+    _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+
+class _NvmlMem(ctypes.Structure):
+    _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
+
+
+def _nvml():
+    """NVML напрямую через ctypes: без процесса nvidia-smi на каждый снимок (раз в секунду во время запусков —
+    на Windows это ещё и очередь команд драйвера). Заодно даёт частоты и мощность: по ним видно «GPU 100%, но
+    застрял на низкой частоте» — карта в таком состоянии считает в десятки раз медленнее, и это не наш код."""
+    global _NVML
+    if _NVML is not None:
+        return _NVML or None
+    try:
+        names = ["nvml.dll"] if os.name == "nt" else ["libnvidia-ml.so.1", "libnvidia-ml.so"]
+        lib = None
+        for n in names:
+            try:
+                lib = ctypes.CDLL(n)
+                break
+            except OSError:
+                continue
+        if lib is None:
+            raise OSError("nvml not found")
+        lib.nvmlInit_v2()
+        lib.nvmlDeviceGetHandleByIndex_v2.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
+        lib.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
+        h = ctypes.c_void_p()
+        if lib.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(h)) != 0 or not h:
+            raise OSError("no device")
+        for fn, sig in (("nvmlDeviceGetUtilizationRates", [ctypes.c_void_p, ctypes.POINTER(_NvmlUtil)]),
+                        ("nvmlDeviceGetMemoryInfo", [ctypes.c_void_p, ctypes.POINTER(_NvmlMem)]),
+                        ("nvmlDeviceGetTemperature", [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_uint)]),
+                        ("nvmlDeviceGetClockInfo", [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_uint)]),
+                        ("nvmlDeviceGetMaxClockInfo", [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_uint)]),
+                        ("nvmlDeviceGetPowerUsage", [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]),
+                        ("nvmlDeviceGetName", [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint])):
+            getattr(lib, fn).argtypes = sig
+        _NVML = (lib, h)
+    except Exception:
+        _NVML = False
+    return _NVML or None
 
 
 def _nvidia():
+    nv = _nvml()
+    if nv:
+        lib, h = nv
+        u, m = _NvmlUtil(), _NvmlMem()
+        out = {"name": "NVIDIA"}
+        try:
+            buf = ctypes.create_string_buffer(96)
+            lib.nvmlDeviceGetName(h, buf, len(buf))
+            out["name"] = buf.value.decode("utf-8", "replace") or "NVIDIA"
+        except Exception:
+            pass
+        try:
+            if lib.nvmlDeviceGetMemoryInfo(h, ctypes.byref(m)) == 0:
+                out.update(vram_used=m.used, vram_total=m.total)
+        except Exception:
+            pass
+        try:
+            if lib.nvmlDeviceGetUtilizationRates(h, ctypes.byref(u)) == 0:
+                out["util"] = float(u.gpu)
+        except Exception:
+            pass
+        for key, fn, args in (("temp", "nvmlDeviceGetTemperature", (0,)),
+                              ("clock", "nvmlDeviceGetClockInfo", (1,)),        # NVML_CLOCK_SM
+                              ("clock_max", "nvmlDeviceGetMaxClockInfo", (1,)),
+                              ("power", "nvmlDeviceGetPowerUsage", ())):        # мВт
+            try:
+                v = ctypes.c_uint()
+                if getattr(lib, fn)(h, *args, ctypes.byref(v)) == 0 and v.value:
+                    out[key] = v.value / (1000 if key == "power" else 1)
+            except Exception:
+                pass
+        return out if "vram_total" in out else _nvidia_smi()
+    return _nvidia_smi()
+
+
+def _nvidia_smi():
     if not _smi:
         return None
+    stamp = time.time()
+    if _smi_cache[1] is not None and stamp - _smi_cache[0] < 2:
+        return _smi_cache[1]
     try:
         r = subprocess.run([_smi, "--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw",
                             "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5,
                            creationflags=0x08000000 if os.name == "nt" else 0)
         f = [x.strip() for x in (r.stdout or "").splitlines()[0].split(",")]
         num = lambda s: float(s) if re.fullmatch(r"[\d.]+", s) else None  # noqa: E731
-        return {"name": f[0], "util": num(f[1]), "temp": num(f[2]), "vram_used": (num(f[3]) or 0) * 2**20,
-                "vram_total": (num(f[4]) or 0) * 2**20, "power": num(f[5]) if len(f) > 5 else None}
+        out = {"name": f[0], "util": num(f[1]), "temp": num(f[2]), "vram_used": (num(f[3]) or 0) * 2**20,
+               "vram_total": (num(f[4]) or 0) * 2**20, "power": num(f[5]) if len(f) > 5 else None}
     except Exception:
-        return None
+        out = None
+    _smi_cache[:] = [stamp, out]
+    return out
 
 
 def _amd_sysfs():
@@ -213,6 +305,33 @@ def sample():
             "gpu": gpu, "torch": tq and {"alloc": tq["alloc"], "reserved": tq["reserved"]}}
 
 
+def slow_clock(g):
+    """GPU занят (>=80%), а частота ниже половины максимума: в этом состоянии карта считает в десятки раз медленнее
+    (драйвер не поднял P-state / питание), и виноват не сэмплер. Видно по «GPU 100%, но 48 °C»."""
+    c, m = (g or {}).get("clock"), (g or {}).get("clock_max")
+    return bool(c and m and (g.get("util") or 0) >= 80 and c < 0.5 * m)
+
+
+def gpu_now():
+    """Свежие показатели видеокарты (NVML / sysfs; nvidia-smi — запасной путь с кэшем)."""
+    return _nvidia() or (_amd_sysfs() if sys.platform.startswith("linux") else None) or {}
+
+
+def gpu_brief():
+    """Строка о видеокарте для предупреждений: загрузка, температура, частота, мощность."""
+    g = gpu_now()
+    parts = []
+    if g.get("util") is not None:
+        parts.append(f"{g['util']:.0f}%")
+    if g.get("temp"):
+        parts.append(f"{g['temp']:.0f}°C")
+    if g.get("clock"):
+        parts.append(f"{g['clock']:.0f} MHz" + (f" из {g['clock_max']:.0f}" if g.get("clock_max") else ""))
+    if g.get("power"):
+        parts.append(f"{g['power']:.0f} W")
+    return " · ".join(parts)
+
+
 # ---------- фон ----------
 def _loop():
     global _last
@@ -250,6 +369,13 @@ def line(s):
     if g:
         parts.append(f"GPU {g.get('util') if g.get('util') is not None else '?'}% {g.get('temp') or '?'}°C "
                      f"VRAM {g.get('vram_used', 0) / GB:.1f}/{g.get('vram_total', 0) / GB:.1f} ГБ")
+        if g.get("clock"):
+            parts.append(f"{g['clock']:.0f}" + (f"/{g['clock_max']:.0f}" if g.get("clock_max") else "") + " МГц")
+        if g.get("power"):
+            parts.append(f"{g['power']:.0f} Вт")
+        if slow_clock(g):
+            parts.append("частота ниже половины максимума — карта в низком P-state (драйвер/питание), "
+                         "счёт идёт в разы медленнее")
     if s.get("torch"):
         parts.append(f"torch {s['torch']['alloc'] / GB:.1f}/{s['torch']['reserved'] / GB:.1f} ГБ")
     return " · ".join(parts)
