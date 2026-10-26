@@ -4,12 +4,12 @@
 // воркфлоу — граф, .py — CodeEditor, картинка — просмотр (viewer.js, листаются картинки папки); пробел — просмотр;
 // стрелки — выбор; картинку можно перетащить на граф (нода «Загрузить картинку»); ПКМ — меню (ctxmenu.js).
 import { h, debounce } from './util.js';
-import { S, emit, select } from './store.js';
+import { S, emit, select, on } from './store.js';
 import { invoke, assetUrl } from './api.js';
 import { icon } from './icons.js';
 import { search, dropdown } from './kit.js';
 import { registerInspector } from './inspector.js';
-import { showView } from './dock.js';
+import { isShown } from './dock.js';
 import { popup } from './ctxmenu.js';
 import { openViewer, copyImage } from './viewer.js';
 
@@ -64,6 +64,22 @@ export async function loadAssets(refresh = false) {
   S.assets = [];
   buildTree();
   draw();
+}
+
+const finger = list => (list || []).map(e => `${e.name}\t${e.dir ? 1 : 0}\t${e.size || 0}\t${e.mtime || 0}`).join('\n');
+// папка на диске меняется снаружи (генерация в output/, сохранение, git) — список сам
+async function peek() {
+  if (document.hidden || !isShown('project') || query || st.mode === 'gfx') return;
+  let list;
+  try { list = await invoke('fs_list', { path: st.dir }); }
+  catch { return; }
+  const raw = listing.get(st.dir);
+  if (raw && finger(raw) === finger(list)) return;
+  listing.set(st.dir, list);
+  const y = $('pj-body')?.scrollTop || 0, keep = S.sel?.kind === 'file' ? S.sel.id : null;
+  await draw();
+  if ($('pj-body')) $('pj-body').scrollTop = y;
+  if (keep) mark(keep);
 }
 
 const $ = id => document.getElementById(id);
@@ -132,7 +148,7 @@ const projectName = () => S.project?.root?.split(/[\\/]/).filter(Boolean).pop() 
 function crumbs() {
   const parts = st.dir ? st.dir.split('/') : [];
   $('pj-crumbs').replaceChildren(
-    h('button.b', { 'data-tip': 'Вверх (Backspace)', disabled: !st.dir, onclick: up }, icon('moveUp', { size: 16 })),
+    h('div.ui-tb', {}, h('button.b', { 'data-tip': 'Вверх (Backspace)', disabled: !st.dir, onclick: up }, icon('moveUp', { size: 16 }))),
     placeDd,
     h(`span.cr${parts.length ? '' : '.last'}`, { onclick: () => go('') }, st.mode === 'gfx' ? 'graphics' : projectName()),
     ...parts.flatMap((p, i) => [h('span.gt', {}, icon('right', { size: 12 })),
@@ -320,11 +336,11 @@ function fileInspector(s) {
     img ? dims : null,
     img ? h('div.preview', { 'data-tip': 'Щелчок — просмотр' }, h('img', { src: assetUrl(s.id, 'p'), alt: s.id,
       onload: e => { dims.textContent = `${e.target.naturalWidth}×${e.target.naturalHeight} px`; } })) : null,
-    h('div.row', { style: { marginTop: '8px', flexWrap: 'wrap' } },
-      d ? h('button.primary', { onclick: () => openDoc(d) }, icon('open', { size: 14 }), 'Открыть в редакторе') : null,
-      img ? h('button.primary', { onclick: () => preview(items.find(x => x.path === s.id) || { path: s.id }) }, icon('show', { size: 14 }), 'Просмотр') : null,
-      h('button', { onclick: () => reveal(s.id) }, icon('folder', { size: 14 }), 'В проводнике'),
-      h('button', { onclick: () => navigator.clipboard?.writeText(s.id) }, icon('copy', { size: 14 }), 'Копировать путь')),
+    h('div.row', { style: { marginTop: '8px', flexWrap: 'wrap', gap: '6px' } },
+      d ? h('button.ui-btn.primary.slim', { onclick: () => openDoc(d) }, icon('open', { size: 14 }), 'Открыть в редакторе') : null,
+      img ? h('button.ui-btn.primary.slim', { onclick: () => preview(items.find(x => x.path === s.id) || { path: s.id }) }, icon('show', { size: 14 }), 'Просмотр') : null,
+      h('button.ui-btn.secondary.slim', { onclick: () => reveal(s.id) }, icon('folder', { size: 14 }), 'В проводнике'),
+      h('button.ui-btn.secondary.slim', { onclick: () => navigator.clipboard?.writeText(s.id) }, icon('copy', { size: 14 }), 'Копировать путь')),
   ];
 }
 
@@ -342,7 +358,7 @@ export function initProject() {
   sortDd = dropdown(st.sort, SORTS, v => { st.sort = v; keep(); draw(); }, { link: true, filter: false });
   sortDd.dataset.tip = 'Сортировка (папки — всегда сверху)';
   $('pj-bar').replaceChildren(s, sortDd, seg,
-    h('button.icon', { 'data-tip': 'Обновить', onclick: () => loadAssets(true) }, icon('refresh', { size: 16 })));
+    h('div.ui-tb', {}, h('button.b', { 'data-tip': 'Обновить (F5)', onclick: () => loadAssets(true) }, icon('refresh', { size: 16 }))));
   const range = h('input.ui-range', { type: 'range', min: 48, max: 160, step: 4, value: st.size, 'data-tip': 'Размер плиток (Ctrl+колесо)' });
   const resize = () => { $('assets').style.setProperty('--sz', `${st.size}px`); keep(); };
   range.addEventListener('input', () => { st.size = Number(range.value); resize(); });
@@ -360,11 +376,15 @@ export function initProject() {
     if (e.target.closest('input, textarea')) return;
     // обработанные клавиши не уходят дальше (пробел открыл бы поиск нод графа, Backspace — удалил ноду)
     if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) { e.preventDefault(); e.stopPropagation(); up(); return; }
+    if (e.key === 'F5') { e.preventDefault(); e.stopPropagation(); loadAssets(true); return; }
     if (navKey(e)) { e.preventDefault(); e.stopPropagation(); }
   });
   body.addEventListener('contextmenu', bgMenu);
   body.addEventListener('pointerdown', () => body.focus({ preventScroll: true }));
   registerInspector('file', fileInspector);
+  on('run-done', () => { if (st.dir === 'output' || st.dir === 'input' || !st.dir) loadAssets(true); });
+  on('saved', () => { if (!st.dir || st.dir === 'workflows') loadAssets(true); });
+  setInterval(peek, 1500);
   draw();
 }
 

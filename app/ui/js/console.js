@@ -49,7 +49,7 @@ function counts() {
 export function initConsole() {
   const bar = document.getElementById('console-bar');
   bar.append(
-    h('button.icon', { title: 'Очистить консоль', onclick: () => { lines.length = 0; redraw(); } }, icon('delete', { size: 14 })),
+    h('div.ui-tb', {}, h('button.b', { 'data-tip': 'Очистить консоль', onclick: () => { lines.length = 0; redraw(); } }, icon('delete', { size: 14 }))),
     h('div.ui-seg', {}, SRC.map(([id, t]) => h(`button${id === filter ? '.on' : ''}`, {
       'data-f': id,
       onclick: e => { filter = id; bar.querySelectorAll('[data-f]').forEach(b => b.classList.toggle('on', b === e.currentTarget)); redraw(); },

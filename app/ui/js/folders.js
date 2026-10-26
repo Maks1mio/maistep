@@ -14,12 +14,14 @@ const log = (level, text) => emit('log', { src: 'editor', level, text });
 
 export function pickFolder({ title = 'Выбор папки', value = '', ok = 'Выбрать папку' } = {}) {
   return new Promise(resolve => {
-    let cur = null, q = '', sel = null, editing = null, recent = [];
+    let cur = null, q = '', sel = null, editing = null, recent = [], fp = '';
     const back = [], fwd = [];
-    const side = h('div.fb-side'), list = h('div.fb-list', { tabindex: 0 }), crumbs = h('div.fb-crumbs'), foot = h('span.fb-sel');
+    const side = h('div.fb-side.ui-list'), list = h('div.fb-list', { tabindex: 0 }), crumbs = h('div.fb-crumbs'), foot = h('span.fb-sel');
     const err = h('span.fb-err');
-    const done = v => { bg.remove(); resolve(v); };
+    const done = v => { clearInterval(watch); bg.remove(); resolve(v); };
     const say = t => { err.textContent = t || ''; };
+    const finger = d => `${d.path}\n${(d.dirs || []).map(x => `${x.name}\t${x.git ? 1 : 0}`).join('\n')}`;
+    const busy = () => editing || crumbs.querySelector('input') || document.activeElement?.matches?.('.fb-ren, .fb-path');
 
     async function go(path, { hist = true, select = null } = {}) {
       let d;
@@ -27,13 +29,27 @@ export function pickFolder({ title = 'Выбор папки', value = '', ok = '
       catch (e) { say(e.message); return; }
       if (d.error) { say(d.error); return; }
       if (hist && cur && cur.path !== d.path) { back.push(cur.path); fwd.length = 0; }
-      cur = d; say(''); editing = null;
+      cur = d; fp = finger(d); say(''); editing = null;
       sel = select ? cur.dirs.find(x => x.path === select) || null : null;
       if (!select) { q = ''; sr.input.value = ''; sr.classList.remove('has-text'); }
       draw();
       list.focus();
     }
     const reload = select => go(cur.path, { hist: false, select });
+    // папка на диске меняется снаружи (проводник ОС, git, другой диалог) — подхватываем без F5
+    async function peek() {
+      if (!cur || busy() || document.hidden) return;
+      let d;
+      try { d = await api(`/api/fs/dirs?path=${encodeURIComponent(cur.path)}`); }
+      catch { return; }
+      if (d.error || finger(d) === fp) return;
+      const keep = sel?.path, y = list.scrollTop;
+      cur = d; fp = finger(d);
+      sel = keep ? cur.dirs.find(x => x.path === keep) || null : null;
+      draw();
+      list.scrollTop = y;
+    }
+    const watch = setInterval(peek, 1500);
     const shown = () => (cur?.dirs || []).filter(d => !q || d.name.toLowerCase().includes(q));
 
     // ---------- действия ----------
@@ -175,7 +191,7 @@ export function pickFolder({ title = 'Выбор папки', value = '', ok = '
       tbtn('new', 'nodes/newFolder', 'Новая папка (Ctrl+Shift+N)', mkdir));
     const sr = search({ placeholder: 'Фильтр папок', onInput: v => { q = v.toLowerCase(); sel = null; draw(); } });
     const okBtn = h('button.ui-btn.primary.fb-ok', { onclick: () => cur && done(sel?.path || cur.path) }, ok);
-    const dlg = h('div.ui-dialog.fb-dlg', { onkeydown: e => { e.stopPropagation(); if (e.key === 'Escape' && !editing) done(null); else keys(e); } },
+    const dlg = h('div.ui-dialog.fb-dlg', { tabindex: -1, onkeydown: e => { e.stopPropagation(); if (e.key === 'Escape' && !editing) done(null); else keys(e); } },
       h('div.ttl', {}, title, h('span.x', { onclick: () => done(null) }, icon('close', { size: 16 }))),
       h('div.fb-top', {}, tb, crumbs, sr),
       h('div.fb-body', {}, side, list),

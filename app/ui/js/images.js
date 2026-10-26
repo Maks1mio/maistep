@@ -4,6 +4,7 @@
 import { h } from './util.js';
 import { emit } from './store.js';
 import { api, fileUrl, upload } from './backend.js';
+import { search } from './kit.js';
 
 const IMG = /\.(png|jpe?g|webp|gif|bmp)$/i;
 const log = (level, text) => emit('log', { src: 'editor', level, text });
@@ -66,14 +67,15 @@ export async function imagesFromClipboard(e) {
 export const clipboardHasImage = e => [...(e.clipboardData?.items || [])].some(i => i.kind === 'file' && /^image\//.test(i.type));
 
 // окно выбора: вкладки «Загруженные (input/)» и «Результаты (output/)», поиск, «С диска…»
-let pop = null;
-export const closeImagePicker = () => { pop?.remove(); pop = null; };
+let pop = null, watch = 0;
+export const closeImagePicker = () => { clearInterval(watch); pop?.remove(); pop = null; };
 
 export async function imagePicker(at, { value = '', onPick }) {
   closeImagePicker();
   const r = at instanceof Element ? at.getBoundingClientRect() : { left: at.clientX, bottom: at.clientY };
   let dir = /^output\//.test(value) ? 'output' : 'input', files = { input: null, output: null };
-  const q = h('input', { placeholder: 'поиск по имени…', spellcheck: false });
+  const sr = search({ placeholder: 'поиск по имени…', onInput: () => fill() });
+  sr.style.flex = '1';
   const grid = h('div.lgrid.lpick.ipick');
   const fileIn = h('input', { type: 'file', accept: 'image/*', multiple: false, style: { display: 'none' } });
   const tabs = h('div.ui-seg');
@@ -84,8 +86,8 @@ export async function imagePicker(at, { value = '', onPick }) {
     try { pick(await upload(f)); } catch (e) { log('error', `загрузка: ${e.message} (сервер запущен?)`); }
   };
   pop = h('div.gfloat.lpop', { onpointerdown: e => e.stopPropagation() },
-    h('div.row', { style: { gap: '6px', marginBottom: '6px' } }, tabs, q,
-      h('button.primary', { onclick: () => fileIn.click(), 'data-tip': 'Выбрать файл в проводнике — загрузится в input/' }, 'С диска…'), fileIn),
+    h('div.row', { style: { gap: '6px', marginBottom: '6px' } }, tabs, sr,
+      h('button.ui-btn.primary.slim', { onclick: () => fileIn.click(), 'data-tip': 'Выбрать файл в проводнике — загрузится в input/' }, 'С диска…'), fileIn),
     grid);
   document.body.append(pop);
   const place = () => {
@@ -98,7 +100,7 @@ export async function imagePicker(at, { value = '', onPick }) {
       h(`button${dir === k ? '.on' : ''}`, { onclick: () => { dir = k; fill(); load(); } }, t)));
     const list = files[dir];
     if (!list) { grid.replaceChildren(h('div.dim', {}, 'загрузка…')); return place(); }
-    const s = q.value.toLowerCase();
+    const s = sr.input.value.toLowerCase();
     const vis = list.filter(f => !s || f.file.toLowerCase().includes(s)).slice(0, 120);
     grid.replaceChildren(...(vis.length ? vis.map(f => h(`div.ltile${f.file === value ? '.sel' : ''}`, { 'data-tip': f.file, onclick: () => pick(f.file) },
       h('div.lth', {}, h('img', { src: fileUrl(f.file), loading: 'lazy', alt: '', draggable: false })),
@@ -113,11 +115,21 @@ export async function imagePicker(at, { value = '', onPick }) {
     } catch (e) { files[dir] = []; log('error', `список картинок: ${e.message} (сервер запущен?)`); }
     if (pop) fill();
   };
-  q.addEventListener('input', fill);
-  q.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') closeImagePicker(); if (e.key === 'Enter') grid.querySelector('.ltile')?.click(); });
+  sr.input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') closeImagePicker(); if (e.key === 'Enter') grid.querySelector('.ltile')?.click(); });
   fill();
-  q.focus();
+  sr.input.focus();
   load();
+  watch = setInterval(async () => {
+    if (!pop) { clearInterval(watch); return; }
+    try {
+      const l = await api(`/api/files?dir=${dir}`);
+      const next = l.filter(f => IMG.test(f.file) && !/(naizer|tocolar)_/.test(f.file));
+      const a = (files[dir] || []).map(f => f.file).join('\n'), b = next.map(f => f.file).join('\n');
+      if (a === b) return;
+      files[dir] = next;
+      fill();
+    } catch {}
+  }, 2000);
   const off = e => { if (pop && !pop.contains(e.target)) { closeImagePicker(); removeEventListener('pointerdown', off, true); } };
   setTimeout(() => addEventListener('pointerdown', off, true));
 }

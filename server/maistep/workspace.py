@@ -83,8 +83,19 @@ def drives():
 
 
 def dirs(path=None):
-    """Обзор: папка → вложенные папки (скрытые не показываем). Без пути — домашняя папка."""
-    p = norm(path or Path.home())
+    """Обзор: папка → вложенные папки (скрытые не показываем). Без пути — домашняя.
+    Если указанной папки уже нет (удалили снаружи) — ближайший существующий родитель."""
+    raw = Path(os.path.expanduser(str(path or Path.home()).strip() or str(Path.home())))
+    try:
+        p = raw.resolve()
+    except OSError:
+        p = Path.home()
+    if p.is_file():
+        p = p.parent
+    while not p.is_dir() and p.parent != p:
+        p = p.parent
+    if not p.is_dir():
+        p = Path.home()
     out = []
     try:
         for e in sorted(os.scandir(p), key=lambda e: e.name.lower()):

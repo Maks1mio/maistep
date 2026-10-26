@@ -901,9 +901,13 @@ async function onPaste(e) {
 }
 
 // ---------- вид ----------
+let fitLater = false;
 export function fit() {
   const d = cur();
   if (!d?.data.nodes.length || !wrap) return;
+  // панель ещё не разложена (скрыта, 0×0) — вписываем, когда появится размер: иначе масштаб падал до 1%
+  if (wrap.clientWidth < 40 || wrap.clientHeight < 40) { fitLater = true; return; }
+  fitLater = false;
   const Ls = d.data.nodes.map(n => [n, layout(n, d)]);
   const x0 = Math.min(...Ls.map(([n]) => n.x)) - 40, y0 = Math.min(...Ls.map(([n]) => n.y)) - 40;
   const x1 = Math.max(...Ls.map(([n, L]) => n.x + L.w)) + 40, y1 = Math.max(...Ls.map(([n, L]) => n.y + L.h)) + 40;
@@ -947,7 +951,7 @@ function palette() {
 
 function build() {
   const v = document.getElementById('v-graph');
-  if (!cur()) { v.replaceChildren(h('div.msg', {}, h('div', {}, 'Нет воркфлоу'), h('button.primary', { onclick: () => emit('new-workflow') }, 'Создать воркфлоу'))); cv = null; return; }
+  if (!cur()) { v.replaceChildren(h('div.msg', {}, h('div', {}, 'Нет воркфлоу'), h('button.ui-btn.primary', { onclick: () => emit('new-workflow') }, 'Создать воркфлоу'))); cv = null; return; }
   readTheme();
   view = views.get(S.current.workflow) || { x: 40, y: 20, z: 1 };
   cv = h('canvas', { tabIndex: 0 });
@@ -955,10 +959,10 @@ function build() {
   const d = cur();
   v.replaceChildren(
     h('div.bar', {},
-      h('button.primary', { onclick: () => queuePrompt(), 'data-tip': 'Запустить воркфлоу (Ctrl+Enter)' }, icon('play', { size: 14 }), 'Запуск'),
-      h('button', { onclick: () => checkGraph(), 'data-tip': 'Проверить связи и входы' }, icon('check', { size: 14 }), 'Проверить'),
-      h('button', { onclick: fit, 'data-tip': 'Вписать (F)' }, icon('fit', { size: 14 }), 'Вписать'),
-      h('button', { onclick: deleteSel, 'data-tip': 'Удалить выбранное (Del)' }, icon('delete', { size: 14 })),
+      h('button.ui-btn.primary.slim', { onclick: () => queuePrompt(), 'data-tip': 'Запустить воркфлоу (Ctrl+Enter)' }, icon('play', { size: 14 }), 'Запуск'),
+      h('button.ui-btn.secondary.slim', { onclick: () => checkGraph(), 'data-tip': 'Проверить связи и входы' }, icon('check', { size: 14 }), 'Проверить'),
+      h('button.ui-btn.secondary.slim', { onclick: fit, 'data-tip': 'Вписать (F)' }, icon('fit', { size: 14 }), 'Вписать'),
+      h('div.ui-tb', {}, h('button.b', { onclick: deleteSel, 'data-tip': 'Удалить выбранное (Del)' }, icon('delete', { size: 14 }))),
       h('span.grow'),
       h('span.dim', {}, d.data.title || d.id)),
     h('div.bp', {}, palette(), wrap));
@@ -969,9 +973,9 @@ function build() {
   cv.addEventListener('wheel', onWheel, { passive: false });
   cv.addEventListener('dragover', e => e.preventDefault());
   cv.addEventListener('drop', onDrop);
-  new ResizeObserver(() => draw()).observe(wrap);
+  new ResizeObserver(() => (fitLater ? fit() : draw())).observe(wrap);
   issues = new Map();
-  if (!views.has(S.current.workflow)) requestAnimationFrame(fit); else draw();
+  if (!views.has(S.current.workflow) || !(view.z > 0.011)) requestAnimationFrame(fit); else draw();
   if (S.server.running) for (const pid of providersUsed(d)) getModels(pid);
 }
 

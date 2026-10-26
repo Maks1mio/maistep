@@ -108,7 +108,7 @@ UPSCALE = ["nearest-exact", "bilinear", "area", "bicubic"]
 _lock = threading.RLock()
 _state = {"key": None, "pipe": None, "i2i": None, "i2i_cls": None, "loras": {}, "layout": None, "device": None,
           "dtype": None, "vae_dtype": None, "unet_at": None, "ckpt": None, "sdxl": False, "vaes": {}, "cns": {},
-          "cn_pipes": {}, "vae_peak": {}, "sample_peak": {}}
+          "cn_pipes": {}, "vae_peak": {}, "sample_peak": {}, "fused": {}, "lora_backup": {}, "lora_ok": set()}
 _cap_applied = [None]  # какой потолок VRAM уже применён к аллокатору (None — не применяли)
 
 
@@ -282,7 +282,7 @@ def _vae_flags(vae, slicing=None, tiling=None):
 def _drop():
     _state.update(key=None, pipe=None, i2i=None, i2i_cls=None, loras={}, layout=None, device=None, dtype=None,
                   vae_dtype=None, unet_at=None, ckpt=None, sdxl=False, vaes={}, cns={}, cn_pipes={}, vae_peak={},
-                  sample_peak={})
+                  sample_peak={}, fused={}, lora_backup={}, lora_ok=set())
     gc.collect()
 
 
@@ -552,32 +552,84 @@ def _load_lora(pipe, path, ctx=None):
             f"LoRA «{path.name}» does not match the checkpoint (file: {_lora_arch(path)}). "
             "Use a LoRA for the same base: SDXL checkpoint — SDXL LoRA, SD1.5 — SD1.5 LoRA.")
     st["loras"][str(path)] = ad
+    st["lora_ok"].add(str(path))
     if ctx:
         ctx.log(f"LoRA loaded: {path.name}")
     return ad
 
 
-def _apply_loras(pipe, unet=(), te=(), ctx=None):
-    """Силы адаптеров по компонентам: unet — из MODEL, text_encoder* — из CLIP (как strength_model/strength_clip)."""
-    wu, wt = {}, {}
-    for p, s in unet:
-        a = _load_lora(pipe, Path(p), ctx)
-        wu[a] = wu.get(a, 0.0) + float(s)
-    for p, s in te:
-        a = _load_lora(pipe, Path(p), ctx)
-        wt[a] = wt.get(a, 0.0) + float(s)
-    names = [a for a in {**wu, **wt} if wu.get(a) or wt.get(a)]
-    if not names:
-        if _state["loras"]:
-            pipe.disable_lora()
-        return
-    comps = [c for c in ("unet", "text_encoder", "text_encoder_2") if getattr(pipe, c, None) is not None]
-    weights = [{c: (wu.get(a, 0.0) if c == "unet" else wt.get(a, 0.0)) for c in comps} for a in names]
-    try:
-        pipe.enable_lora()
-        pipe.set_adapters(names, adapter_weights=weights)
-    except Exception as e:
-        raise ValueError(f"LoRA could not be applied: {type(e).__name__}: {e}") from e
+def _lora_key(pairs):
+    """Набор LoRA как ключ: путь → сумма сил, нулевые выкидываются."""
+    w = {}
+    for p, s in pairs:
+        w[str(p)] = w.get(str(p), 0.0) + float(s)
+    return tuple(sorted((p, s) for p, s in w.items() if s))
+
+
+def _unload_adapters(pipe):
+    """Снять адаптеры PEFT со всех компонентов (вшитое в веса остаётся)."""
+    if _state["loras"]:
+        pipe.unload_lora_weights()
+        _state["loras"] = {}
+
+
+def _base_of(mod):
+    return mod.get_base_layer() if hasattr(mod, "get_base_layer") else mod
+
+
+def _backup(pipe, comps):
+    """Оригиналы весов слоёв, куда попадает LoRA, — в RAM (один раз на чекпоинт), чтобы потом вернуть их без
+    перезагрузки модели."""
+    from peft.tuners.tuners_utils import BaseTunerLayer
+    bk = _state["lora_backup"]
+    for c in comps:
+        for name, mod in getattr(pipe, c).named_modules():
+            if isinstance(mod, BaseTunerLayer) and (c, name) not in bk:
+                bk[(c, name)] = _base_of(mod).weight.detach().to("cpu", copy=True)
+
+
+def _restore(pipe, comps):
+    for (c, name), w in _state["lora_backup"].items():
+        if c in comps:
+            _base_of(getattr(pipe, c).get_submodule(name)).weight.data.copy_(w)
+
+
+def _apply_loras(pipe, part, pairs, ctx=None):
+    """LoRA вшиваются в веса, как patch weights у ComfyUI, — адаптерами PEFT они не висят. Адаптеры на 8 ГБ картах
+    добавляли к UNet SDXL ~0,6 ГБ и лишние матмулы на каждом слое: память переполнялась, Windows уводила её
+    в sysmem, и с двумя LoRA шаг шёл 20–90 с вместо ~1 (логи пользователя 2026-10-26). part: "unet" — силы из
+    MODEL (strength_model), "te" — из CLIP (strength_clip). Смена набора — оригиналы из резервной копии и заново."""
+    import torch
+    st = _state
+    want = _lora_key(pairs)
+    with torch.inference_mode(False), torch.no_grad():
+        if st["fused"].get(part) == want:
+            _unload_adapters(pipe)  # адаптеры от проверки в Load LoRA не должны оставаться активными
+            return
+        comps = ["unet"] if part == "unet" else [c for c in ("text_encoder", "text_encoder_2")
+                                                 if getattr(pipe, c, None) is not None]
+        try:
+            _restore(pipe, comps)
+            st["fused"][part] = ()
+            if want:
+                names = [_load_lora(pipe, Path(p), ctx) for p, _s in want]
+                _backup(pipe, comps)
+                pipe.set_adapters(names, adapter_weights=[s for _p, s in want])
+                pipe.fuse_lora(components=comps, adapter_names=names)
+                st["fused"][part] = want
+        except Exception as e:
+            _unload_adapters(pipe)
+            _restore(pipe, comps)
+            st["fused"][part] = ()
+            if isinstance(e, ValueError):
+                raise
+            raise ValueError(f"LoRA could not be applied: {type(e).__name__}: {e}") from e
+        finally:
+            _unload_adapters(pipe)
+            # временные буферы слияния остаются в кэше torch (~1 ГБ на SDXL) — на 8 ГБ ровно они уводили сэмплинг в sysmem
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def _derive(cls, pipe, **extra):
@@ -736,7 +788,8 @@ def load_lora(ctx, model, clip, name, strength_model, strength_clip):
     path = model_path("loras", name)
     with _lock:
         pipe = _pipe(model.ckpt, _opts(ctx), torch, diffusers, ctx)
-        _load_lora(pipe, path, ctx)
+        if str(path) not in _state["lora_ok"]:  # совместимость — один раз на чекпоинт; вшивают KSampler/encode
+            _load_lora(pipe, path, ctx)
     m = Model(model.ckpt, model.loras + ((str(path), float(strength_model)),)) if model else None
     c = Clip(clip.ckpt, clip.loras + ((str(path), float(strength_clip)),), clip.stop) if clip else None
     return m, c
@@ -759,7 +812,7 @@ def encode(ctx, clip, text):
     with _lock:
         pipe = _pipe(clip.ckpt, _opts(ctx), torch, diffusers, ctx)
         st = _state
-        _apply_loras(pipe, te=clip.loras, ctx=ctx)
+        _apply_loras(pipe, "te", clip.loras, ctx)
         dev = "cpu" if st["layout"] == "split" else (st["device"] or "cpu")
         cs = _clip_skip(clip.stop, st["sdxl"])
         t0 = time.time()
@@ -943,6 +996,10 @@ def _unet_back(torch, ctx, shape, b):
     # замер с прошлого раза точнее оценки _sample_need (та переоценивает в разы: 0.7 ГБ против 0.2 на 512×512)
     need = st["sample_peak"].get((shape[-2], shape[-1], b)) or _sample_need(shape, st["sdxl"])
     free = _free(torch, st["device"])
+    if free < need:  # обрывки кэша torch на Windows лежат в sysmem — отдаём их драйверу и меряем заново
+        gc.collect()
+        torch.cuda.empty_cache()
+        free = _free(torch, st["device"])
     _dbg("sample: UNet на GPU за", round(moved, 2), "с; свободно", round(free / 2**30, 2), "ГБ, нужно ~", round(need / 2**30, 2), "ГБ")
     if moved > 4 and ctx:
         ctx.log(f"UNet returned to GPU in {moved:.1f} s", "warn")
@@ -1014,7 +1071,7 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         st = _state
         if positive.sdxl != st["sdxl"]:
             raise ValueError("conditioning does not match the model (SD1.5 vs SDXL) — encode with this model's CLIP")
-        _apply_loras(pipe, unet=model.loras, ctx=ctx)
+        _apply_loras(pipe, "unet", model.loras, ctx)
         img2img = (denoise < 0.999 or noise_mask is not None) and not latent.empty
         controls = positive.control or negative.control
         if controls:

@@ -94,9 +94,9 @@ function magicCard(d, n) {
     ...(r?.notes || []).map(t => h('div.hint', {}, `• ${t}`)),
     r?.prompt ? h('div.row', { style: { marginTop: '4px' } }, h('span.dim', { style: { fontSize: '11px', flex: 1 } }, `+ ${r.prompt.positive}`), copy(r.prompt.positive)) : null,
     r?.prompt ? h('div.row', {}, h('span.dim', { style: { fontSize: '11px', flex: 1 } }, `− ${r.prompt.negative}`), copy(r.prompt.negative)) : null,
-    h('div.row', { style: { marginTop: '6px', flexWrap: 'wrap' } },
-      h('button.primary', { disabled: !m.changed.length, onclick: () => resetMagic(d.id, n.id) }, icon('undo', { size: 14 }), 'Сбросить к рекомендованным'),
-      h('button', { 'data-tip': 'Подобрать заново (свежие примеры с Civitai); заменит все четыре значения', onclick: () => refreshMagic(d.id, n.id) }, icon('refresh', { size: 14 }), 'Подобрать заново')))];
+    h('div.row', { style: { marginTop: '6px', flexWrap: 'wrap', gap: '6px' } },
+      h('button.ui-btn.primary.slim', { disabled: !m.changed.length, onclick: () => resetMagic(d.id, n.id) }, icon('undo', { size: 14 }), 'Сбросить к рекомендованным'),
+      h('button.ui-btn.secondary.slim', { 'data-tip': 'Подобрать заново (свежие примеры с Civitai); заменит все четыре значения', onclick: () => refreshMagic(d.id, n.id) }, icon('refresh', { size: 14 }), 'Подобрать заново')))];
 }
 
 function result(n) {
@@ -126,14 +126,14 @@ function triggersCard(n, def) {
   if (!tags.length) return [];
   return [h('h4', {}, 'Триггер-слова (щёлкните — копировать)'),
     ...tags.map(w => h('div.ltrig', { onclick: () => copyTriggers(w), 'data-tip': 'Копировать' }, w)),
-    h('button', { style: { marginTop: '4px' }, onclick: () => copyTriggers(tags.join(', ')) }, icon('copy', { size: 14 }), 'Копировать все')];
+    h('button.ui-btn.secondary.slim', { style: { marginTop: '4px' }, onclick: () => copyTriggers(tags.join(', ')) }, icon('copy', { size: 14 }), 'Копировать все')];
 }
 
 function nodeInspector(s) {
   const d = doc('workflow', s.doc), n = d?.data.nodes.find(x => x.id === s.id);
   if (!n) return [h('div.dim', {}, 'нода не найдена')];
   const def = defs()[n.type];
-  if (!def) return [h('h3', {}, n.type), h('div', { style: { color: 'var(--err)' } }, 'Неизвестный тип ноды — нет на сервере (запущен? загружен модуль?)'), h('button', { onclick: deleteSel }, 'Удалить ноду')];
+  if (!def) return [h('h3', {}, n.type), h('div', { style: { color: 'var(--err)' } }, 'Неизвестный тип ноды — нет на сервере (запущен? загружен модуль?)'), h('button.ui-btn.secondary.slim', { onclick: deleteSel }, 'Удалить ноду')];
   const linked = new Set(d.data.links.filter(l => l.to === n.id).map(l => l.in));
   const setTitle = v => edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); if (v) nn.title = v; else delete nn.title; }, { label: 'имя ноды', merge: `${n.id}.title` });
   return [
@@ -159,9 +159,9 @@ function nodeInspector(s) {
       return field(o.name, h('div.row', { style: { flex: 1 } }, chip(o.type), h('span.dim', {}, to.length ? `→ ${to.join(', ')}` : '')));
     }) : [h('div.dim', {}, def.output ? 'конечная нода' : '—')]),
     ...result(n),
-    h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap' } },
-      h('button.primary', { onclick: () => queuePrompt(d.id, 1, [n.id]) }, icon('play', { size: 14 }), 'Выполнить до неё'),
-      h('button', { onclick: deleteSel }, icon('delete', { size: 14 }), 'Удалить')),
+    h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap', gap: '6px' } },
+      h('button.ui-btn.primary.slim', { onclick: () => queuePrompt(d.id, 1, [n.id]) }, icon('play', { size: 14 }), 'Выполнить до неё'),
+      h('button.ui-btn.secondary.slim', { onclick: deleteSel }, icon('delete', { size: 14 }), 'Удалить')),
   ];
 }
 
@@ -169,7 +169,7 @@ function linkInspector(s) {
   const d = doc('workflow', s.doc), l = d?.data.links[s.index];
   if (!l) return [];
   return [h('h3', {}, icon('link', { size: 16 }), 'Связь'), h('div.mono', {}, `${l.from}.${l.out} → ${l.to}.${l.in}`),
-    h('button', { style: { marginTop: '8px' }, onclick: deleteSel }, 'Удалить связь')];
+    h('button.ui-btn.secondary.slim', { style: { marginTop: '8px' }, onclick: deleteSel }, 'Удалить связь')];
 }
 
 function workflowInspector(s) {
@@ -188,10 +188,10 @@ function workflowInspector(s) {
     h('h4', {}, 'Состав'),
     h('div.hint', {}, `нод ${d.data.nodes.length}, связей ${d.data.links.length}`),
     ...Object.entries(counts).map(([c, k]) => h('div.hint', {}, `${c}: ${k}`)),
-    h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap' } },
-      h('button.primary', { onclick: () => queuePrompt(d.id) }, icon('play', { size: 14 }), 'Запуск'),
-      h('button', { onclick: () => queuePrompt(d.id, 4) }, '×4'),
-      h('button', { onclick: () => select({ kind: 'workflow', doc: d.id, id: d.id }) || navigator.clipboard?.writeText(JSON.stringify(d.data, null, 2)) }, icon('copy', { size: 14 }), 'JSON')),
+    h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap', gap: '6px' } },
+      h('button.ui-btn.primary.slim', { onclick: () => queuePrompt(d.id) }, icon('play', { size: 14 }), 'Запуск'),
+      h('button.ui-btn.secondary.slim', { onclick: () => queuePrompt(d.id, 4) }, '×4'),
+      h('button.ui-btn.secondary.slim', { onclick: () => select({ kind: 'workflow', doc: d.id, id: d.id }) || navigator.clipboard?.writeText(JSON.stringify(d.data, null, 2)) }, icon('copy', { size: 14 }), 'JSON')),
   ];
 }
 
