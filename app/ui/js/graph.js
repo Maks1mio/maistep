@@ -15,7 +15,8 @@ import { modelPicker } from './modelpick.js';
 import { libraryPicker } from './library.js';
 import { loraTriggers, copyTriggers } from './lora.js';
 import { MAGIC, magicState, isMagicChanged, resetMagic } from './magic.js';
-import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage } from './images.js';
+import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage, ownFile } from './images.js';
+import { graphFromImage, graphFromJson, importGraph } from './wfimport.js';
 
 const NW = 280, HEAD = 30, ROW = 24, PAD = 10, PREV_MAX = 420, R = 8;
 const FONT = 'Inter, "Segoe UI", system-ui, sans-serif', MONO = '"JetBrains Mono", Consolas, monospace';
@@ -172,9 +173,11 @@ function image(url) {
     // картинка из input/ или output/: сервер мог быть ещё не готов при старте окна — пробуем ещё несколько раз,
     // иначе «битая» картинка навсегда оставалась в кеше и превью после перезапуска было пустым
     im.onerror = () => {
-      if (imgs.get(url) === im) imgs.delete(url);
       const n = (imgRetry.get(url) || 0) + 1;
+      // попытки кончились — битая картинка остаётся в кеше до следующего старта сервера: иначе каждая перерисовка
+      // (движение мыши) снова запрашивала её — сотни ERR_CONNECTION_REFUSED, пока сервер не поднялся
       if (n > 5) return;
+      if (imgs.get(url) === im) imgs.delete(url);
       imgRetry.set(url, n);
       setTimeout(() => { if (S.server.running || n < 2) redraw(); }, 350 * n);
     };
@@ -888,17 +891,38 @@ function onContext(e) {
 }
 
 // ---------- перетаскивание файлов ----------
+// Картинка с графом внутри (PNG maistep или ComfyUI) или .json воркфлоу на пустое место — открыть граф новым воркфлоу
+// (wfimport.js); Shift — как обычно, нодой Load Image. На ноду Load Image — всегда заменить её файл.
 async function onDrop(e) {
   e.preventDefault();
   const p = toWorld(mouse(e));
   const dt = e.dataTransfer, t = dt.getData('text/mai-node');
   if (t) return addNode(t, p);
-  // не картинки (текст и т.п.) — файл в input/ и нода чтения; читаем до первого await
+  // dataTransfer браузер очищает после первого await — снимок всего, что нужно
   const IMGX = /\.(png|jpe?g|webp|gif|bmp)$/i;
-  const other = [...(dt.files || [])].filter(f => !/^image\//.test(f.type) && !IMGX.test(f.name));
-  const mai = dt.getData('text/mai-file');
-  if (mai && !IMGX.test(mai)) return addNode('io.read_text', p, { file: mai });
-  const pending = imagesFromTransfer(dt);
+  const files = [...(dt.files || [])], data = Object.fromEntries(['text/mai-file', 'text/uri-list', 'text/html'].map(k => [k, dt.getData(k)]));
+  const sdt = { files, getData: k => data[k] || '' };
+  let other = files.filter(f => !/^image\//.test(f.type) && !IMGX.test(f.name));
+  const mai = data['text/mai-file'];
+  if (mai && !IMGX.test(mai)) {
+    if (!e.shiftKey && /\.json$/i.test(mai)) {
+      const g = await fetch(fileUrl(mai)).then(r => r.text()).then(s => graphFromJson(s, mai.split('/').pop())).catch(() => null);
+      if (g) return importGraph(g);
+    }
+    return addNode('io.read_text', p, { file: mai });
+  }
+  const ht = hit(p), onUpload = ht && Object.values(ht.L.def?.inputs || {}).some(i => i.upload === 'image');
+  if (!e.shiftKey && !onUpload) {
+    for (const f of other.filter(f => /\.json$/i.test(f.name))) {
+      const g = graphFromJson(await f.text(), f.name);
+      if (g) { await importGraph(g); other = other.filter(x => x !== f); }
+    }
+    const url = (data['text/uri-list'] || '').split('\n').find(l => l && !l.startsWith('#'))?.replace(/&amp;/g, '&');
+    const img = files.find(f => f.type === 'image/png' || /\.png$/i.test(f.name)) || (IMGX.test(mai || '') ? mai : url && ownFile(url));
+    const g = img && await graphFromImage(img);
+    if (g) return importGraph(g);
+  }
+  const pending = imagesFromTransfer(sdt);
   for (const file of other) {
     try {
       const rel = await upload(file);
@@ -1059,7 +1083,11 @@ export function initGraph() {
   on('models', redraw);
   on('magic', redraw);
   // сервер поднялся после окна — неудачные загрузки снова попадут в очередь (битые из кеша уже удалены)
-  on('server', s => { if (!s.running) return; imgRetry.clear(); setTimeout(draw, 500); });
+  on('server', s => {
+    if (!s.running) return;
+    for (const [u, im] of imgs) if (im.complete && !im.naturalWidth) imgs.delete(u); // битые — запросить заново
+    imgRetry.clear(); draw();
+  });
   // чекпоинт / LoRA / VAE — сразу своим загрузчиком, остальное — «Library Model»
   const LOADER = { checkpoints: ['sd.checkpoint', 'ckpt_name'], loras: ['sd.lora', 'lora_name'], vae: ['sd.vae', 'vae_name'] };
   on('library', () => redraw()); // триггер-слова LoRA под нодами — из карточек библиотеки

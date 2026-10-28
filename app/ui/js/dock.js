@@ -1,6 +1,6 @@
 // Рабочие области (как в Blender/Unity): вкладки сверху — Workflow, Results, CodeEditor, UI Kit; у каждой своя раскладка
 // панелей. Раскладка — дерево: разделитель { dir: 'h'|'v', sizes, kids } или область { tabs, active }.
-// Вкладку панели можно утащить к краю/в центр другой области, разделители тянутся, меню области (⋮) добавляет,
+// Вкладку панели можно утащить к краю/в центр другой области или к краю окна (вся сторона), разделители тянутся, меню области (⋮) добавляет,
 // закрывает панели и сбрасывает раскладку. Раскладки хранятся в localStorage ('maistep-layouts-1').
 // Панели не переносятся по DOM: они лежат в слое .dock-layer и ставятся поверх своей области (iframe игры и превью
 // не перезагружаются при смене рабочей области).
@@ -108,7 +108,26 @@ function insertPanel(id, target, zone) {
   else parent.kids[parent.kids.indexOf(target)] = split;
 }
 
+// у края всего окна: панель занимает всю сторону (нижняя полоса во всю ширину и т.п.), как в JetBrains
+function insertRoot(id, zone) {
+  const dir = zone === 'left' || zone === 'right' ? 'h' : 'v', before = zone === 'left' || zone === 'top';
+  const root = layout(), fresh = area(id), f = 0.25;
+  if (root.dir === dir) {
+    root.sizes = root.sizes.map(s => s * (1 - f));
+    before ? (root.kids.unshift(fresh), root.sizes.unshift(f)) : (root.kids.push(fresh), root.sizes.push(f));
+  } else state.layouts[state.active] = { dir, sizes: before ? [f, 1 - f] : [1 - f, f], kids: before ? [fresh, root] : [root, fresh] };
+}
+
 function movePanel(id, target, zone, index) {
+  if (target === 'root') {
+    const only = areas().length === 1 && areas()[0].tabs.length === 1 && areas()[0].tabs[0] === id;
+    if (only) return; // единственную панель некуда двигать
+    removePanel(id);
+    insertRoot(id, zone);
+    state.layouts[state.active] = sanitize(layout());
+    save();
+    return render();
+  }
   const src = areas().find(a => a.tabs.includes(id));
   // полоса вкладок: вставить вкладкой на место index (в той же области — просто поменять порядок)
   if (zone === 'tab') {
@@ -196,6 +215,7 @@ function tabEl(node, id) {
     const x0 = e.clientX, y0 = e.clientY;
     let drag = null;
     const mm = ev => {
+      if (drag && ev.buttons === 0) return mu(ev); // кнопку отпустили за окном — pointerup не пришёл, не залипаем
       if (!drag && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
       drag ||= startDrag(id);
       drag.move(ev);
@@ -207,6 +227,7 @@ function tabEl(node, id) {
     };
     addEventListener('pointermove', mm);
     addEventListener('pointerup', mu);
+    addEventListener('blur', () => { if (drag) { drag.cancel(); drag = null; } removeEventListener('pointermove', mm); removeEventListener('pointerup', mu); }, { once: true });
   });
   return t;
 }
@@ -222,6 +243,18 @@ function startDrag(id) {
   return {
     move(ev) {
       ghost.style.transform = `translate(${ev.clientX + 12}px, ${ev.clientY + 8}px)`;
+      // у самого края окна — вся сторона (сверху полоса тоньше: там вкладки областей)
+      const d = dock.getBoundingClientRect(), E = 24;
+      // курсор может уйти чуть за док (строка состояния снизу) — край всё равно ловим
+      const inDock = ev.clientX >= d.left - 40 && ev.clientX <= d.right + 40 && ev.clientY >= d.top - 4 && ev.clientY <= d.bottom + 60;
+      const re = !inDock ? null : ev.clientX - d.left < E ? 'left' : d.right - ev.clientX < E ? 'right'
+        : d.bottom - ev.clientY < E ? 'bottom' : ev.clientY - d.top < 6 ? 'top' : null;
+      if (re) {
+        target = 'root'; zone = re;
+        const q = { left: [0, 0, 0.25, 1], right: [0.75, 0, 0.25, 1], top: [0, 0, 1, 0.25], bottom: [0, 0.75, 1, 0.25] }[re];
+        Object.assign(hint.style, { display: 'block', left: `${d.left + q[0] * d.width}px`, top: `${d.top + q[1] * d.height}px`, width: `${q[2] * d.width}px`, height: `${q[3] * d.height}px` });
+        return;
+      }
       shield.style.pointerEvents = 'none';
       const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest?.('.darea');
       shield.style.pointerEvents = '';
@@ -245,9 +278,10 @@ function startDrag(id) {
       Object.assign(hint.style, { display: 'block', left: `${r.left + q[0] * r.width}px`, top: `${r.top + q[1] * r.height}px`, width: `${q[2] * r.width}px`, height: `${q[3] * r.height}px` });
     },
     drop() {
-      ghost.remove(); hint.remove(); shield.remove(); dock.classList.remove('dragging');
+      this.cancel();
       if (target) movePanel(id, target, zone, index);
     },
+    cancel() { ghost.remove(); hint.remove(); shield.remove(); dock.classList.remove('dragging'); },
   };
 }
 

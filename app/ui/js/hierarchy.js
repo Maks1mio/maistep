@@ -62,21 +62,32 @@ function bar() {
 }
 
 // act — кнопка справа при наведении: { ic, tip, onClick }; menu() — пункты контекстного меню (ctxmenu.js)
-function item({ depth = 0, ic, label, tag, sel, dirty, title, onClick, twisty, act, menu }) {
+// onTwisty — щелчок по стрелке (свернуть/развернуть), иначе стрелка ведёт себя как сама строка
+function item({ depth = 0, ic, label, tag, sel, dirty, title, onClick, twisty, onTwisty, act, menu }) {
   return h(`div.item${sel ? '.sel' : ''}${dirty ? '.dirty' : ''}`, { style: { paddingLeft: `${4 + depth * 16}px` }, title: title || '', onclick: onClick,
     oncontextmenu: menu ? e => popup(e, menu()) : null },
-    h('span.tw', {}, twisty ? icon(twisty === 'open' ? 'down' : 'right', { size: 16 }) : null),
+    h('span.tw', onTwisty ? { onclick: e => { e.stopPropagation(); onTwisty(); } } : {}, twisty ? icon(twisty === 'open' ? 'down' : 'right', { size: 16 }) : null),
     ic ? icon(ic, { size: 16 }) : null, h('span.nm', {}, label), tag ? h('span.tag', {}, tag) : null,
     act ? h('button.ui-ib.act', { 'data-tip': act.tip || '', onclick: e => { e.stopPropagation(); act.onClick(); } }, icon(act.ic, { size: 16 })) : null);
+}
+
+// свёрнутый открытый воркфлоу (стрелка у его строки) — помнится между запусками
+const FOLD = 'maistep-hier-folded';
+let folded = (() => { try { return new Set(JSON.parse(localStorage.getItem(FOLD)) || []); } catch { return new Set(); } })();
+function toggleFold(id) {
+  folded.has(id) ? folded.delete(id) : folded.add(id);
+  try { localStorage.setItem(FOLD, JSON.stringify([...folded])); } catch {}
+  draw();
 }
 
 function wfTree(t) {
   if (!S.docs.workflow.size) return t.append(h('div.grp', {}, 'нет воркфлоу — создайте «+»'));
   for (const [id, d] of S.docs.workflow) {
-    const cur = id === S.current.workflow;
-    t.append(item({ ic: 'blueprint', label: d.data.title || id, tag: id, dirty: d.dirty, twisty: cur ? 'open' : 'closed', title: d.data.about || '',
-      sel: S.sel?.kind === 'workflow' && S.sel.doc === id, onClick: () => openWf(id) }));
-    if (!cur) continue;
+    const cur = id === S.current.workflow, open = cur && !folded.has(id);
+    t.append(item({ ic: 'blueprint', label: d.data.title || id, tag: id, dirty: d.dirty, twisty: open ? 'open' : 'closed', title: d.data.about || '',
+      sel: S.sel?.kind === 'workflow' && S.sel.doc === id, onClick: () => openWf(id),
+      onTwisty: () => { if (cur) return toggleFold(id); folded.delete(id); openWf(id); } }));
+    if (!open) continue;
     for (const n of d.data.nodes) {
       const def = S.nodes[n.type];
       const st = S.outputs[id]?.[n.id];

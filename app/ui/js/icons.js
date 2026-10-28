@@ -16,6 +16,7 @@ export const ICONS = {
   edit: 'general/edit', copy: 'general/copy', cut: 'general/cut', paste: 'general/paste',
   search: 'general/search', filter: 'general/filter', settings: 'general/settings', locate: 'general/locate',
   hide: 'general/hide', more: 'general/moreVertical', history: 'general/history', pin: 'pin',
+  star: 'general/star', starFilled: 'general/starFilled',
   up: 'general/chevronUp', down: 'general/chevronDown', left: 'general/chevronLeft', right: 'general/chevronRight',
   expandAll: 'general/expandAll', collapseAll: 'general/collapseAll', projectStructure: 'general/projectStructure',
   play: 'run/run', stop: 'run/stop', pause: 'run/pause', restart: 'run/restart', debug: 'run/debug',

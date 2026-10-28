@@ -11,6 +11,9 @@ const log = (level, text) => emit('log', { src: 'run', level, text });
 let es = null, retry = 0;
 
 export const fileUrl = file => `${base()}/view?file=${encodeURIComponent(file)}&t=${S.outputsStamp || 0}`;
+// миниатюра (WebP, кеш на сервере): галереи и ленты — оригиналы по 2 МБ грузили сотнями. Без метки t: файл в output/
+// не перезаписывается, а метка меняется после каждой ноды — браузер перекачивал всю галерею во время генерации
+export const thumbUrl = (file, h = 384) => `${base()}/thumb?file=${encodeURIComponent(file)}&h=${h}`;
 
 export async function api(path, body) {
   const r = await fetch(`${base()}${path}`, body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -171,7 +174,7 @@ export const history = (limit = 60) => api(`/api/history?limit=${limit}&workflow
 export const check = wf => api('/api/check', { workflow: wf });
 
 export async function upload(file, dir = 'input') {
-  const r = await fetch(`${base()}/api/upload?name=${encodeURIComponent(file.name)}${dir === 'output' ? '&dir=output' : ''}`, { method: 'POST', body: file });
+  const r = await fetch(`${base()}/api/upload?name=${encodeURIComponent(file.name)}${dir !== 'input' ? `&dir=${encodeURIComponent(dir)}` : ''}`, { method: 'POST', body: file }); // dir: input | output | output/<папка>
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return (await r.json()).file;
 }

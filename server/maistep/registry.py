@@ -1,6 +1,7 @@
 """Реестр нод: декоратор @node, описание для UI (/api/nodes), загрузка модулей нод."""
 import importlib.util
 import inspect
+import json
 import sys
 import traceback
 import types
@@ -109,7 +110,7 @@ class Ctx:
 
     def __init__(self, run, node_id, root: Path):
         self._run, self.node_id, self.root = run, node_id, root
-        self.input_dir, self.output_dir = root / "input", root / "output"
+        self.input_dir = root / "input"
         self.preview_meta = {}  # добавляется к каждому превью (например, область inpaint на картинке)
 
     def progress(self, value, max_=None):
@@ -137,3 +138,36 @@ class Ctx:
     @property
     def settings(self):
         return self._run.settings
+
+    @property
+    def output_dir(self):
+        """Папка результатов этого запуска: output/workflow/<id>, output/naizer, output/tocolar… (outputs.py)."""
+        from . import outputs
+        d = self.root / "output" / outputs.folder((getattr(self._run, "workflow", None) or {}).get("id"))
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def workflow_meta(self):
+        """Граф запуска для картинки: перетащить её на граф — открыть его новым воркфлоу (как в ComfyUI).
+        Случайный seed (-1) заменён выпавшим (runner.seeds) — граф повторяет именно эту картинку."""
+        wf = getattr(self._run, "workflow", None)
+        if not isinstance(wf, dict) or not wf.get("nodes"):
+            return None
+        wf = json.loads(json.dumps(wf, default=str))
+        wf.pop("targets", None)
+        seeds = getattr(self._run, "seeds", None) or {}
+        for n in wf["nodes"]:
+            props = n.get("props")
+            if n.get("id") in seeds and isinstance(props, dict) and isinstance(props.get("seed", -1), (int, float)) and props.get("seed", -1) < 0:
+                props["seed"] = seeds[n["id"]]
+        return json.dumps({"v": 1, "workflow": wf}, ensure_ascii=False)
+
+    def pnginfo(self):
+        """PngInfo с графом (iTXt «maistep», UTF-8, сжатый) — для Image.save(..., pnginfo=…); None — графа нет."""
+        meta = self.workflow_meta()
+        if not meta:
+            return None
+        from PIL.PngImagePlugin import PngInfo
+        info = PngInfo()
+        info.add_itxt("maistep", meta, zip=True)
+        return info

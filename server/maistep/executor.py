@@ -229,6 +229,9 @@ def run(wf, runner, root):
         ui["_time"] = round(time.time() - t0, 3)
         values[nid] = out
         results[nid] = ui
+        seeds = getattr(runner, "seeds", None)  # случайный seed → в граф, который вшивается в PNG (Ctx.pnginfo)
+        if seeds is not None and isinstance(out.get("seed"), int) and isinstance(args.get("seed"), (int, float)) and args["seed"] < 0:
+            seeds[nid] = out["seed"]
         if not dynamic[nid]:
             if len(CACHE) > CACHE_LIMIT:
                 CACHE.pop(next(iter(CACHE)))

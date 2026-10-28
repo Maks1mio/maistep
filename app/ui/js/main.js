@@ -40,7 +40,40 @@ let portPref = (() => { try { return Number(localStorage.getItem(PORT_KEY)) || P
 const port = () => portPref;
 function setPort(v) { portPref = Math.max(1, Math.min(65535, v | 0)) || PORT_DEF; try { localStorage.setItem(PORT_KEY, portPref); } catch {} serverUi(S.server); }
 
+// Процесс Python запущен ≠ сервер готов: порт он открывает через несколько секунд (импорты, загрузка нод), а модули
+// по событию 'server' сразу идут к нему — отсюда были «диалоги / библиотека моделей: Failed to fetch» при старте.
+// Поэтому «запущен» объявляем, только когда GET / ответил; до того — «Запуск…».
+let probe = 0, waiting = null;
+async function serverReady(p) {
+  const my = ++probe;
+  for (let i = 0; i < 480; i++) { // до 2 минут
+    if (my !== probe) return false;
+    try { if ((await fetch(`http://localhost:${p}/`, { cache: 'no-store' })).ok) return my === probe; } catch {}
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return my === probe ? null : false; // null — так и не ответил
+}
+
 function serverUi(st) {
+  if (st.running && !S.server.running) {
+    const key = `${st.port}:${st.pid}`;
+    $('srv-dot').className = 'busy';
+    $('srv-text').textContent = 'Запуск…';
+    if (waiting === key) return;
+    waiting = key;
+    serverReady(st.port).then(ok => {
+      if (waiting !== key || ok === false) return;
+      waiting = null;
+      if (ok === null) log('warn', `сервер :${st.port} не отвечает 2 минуты — смотрите консоль (источник «Сервер»)`);
+      applyServer(st);
+    });
+    return;
+  }
+  probe++; waiting = null;
+  applyServer(st);
+}
+
+function applyServer(st) {
   const changed = S.server.running !== !!st.running || S.server.port !== st.port || S.server.pid !== st.pid;
   S.server = { ...S.server, ...st, running: !!st.running };
   if (changed) emit('server', S.server);

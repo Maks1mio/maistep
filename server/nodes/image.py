@@ -21,7 +21,8 @@ def image_bytes(img, root):
       inputs={"file": ("STRING", {"default": "", "upload": "image", "hint": "file in input/ (the upload button in the Inspector)"})},
       outputs={"image": "IMAGE"})
 def image_load(file, ctx):
-    rel = file if file.startswith(("input/", "output/")) else f"input/{file}"
+    from maistep import outputs
+    rel = outputs.resolve(ctx.root, file if file.startswith(("input/", "output/")) else f"input/{file}")  # перенесённый результат
     if not file or not (ctx.root / rel).is_file():
         raise FileNotFoundError(f"no file {rel}")
     return {"file": rel}
@@ -178,7 +179,7 @@ def image_keep_lines(lines, colors, strength, shading, prefix, ctx, smooth=5, ba
     n = 1
     while p.exists():
         p, n = p.with_name(f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}-{n}.png"), n + 1
-    out.save(p)
+    out.save(p, pnginfo=ctx.pnginfo())
     rel = p.relative_to(ctx.root).as_posix()
     return {"image": {"file": rel}, "ui": {"images": [rel]}}
 

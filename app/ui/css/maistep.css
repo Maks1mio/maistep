@@ -35,21 +35,49 @@
 .insp pre.out.err { color: #ff8a80; border-color: #5a2a2a; background: #2a1c1e; }
 .insp textarea { width: 100%; box-sizing: border-box; }
 
-/* результаты */
+/* результаты (js/results.js): галерея — ряды одной высоты (--rsz), ширина плитки по пропорции картинки (--ar);
+   последний ряд не растягивается (заполнитель ::after). Режим «Запуски» — карточки .rcard */
 #v-results { display: flex; flex-direction: column; }
+#v-results .bar .ui-search { width: 200px; }
+.rgal { flex: 1; overflow: auto; padding: 4px 12px 16px; position: relative; }
+.rgal .msg { position: static; min-height: 200px; }
+.rg-day { position: sticky; top: -4px; z-index: 2; display: flex; align-items: baseline; gap: 8px; padding: 10px 2px 8px; background: var(--ui-bg); font-size: 13px; }
+.rg-day .dim { font-size: 12px; }
+.rg-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.rg-row::after { content: ''; flex-grow: 1e6; }
+.rg-t { position: relative; flex: var(--ar, 1) 1 calc(var(--ar, 1) * var(--rsz, 180px)); height: var(--rsz, 180px); min-width: 60px;
+  border-radius: 6px; overflow: hidden; background: var(--ui-bg1); cursor: zoom-in; outline: 2px solid transparent; outline-offset: -2px; }
+.rg-t { content-visibility: auto; } /* плитки за экраном не рисуются (сотни картинок) */
+#v-results .bar .rq { display: inline-flex; align-items: center; gap: 2px; }
+#v-results .bar .rq .dim { margin-right: 6px; }
+.rg-t > img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .2s; }
+.rg-t:hover > img { transform: scale(1.03); }
+.rg-t.sel { outline-color: var(--ui-accent); }
+.rg-cap { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: baseline; gap: 6px; padding: 18px 8px 6px; color: #fff; font-size: 12px;
+  background: linear-gradient(transparent, #000c); opacity: 0; transition: opacity .15s; pointer-events: none; }
+.rg-cap b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rg-cap span { margin-left: auto; opacity: .8; white-space: nowrap; }
+.rg-act.ui-tb.float { position: absolute; top: 6px; right: 6px; padding: 2px; gap: 1px; border-radius: 6px; opacity: 0; transition: opacity .15s; cursor: default; }
+.rg-act.ui-tb .b { min-width: 22px; height: 22px; padding: 0 3px; border-radius: 4px; } /* компактный: поверх картинки не перекрывает её */
+.rg-t:hover .rg-cap, .rg-t:hover .rg-act { opacity: 1; }
+.rg-badge { position: absolute; top: 8px; right: 8px; display: none; filter: drop-shadow(0 1px 2px #000a); pointer-events: none; }
+.rg-t.fav .rg-badge { display: block; }
+.rg-t.gone { opacity: .45; } /* в избранном, но файла нет */
+.rg-t[hidden] { display: none; }
+.rg-t.fav:hover .rg-badge { display: none; } /* при наведении звезда — в тулбаре */
 .rgrid { flex: 1; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; padding: 10px; align-content: start; position: relative; }
 .rgrid .msg { position: static; grid-column: 1 / -1; min-height: 200px; }
-.rcard { background: #26282c; border: 1px solid #34373d; border-radius: 8px; padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.rcard:hover { border-color: #4a4e56; }
-.rcard.sel { border-color: #ffd24a; }
-.rcard.bad { border-color: #5a2a2a; }
+.rcard { background: var(--ui-bg1); border: 1px solid var(--ui-sep); border-radius: 8px; padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rcard:hover { border-color: var(--ui-border); }
+.rcard.sel { border-color: var(--ui-accent); }
+.rcard.bad { border-color: color-mix(in srgb, var(--ui-err) 45%, transparent); }
 .rcard .rh { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rcard .rh b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rcard .rh .dim { margin-left: auto; font-size: 11px; white-space: nowrap; }
 .rimgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 4px; }
-.rimgs img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; background: #1d1f23; }
-.rtext { font-size: 12px; color: #c9ccd3; white-space: pre-wrap; max-height: 140px; overflow: hidden; mask-image: linear-gradient(#000 70%, transparent); }
-.rtext.err { color: #ff8a80; mask-image: none; }
+.rimgs img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; background: var(--ui-bg); }
+.rtext { font-size: 12px; color: var(--ui-fg-dim); white-space: pre-wrap; max-height: 140px; overflow: hidden; mask-image: linear-gradient(#000 70%, transparent); }
+.rtext.err { color: var(--ui-err); mask-image: none; }
 
 /* выбор модели LLM */
 .mpick { width: 520px; }
@@ -564,6 +592,8 @@ pre.agb-diff .a { color: var(--p-green-7); } pre.agb-diff .d { color: var(--p-re
 .nz-help:hover { color: var(--text); border-color: var(--dim); }
 .nz-props { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border-top: 1px solid var(--line); }
 .nz-props .ui-range { flex: 1; }
+.insp h4.nz-ksh { display: flex; align-items: center; gap: 6px; }
+.insp h4.nz-ksh .dim { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .nz-props button { gap: 4px; }
 .nz-opts { display: flex; align-items: center; gap: 12px; height: 28px; padding: 0 10px; border-top: 1px solid var(--line); background: var(--panel2); color: var(--dim); font-size: 11.5px; flex: none; white-space: nowrap; overflow: hidden; }
 .nz-opts b { color: var(--text); font-weight: 500; }

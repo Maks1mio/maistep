@@ -49,11 +49,13 @@ HTTP API (CORS — только для окна maistep и страниц на l
   GET  /api/mcp · POST /api/mcp { servers } | mcp/import { text } | mcp/test { name }   MCP-серверы (коннекторы)
   GET  /api/llamacpp | llamacpp/models · POST /api/llamacpp { …настройки } | llamacpp/start | llamacpp/stop
   GET  /view?file=output/a.png файл из input/ или output/
+  GET  /thumb?file=…&h=384    миниатюра WebP для галереи (кеш user/thumbs)
   GET  /agentfs/<диалог>/<№ папки>/<путь>  файл проекта для браузера AI Chat (только папки, выданные диалогу)
   GET  /events                 SSE: status, start, executing, progress, preview, stream, executed, run-error, done, log, nodes,
                                components, comp-log, agent, update
 """
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -72,7 +74,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "server"))
 
 from maistep import registry, executor, providers, library, components, civitai, agent, magic, updater, sysmon, logs  # noqa: E402
-from maistep import workspace, mcp, llamacpp, lifetime  # noqa: E402
+from maistep import workspace, mcp, llamacpp, lifetime, outputs  # noqa: E402
 from maistep.registry import Cancelled  # noqa: E402
 
 for d in ("input", "output", "user", "workflows", "custom_nodes"):
@@ -129,11 +131,39 @@ class Run:
     def __init__(self, workflow, pid, number):
         self.workflow, self.id, self.number = workflow, pid, number
         self.cancel = threading.Event()
+        self.seeds = {}  # нода → выпавший seed (для графа в PNG)
         self.settings = load_settings()
         self.title = workflow.get("title") or workflow.get("id") or pid[:8]
+        # ход запуска — для окна, подключившегося посреди него (перезагрузка UI): replay() досылает его заново
+        self.started, self.node, self.progress, self.preview, self.done = False, None, None, {}, {}
 
     def emit(self, event, data):
-        HUB.emit(event, {"prompt_id": self.id, **data})
+        msg = {"prompt_id": self.id, **data}
+        if event == "start":
+            self.started = True
+        elif event == "executing":
+            self.node, self.progress = data.get("node"), None
+        elif event == "progress":
+            self.progress = msg
+        elif event == "preview":
+            self.preview[data.get("node")] = msg
+        elif event == "executed":
+            self.done[data.get("node")] = msg
+            self.preview.pop(data.get("node"), None)
+        HUB.emit(event, msg)
+
+    def replay(self):
+        """SSE-сообщения, восстанавливающие ход запуска: start, готовые ноды, текущая нода, прогресс, превью."""
+        if not self.started:
+            return []
+        msgs = [("start", {"prompt_id": self.id, "title": self.title, "wf": self.workflow.get("id")})]
+        msgs += [("executed", m) for m in list(self.done.values())]
+        if self.node is not None:
+            msgs.append(("executing", {"prompt_id": self.id, "node": self.node}))
+        if self.progress:
+            msgs.append(("progress", self.progress))
+        msgs += [("preview", m) for m in list(self.preview.values())]
+        return [f"event: {e}\ndata: {json.dumps(d, ensure_ascii=False, default=str)}\n\n".encode() for e, d in msgs]
 
     def cancel_check(self):
         if self.cancel.is_set():
@@ -245,7 +275,41 @@ def safe_file(rel):
     if not re.match(r"^(input|output)/", rel) or ".." in rel.split("/"):
         return None
     p = ROOT / rel
+    if not p.is_file():  # файл перенесён в подпапку output/ (outputs.organize) — ссылка из старого localStorage, чата
+        p = ROOT / outputs.resolve(ROOT, rel)
     return p if p.is_file() else None
+
+
+THUMBS = ROOT / "user" / "thumbs"
+
+
+def thumb(p, h=None):
+    """Миниатюра картинки для галереи (WebP высотой h, кеш user/thumbs по пути, mtime и размеру файла).
+    Галерея грузила PNG целиком (~2 МБ на кадр, сотни кадров) — тормозила. None — не картинка или нет Pillow."""
+    try:
+        h = max(64, min(1024, int(h or 384)))
+    except ValueError:
+        h = 384
+    if p.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
+        return None
+    st = p.stat()
+    key = hashlib.sha1(f"{p.resolve()}|{st.st_mtime_ns}|{st.st_size}|{h}".encode()).hexdigest()[:24]
+    t = THUMBS / f"{key}.webp"
+    if t.is_file():
+        return t
+    try:
+        from PIL import Image
+        with Image.open(p) as im:
+            im.draft("RGB", (h * 4, h))  # JPEG — декод сразу в меньшем размере
+            im.thumbnail((h * 4, h), Image.LANCZOS)
+            im = im.convert("RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB")
+            THUMBS.mkdir(parents=True, exist_ok=True)
+            tmp = t.with_suffix(f".{threading.get_ident()}.tmp")
+            im.save(tmp, "WEBP", quality=82, method=4)
+        os.replace(tmp, t)
+        return t
+    except Exception:  # нет Pillow, битый файл — отдадим оригинал
+        return None
 
 
 def civitai_get(op, qs):
@@ -476,6 +540,18 @@ class Handler(BaseHTTPRequestHandler):
             data = p.read_bytes()
             self._head(200, mimetypes.guess_type(p.name)[0] or "application/octet-stream", len(data), {"cache-control": "no-cache"})
             return self.wfile.write(data)
+        if u.path == "/thumb":
+            p = safe_file(qs.get("file"))
+            if not p:
+                return self.json({"error": "нет файла"}, 404)
+            t = thumb(p, qs.get("h"))
+            tag = f'"{t.stem}"' if t else None
+            if tag and self.headers.get("if-none-match") == tag:
+                return self._head(304, length=0, extra={"etag": tag, "cache-control": "max-age=600"})
+            data = (t or p).read_bytes()
+            ctype = "image/webp" if t else mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+            self._head(200, ctype, len(data), {"cache-control": "max-age=600", **({"etag": tag} if tag else {})})
+            return self.wfile.write(data)
         if u.path == "/":
             return self.json({"app": "maistep", "nodes": len(registry.NODES), "queue": Q.status()})
         self.json({"error": f"нет такого пути {u.path}"}, 404)
@@ -489,7 +565,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/api/upload":
                 name = Path(qs.get("name") or "upload.bin").name
-                d = "output" if qs.get("dir") == "output" else "input"
+                d = qs.get("dir") or "input"  # input | output | output/<подпапка> (ImageNaizer → output/naizer)
+                if not re.fullmatch(r"(input|output)(/[\w.-]+)*", d) or ".." in d.split("/"):
+                    d = "input"
                 p = ROOT / d / name
                 p.parent.mkdir(parents=True, exist_ok=True)
                 data = self.body()
@@ -653,6 +731,9 @@ class Handler(BaseHTTPRequestHandler):
         q = HUB.add()
         try:
             self.wfile.write(f"event: status\ndata: {json.dumps(Q.status())}\n\n".encode())
+            run = Q.running  # окно подключилось посреди запуска — дослать его ход, иначе граф не знает, где он
+            for msg in run.replay() if run else []:
+                self.wfile.write(msg)
             self.wfile.flush()
             while True:
                 try:
@@ -699,6 +780,7 @@ def main():
     registry.load_all(ROOT, log)
     updater.configure(lambda event, data: HUB.emit(event, data), log)
     updater.start()
+    outputs.organize(ROOT, lambda t: log("info", t))  # до загрузки истории: она уже с новыми путями
     Q = Queue()
     agent.configure(lambda event, data: HUB.emit(event, data), lambda wf, pid: Q.put(wf, pid),
                     lambda: list(Q.history), Q.interrupt)

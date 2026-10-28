@@ -459,7 +459,7 @@ async function saveImage(whole) {
   const r = whole ? union(vis) : doc().bbox;
   if (!r) return log('warn', 'холст пуст');
   try {
-    const file = await upload(await toFile(compose(r), `canvas_${new Date().toISOString().slice(0, 19).replace(/\D/g, '')}.png`), 'output');
+    const file = await upload(await toFile(compose(r), `canvas_${new Date().toISOString().slice(0, 19).replace(/\D/g, '')}.png`), 'output/naizer'); // результаты ImageNaizer — своя папка output/
     log('ok', `сохранено: ${file}`);
     loadFiles();
   } catch (e) { log('error', `сохранение: ${e.message}`); }
@@ -803,7 +803,8 @@ async function next() {
   b.left -= 1;
   const q = rec?.prompt || { positive: 'masterpiece, best quality', negative: 'lowres, worst quality, bad anatomy' };
   const positive = [q.positive, (st.prompt || '').trim()].filter(Boolean).join(', ');
-  const p = rec?.params || {};
+  // свои значения из блока «Сэмплер» перекрывают рекомендацию Magic; пустые — авто
+  const ks = st.ks || {}, p = { ...(rec?.params || {}), ...Object.fromEntries(Object.entries(ks).filter(([k, v]) => k !== 'seed' && v != null && v !== '')) };
   b.k += 1;
   const L = (from, out, to, inn) => ({ from, out, to, in: inn });
   const wf = {
@@ -814,7 +815,7 @@ async function next() {
       { id: 'pos', type: 'sd.text_encode', props: { text: positive } },
       { id: 'neg', type: 'sd.text_encode', props: { text: q.negative } },
       { id: 'img', type: 'image.load', props: { file: b.image } },
-      { id: 'gen', type: 'sd.canvas', props: { seed: -1, steps: p.steps ?? 25, cfg: p.cfg ?? 6, sampler_name: p.sampler_name || 'euler_ancestral',
+      { id: 'gen', type: 'sd.canvas', props: { seed: ks.seed >= 0 ? ks.seed + b.k - 1 : -1, steps: p.steps ?? 25, cfg: p.cfg ?? 6, sampler_name: p.sampler_name || 'euler_ancestral',
         scheduler: p.scheduler || 'normal', denoise: st.denoise, fill: st.fill, resolution: 0, edge: 16, blur: 16 } },
     ],
     links: [L('ckpt', 'model', 'gen', 'model'), L('ckpt', 'clip', 'skip', 'clip'), L('skip', 'clip', 'pos', 'clip'), L('skip', 'clip', 'neg', 'clip'),
@@ -1186,6 +1187,25 @@ const KEYS_TIP = 'C — рамка, V — слой, H — рука, B — кис
   + 'Enter — принять результат, ← → — листать, \\ — показать/скрыть результат\n'
   + 'Ctrl+Z / Ctrl+Shift+Z — отмена / повтор, колесо — масштаб, ПКМ/Space — сдвиг, F — вписать, Ctrl+Enter — генерация';
 
+// «Сэмплер»: шаги, cfg, сэмплер, планировщик, seed. Пусто — авто (рекомендация Magic для чекпоинта, она же в подсказке)
+function samplerCard(row) {
+  const ks = (st.ks ||= {}), auto = rec?.params || {};
+  const set = (k, v) => { if (v == null || v === '') delete ks[k]; else ks[k] = v; keep(); };
+  const opts = k => S.nodes['sd.canvas']?.inputs?.[k]?.options || [];
+  const own = ['steps', 'cfg', 'sampler_name', 'scheduler', 'seed'].some(k => ks[k] != null);
+  return [
+    h('h4.nz-ksh', {}, 'Сэмплер', h('span.grow'), own
+      ? h('button.ui-btn.secondary.slim', { 'data-tip': 'Вернуть значения Magic', onclick: () => { st.ks = {}; keep(); refresh(); } }, 'Авто')
+      : h('span.dim', {}, 'авто — Magic')),
+    row('шаги', num(ks.steps, v => set('steps', v), { int: true, min: 1, max: 200, allowEmpty: true, placeholder: `авто · ${auto.steps ?? 25}` })),
+    row('cfg', num(ks.cfg, v => set('cfg', v), { step: 0.5, min: 0, max: 30, allowEmpty: true, placeholder: `авто · ${auto.cfg ?? 6}` })),
+    row('сэмплер', dropdown(ks.sampler_name, opts('sampler_name'), v => set('sampler_name', v), { empty: `авто · ${auto.sampler_name || 'euler_ancestral'}` })),
+    row('планировщик', dropdown(ks.scheduler, opts('scheduler'), v => set('scheduler', v), { empty: `авто · ${auto.scheduler || 'normal'}` })),
+    row('seed', num(ks.seed, v => set('seed', v == null || v < 0 ? null : v), { int: true, min: -1, allowEmpty: true, placeholder: 'случайный' }),
+      'пусто или −1 — случайный; с несколькими вариантами — seed, seed+1, …'),
+  ];
+}
+
 function inspector() {
   const area = (value, ph, set, rows = 3) => {
     const t = h('textarea', { rows, spellcheck: false, placeholder: ph, title: 'Ctrl+↑ / Ctrl+↓ — вес тега: (girl:1.2)' });
@@ -1219,8 +1239,9 @@ function inspector() {
     h('div.hint', {}, strengthTip),
     ...(mode === 'outpaint' ? outpaintCard(row, slider) : []),
     row('вариантов', num(st.batch, x => { st.batch = clamp(x | 0, 1, 16); keep(); }, { int: true, min: 1, max: 16 }), 'сколько результатов положить в staging за один запуск'),
-    row('чекпоинт', h('div.row', { style: { flex: 1 } }, ckIn, ckBtn), 'шаги, cfg, сэмплер и негатив подбирает Magic под чекпоинт'),
+    row('чекпоинт', h('div.row', { style: { flex: 1 } }, ckIn, ckBtn), 'негатив и значения сэмплера «авто» подбирает Magic под чекпоинт'),
     rec?.error ? h('div.hint', { style: { color: 'var(--err)' } }, `Magic: ${rec.error}`) : null,
+    ...samplerCard(row),
     h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap' } },
       busy ? h('button.ui-btn.secondary.slim', { onclick: () => { if (busy) busy.left = 0; interrupt(); } }, icon('stop', { size: 16 }), 'Прервать')
         : h('button.ui-btn.primary.slim', { onclick: () => run() }, icon('play', { size: 16 }), `Генерировать (${MODES[mode][0]})`)),

@@ -1647,7 +1647,7 @@ def save_pils(ctx, pils, prefix="sd", seed=None):
         while p.exists():
             p = p.with_name(f"{p.stem}-{n}.png")
             n += 1
-        im.save(p)
+        im.save(p, pnginfo=ctx.pnginfo() if ctx else None)  # граф запуска — перетащить картинку на граф = открыть его
         files.append(p.relative_to(root).as_posix())
     return files
 

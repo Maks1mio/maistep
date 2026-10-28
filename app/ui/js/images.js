@@ -11,7 +11,7 @@ const log = (level, text) => emit('log', { src: 'editor', level, text });
 const stamp = () => new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
 
 // путь проекта из ссылки /view?file=output/x.png (картинки самого приложения)
-function ownFile(url) {
+export function ownFile(url) {
   try {
     const u = new URL(url);
     const f = u.pathname === '/view' && u.searchParams.get('file');
