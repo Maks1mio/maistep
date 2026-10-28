@@ -108,7 +108,8 @@ UPSCALE = ["nearest-exact", "bilinear", "area", "bicubic"]
 _lock = threading.RLock()
 _state = {"key": None, "pipe": None, "i2i": None, "i2i_cls": None, "loras": {}, "layout": None, "device": None,
           "dtype": None, "vae_dtype": None, "unet_at": None, "ckpt": None, "sdxl": False, "vaes": {}, "cns": {},
-          "cn_pipes": {}, "vae_peak": {}, "sample_peak": {}, "fused": {}, "lora_backup": {}, "lora_ok": set()}
+          "cn_pipes": {}, "vae_peak": {}, "sample_peak": {}, "fused": {}, "lora_backup": {}, "lora_ok": set(),
+          "unet_pin": {}, "pin_valid": False, "pin_off": False}
 _cap_applied = [None]  # какой потолок VRAM уже применён к аллокатору (None — не применяли)
 
 
@@ -282,7 +283,7 @@ def _vae_flags(vae, slicing=None, tiling=None):
 def _drop():
     _state.update(key=None, pipe=None, i2i=None, i2i_cls=None, loras={}, layout=None, device=None, dtype=None,
                   vae_dtype=None, unet_at=None, ckpt=None, sdxl=False, vaes={}, cns={}, cn_pipes={}, vae_peak={},
-                  sample_peak={}, fused={}, lora_backup={}, lora_ok=set())
+                  sample_peak={}, fused={}, lora_backup={}, lora_ok=set(), unet_pin={}, pin_valid=False)
     gc.collect()
 
 
@@ -405,7 +406,8 @@ def _unet_to(torch, where):
     # Зовётся и из VAE под inference_mode: перенос там делает веса inference-тензорами, и потом PEFT не может
     # включить LoRA («Setting requires_grad=True on inference tensor…»). Переносим всегда обычными тензорами.
     with torch.inference_mode(False), torch.no_grad():
-        pipe.unet.to(where)
+        if not _unet_pinned(torch, pipe.unet, where):
+            pipe.unet.to(where)
         for cn in st["cns"].values():  # ControlNet работает только вместе с UNet — уходит и возвращается с ним
             if not getattr(cn, "maistep_stream", False):
                 cn.to(where)
@@ -413,6 +415,95 @@ def _unet_to(torch, where):
     if where == "cpu":
         torch.cuda.empty_cache()
     _dbg("unet →", where, round(time.time() - t0, 2), "с")
+
+
+def _pin_allowed(gb=24):
+    """Закреплённая копия в RAM (UNet SDXL ~5 ГБ, энкодеры ~3 ГБ) — только при запасе памяти: закреплённое ОС не
+    выгружает в файл подкачки. MAISTEP_PIN=0 — выключить, 1 — включить всегда."""
+    env = os.environ.get("MAISTEP_PIN")
+    if env in ("0", "1"):
+        return env == "1"
+    try:
+        return sysmon._ram()[1] >= gb * 2**30
+    except Exception:
+        return False
+
+
+def _te_to_gpu(torch, pipe):
+    """Текстовые энкодеры split-раскладки (живут на CPU в fp32) — на GPU на время CLIP Text Encode, если там есть
+    место: после VAE Decode UNet лежит в RAM и карта почти пустая, а на CPU SDXL-энкодеры считают ~1 с на промпт.
+    Веса в RAM закрепляются один раз и остаются копией: обратно — переключение без копирования (меняются энкодеры
+    только вшиванием LoRA, а оно идёт на CPU до переноса). Точность та же — fp32. Нет места — [] (считаем на CPU)."""
+    st = _state
+    if st["device"] != "cuda" or st.get("pin_off") or not _pin_allowed(32) or os.environ.get("MAISTEP_TE_GPU") == "0":
+        return []
+    tes = [te for te in (getattr(pipe, "text_encoder", None), getattr(pipe, "text_encoder_2", None)) if te is not None]
+    size = sum(t.numel() * t.element_size() for te in tes for t in te.parameters())
+    if _free(torch, st["device"]) < size + 2**29:
+        return []
+    moved = []
+    try:
+        with torch.inference_mode(False), torch.no_grad():
+            for te in tes:
+                for _n, t in list(te.named_parameters()) + list(te.named_buffers()):
+                    if t.device.type != "cpu":
+                        continue
+                    if not t.is_pinned():
+                        t.data = t.data.pin_memory()
+                    moved.append((t, t.data))
+                    t.data = t.data.to(st["device"], non_blocking=True)
+        torch.cuda.synchronize()
+    except Exception as e:
+        _dbg("te → gpu", e)
+        _te_back(torch, moved)
+        return []
+    return moved
+
+
+def _te_back(torch, moved):
+    with torch.inference_mode(False), torch.no_grad():
+        for t, cpu in moved:
+            t.data = cpu
+
+
+def _unet_pinned(torch, unet, where):
+    """Перенос UNet через закреплённую (pinned) копию в RAM. В RAM — веса просто переключаются на копию, без
+    копирования (она верна, пока веса не менялись на GPU: вшивание LoRA её сбрасывает); на GPU — асинхронная
+    копия из закреплённой памяти, в разы быстрее обычной. На 8 ГБ картах UNet ездит в RAM на время каждого VAE
+    Decode — это было ~3 с из ~14 с прогона SDXL. False — не вышло (нет места/ошибка), тогда обычный .to()."""
+    st = _state
+    if st["device"] != "cuda" or st.get("pin_off") or not _pin_allowed():
+        return False
+    shadow = st["unet_pin"]
+    tensors = list(unet.named_parameters()) + list(unet.named_buffers())
+    try:
+        if where == "cpu":
+            fresh = st.get("pin_valid") and all(n in shadow and shadow[n].shape == t.shape and shadow[n].dtype == t.dtype
+                                                for n, t in tensors)
+            if not fresh:
+                shadow.clear()
+                for n, t in tensors:
+                    c = torch.empty_like(t, device="cpu", pin_memory=True)  # с теми же шагами (channels_last)
+                    c.copy_(t, non_blocking=True)
+                    shadow[n] = c
+                torch.cuda.synchronize()
+            for n, t in tensors:
+                t.data = shadow[n]
+            st["pin_valid"] = True
+        else:
+            for _n, t in tensors:
+                if t.device.type == "cpu":
+                    t.data = t.data.to(where, non_blocking=True)
+            torch.cuda.synchronize()
+        return True
+    except Exception as e:  # закрепить не дали (мало RAM, драйвер) — дальше обычным переносом
+        _dbg("pinned unet", e)
+        st["pin_off"] = True
+        shadow.clear()
+        for _n, t in tensors:
+            if t.device.type != torch.device(where).type:
+                t.data = t.data.to(where)
+        return True
 
 
 def _layout(torch, device, opts):
@@ -608,6 +699,8 @@ def _apply_loras(pipe, part, pairs, ctx=None):
             return
         comps = ["unet"] if part == "unet" else [c for c in ("text_encoder", "text_encoder_2")
                                                  if getattr(pipe, c, None) is not None]
+        if part == "unet":
+            st["pin_valid"] = False  # веса UNet меняются — закреплённая копия в RAM больше не верна
         try:
             _restore(pipe, comps)
             st["fused"][part] = ()
@@ -816,9 +909,18 @@ def encode(ctx, clip, text):
         dev = "cpu" if st["layout"] == "split" else (st["device"] or "cpu")
         cs = _clip_skip(clip.stop, st["sdxl"])
         t0 = time.time()
-        with torch.inference_mode():
-            pe, ppe, n = _encode_long(torch, pipe, text or "", dev, cs, st["sdxl"])
-        _dbg("encode", round(time.time() - t0, 2), "с")
+        moved = _te_to_gpu(torch, pipe) if st["layout"] == "split" else []
+        if moved:
+            dev = st["device"]
+        try:
+            with torch.inference_mode():
+                pe, ppe, n = _encode_long(torch, pipe, text or "", dev, cs, st["sdxl"])
+                pe, ppe = pe.to("cpu", torch.float32), ppe.to("cpu", torch.float32) if ppe is not None else None
+        finally:
+            _te_back(torch, moved)
+            if moved:
+                torch.cuda.empty_cache()  # копии энкодеров (~3 ГБ) — сразу драйверу, а не в кэш до сэмплинга
+        _dbg("encode", "GPU" if moved else dev, round(time.time() - t0, 2), "с")
         if n > 1 and ctx:
             ctx.log(f"long prompt: {n} chunks of 75 tokens")
         return Cond(pe.to("cpu", torch.float32), ppe.to("cpu", torch.float32) if ppe is not None else None,
