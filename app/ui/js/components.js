@@ -94,13 +94,13 @@ function toolbar(sum) {
   const gb = starter.reduce((n, c) => n + (c.bytes || 0), 0) / 2 ** 30;
   const busy = job?.state === 'running';
   return h('div.bar', {},
-    h('button', { disabled: loading, 'data-tip': 'Проверить последние стабильные версии (PyPI и GitHub Releases)', onclick: () => load(true, true) },
+    h('button.ui-btn.secondary.slim', { disabled: loading, 'data-tip': 'Проверить последние стабильные версии (PyPI и GitHub Releases)', onclick: () => load(true, true) },
       icon('refresh', { size: 14 }), loading ? 'Проверка…' : 'Проверить обновления'),
-    h('button', { disabled: busy || !missing.length, 'data-tip': 'Установить все отсутствующие пакеты из .venv', onclick: () => install(missing, 'missing') },
+    h('button.ui-btn.secondary.slim', { disabled: busy || !missing.length, 'data-tip': 'Установить все отсутствующие пакеты из .venv', onclick: () => install(missing, 'missing') },
       icon('download', { size: 14 }), `Установить недостающее${missing.length ? ` (${missing.length})` : ''}`),
-    h('button', { disabled: busy || !updates.length, onclick: () => install(updates, 'recommended') },
+    h('button.ui-btn.secondary.slim', { disabled: busy || !updates.length, onclick: () => install(updates, 'recommended') },
       icon('upload', { size: 14 }), `Обновить рекомендованные${updates.length ? ` (${updates.length})` : ''}`),
-    starter.length ? h('button', { disabled: busy, 'data-tip': `Чтобы сразу начать: ${starter.map(c => c.title).join(', ')}. Файлы — в папки моделей библиотеки`,
+    starter.length ? h('button.ui-btn.secondary.slim', { disabled: busy, 'data-tip': `Чтобы сразу начать: ${starter.map(c => c.title).join(', ')}. Файлы — в папки моделей библиотеки`,
       onclick: () => install(starter.map(c => c.id), 'missing') }, icon('download', { size: 14 }), `Стартовые модели (${starter.length} · ${gb.toFixed(1).replace('.', ',')} ГБ)`) : null,
     h('span.grow'),
     h('span.dim', {}, `стабильный канал · ${data?.checked_at ? new Date(data.checked_at * 1000).toLocaleString() : 'ещё не проверялось'}`));
@@ -127,11 +127,11 @@ function appCard() {
   let text = 'Установлена последняя версия.', action = statusChip('ok');
   if (u?.dev) {
     text = `git-копия — обновление через git pull${ver ? ` (в релизах есть ${ver})` : ''}.`;
-    action = ver && u.url ? h('button', { onclick: () => openExternal(u.url) }, icon('externalLink', { size: 14 }), `Релиз ${ver}`) : null;
+    action = ver && u.url ? h('button.ui-btn.secondary.slim', { onclick: () => openExternal(u.url) }, icon('externalLink', { size: 16 }), `Релиз ${ver}`) : null;
   } else if (st === 'checking') { text = 'Проверка обновлений…'; action = null; }
   else if (st === 'available') {
     text = `Вышла версия ${ver}: скачать нужно ${size}.`;
-    action = h('button.primary', { onclick: startDownload }, icon('download', { size: 14 }), `Скачать ${ver}`);
+    action = h('button.ui-btn.primary.slim', { onclick: startDownload }, icon('download', { size: 16 }), `Скачать ${ver}`);
   } else if (st === 'downloading') {
     const pct = u.bytes ? Math.min(100, Math.round(100 * (u.done || 0) / u.bytes)) : 0;
     text = h('span', {}, `Загрузка ${ver}: ${mb(u.done || 0)} из ${mb(u.bytes || 0)} — можно продолжать работать. `,
@@ -139,10 +139,10 @@ function appCard() {
     action = h('span.dim', {}, `${pct}%`);
   } else if (st === 'ready') {
     text = `Версия ${ver} скачана — применится при перезапуске окна.`;
-    action = h('button.primary', { onclick: restart }, icon('restart', { size: 14 }), 'Перезапустить');
+    action = h('button.ui-btn.primary.slim', { onclick: restart }, icon('restart', { size: 16 }), 'Перезапустить');
   } else if (st === 'error') {
     text = `Обновление: ${u.error}`;
-    action = h('button', { onclick: () => load(true) }, icon('refresh', { size: 14 }), 'Повторить');
+    action = h('button.ui-btn.secondary.slim', { onclick: () => load(true) }, icon('refresh', { size: 16 }), 'Повторить');
   }
   const hot = appUpdate();
   return h(`div.cmp-app${hot ? '.upd' : ''}`, {},
@@ -159,9 +159,9 @@ function appCard() {
 function componentRow(c) {
   const busy = job?.state === 'running';
   let action = null;
-  if (c.status === 'missing') action = h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), isModel(c) ? 'Скачать' : 'Установить');
-  else if (c.status === 'update') action = h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), wrongBuild(c) ? `Поставить ${VARIANT[c.variant]}` : `Обновить до ${c.recommended}`);
-  else if (c.latest_newer) action = h('button', { disabled: busy, 'data-tip': `Последняя стабильная версия ${c.latest}. Рекомендуется ${c.recommended} (проверена).`, onclick: () => install([c.id], 'latest') }, icon('download', { size: 14 }), `До ${c.latest}`);
+  if (c.status === 'missing') action = h('button.ui-btn.primary.slim', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 16 }), isModel(c) ? 'Скачать' : 'Установить');
+  else if (c.status === 'update') action = h('button.ui-btn.primary.slim', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 16 }), wrongBuild(c) ? `Поставить ${VARIANT[c.variant]}` : `Обновить до ${c.recommended}`);
+  else if (c.latest_newer) action = h('button.ui-btn.secondary.slim', { disabled: busy, 'data-tip': `Последняя стабильная версия ${c.latest}. Рекомендуется ${c.recommended} (проверена).`, onclick: () => install([c.id], 'latest') }, icon('download', { size: 16 }), `До ${c.latest}`);
   if (rechecking.has(c.id)) action = h('span.dim', {}, 'проверка…');
   const sel = S.sel?.kind === 'component' && S.sel.id === c.id;
   return h(`tr${sel ? '.sel' : ''}`, { 'data-id': c.id, onclick: e => { if (!e.target.closest('button')) select({ kind: 'component', id: c.id }); } },
@@ -199,7 +199,7 @@ function jobPanel() {
       h('b', {}, running ? 'Установка компонентов…' : job.state === 'done' ? 'Установка завершена' : job.state === 'cancelled' ? 'Установка прервана' : 'Ошибка установки'),
       job.error ? h('span.dim', {}, ` · ${job.error}`) : null,
       h('span.grow'),
-      running ? h('button', { onclick: cancel }, icon('stop', { size: 14 }), 'Прервать') : h('button', { onclick: () => { job = null; lines = []; render(); } }, icon('closeSmall', { size: 14 }), 'Скрыть')),
+      running ? h('button.ui-btn.secondary.slim', { onclick: cancel }, icon('stop', { size: 16 }), 'Прервать') : h('button.ui-btn.secondary.slim', { onclick: () => { job = null; lines = []; render(); } }, icon('closeSmall', { size: 16 }), 'Скрыть')),
     logEl);
 }
 
@@ -208,7 +208,7 @@ function render() {
   if (!S.server.running) { viewEl.replaceChildren(h('div.msg', {}, 'Сервер не запущен — компоненты считает он')); return; }
   if (!data) {
     viewEl.replaceChildren(...[h('div.msg', {}, loading ? 'Проверка компонентов…' : error || 'Нет данных'),
-      error ? h('button', { onclick: () => load(false, true) }, 'Повторить') : null].filter(Boolean));
+      error ? h('button.ui-btn.secondary.slim', { onclick: () => load(false, true) }, 'Повторить') : null].filter(Boolean));
     return;
   }
   const sum = data.summary || {};
@@ -266,11 +266,11 @@ async function setVariant(variant, gfx) {
 // Сборка torch: авто (по видеокарте) или вручную; для ROCm — архитектура карты
 function variantPicker(c) {
   const gpu = data?.gpu || {};
-  const btn = (v, label) => h(`button${(v === 'auto' ? !gpu.manual : gpu.manual && gpu.variant === v) ? '.primary' : ''}`, { onclick: () => setVariant(v) }, label);
+  const btn = (v, label) => h(`button${(v === 'auto' ? !gpu.manual : gpu.manual && gpu.variant === v) ? '.on' : ''}`, { onclick: () => setVariant(v) }, label);
   const gfx = h('input.mono', { value: gpu.gfx || '', placeholder: 'gfx1201', style: { width: '90px' },
     onchange: e => setVariant(gpu.manual ? gpu.variant : 'auto', e.target.value.trim()) });
   return h('div', {},
-    h('div.f', {}, h('label', {}, 'Сборка'), h('div.row', { style: { flexWrap: 'wrap', gap: '4px' } },
+    h('div.f', {}, h('label', {}, 'Сборка'), h('div.ui-seg', { style: { flexWrap: 'wrap' } },
       btn('auto', `Авто (${VARIANT[gpu.auto] || '?'})`), ...c.variants.map(v => btn(v.id, v.title)))),
     c.variant === 'rocm' ? h('div.f', {}, h('label', {}, 'Архитектура AMD'), gfx) : null,
     wrongBuild(c) ? h('div.hint', {}, `Сейчас стоит сборка ${VARIANT[c.installed_variant]} — «Поставить ${VARIANT[c.variant]}» заменит её.`) : null);
@@ -297,11 +297,11 @@ function compInspector(s) {
     kv('Группа', c.group),
     kv('Размер', c.size),
     h('div.row', { style: { margin: '8px 0', flexWrap: 'wrap' } },
-      c.status === 'missing' ? h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 14 }), isModel(c) ? 'Скачать' : 'Установить') : null,
-      c.status === 'update' ? h('button.primary', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 14 }), wrongBuild(c) ? `Поставить ${VARIANT[c.variant]}` : `Обновить до ${c.recommended}`) : null,
-      c.latest_newer ? h('button', { disabled: busy, onclick: () => install([c.id], 'latest') }, icon('download', { size: 14 }), `До ${c.latest}`) : null,
-      isModel(c) ? (c.page ? h('button', { onclick: () => openExternal(c.page) }, icon('externalLink', { size: 14 }), c.page.includes('civitai') ? 'Civitai' : 'Hugging Face') : null)
-        : h('button', { onclick: () => openExternal(`https://pypi.org/project/${c.package}/`) }, icon('externalLink', { size: 14 }), 'PyPI')),
+      c.status === 'missing' ? h('button.ui-btn.primary.slim', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'missing') }, icon('download', { size: 16 }), isModel(c) ? 'Скачать' : 'Установить') : null,
+      c.status === 'update' ? h('button.ui-btn.primary.slim', { disabled: busy || !!c.problem, onclick: () => install([c.id], 'recommended') }, icon('upload', { size: 16 }), wrongBuild(c) ? `Поставить ${VARIANT[c.variant]}` : `Обновить до ${c.recommended}`) : null,
+      c.latest_newer ? h('button.ui-btn.secondary.slim', { disabled: busy, onclick: () => install([c.id], 'latest') }, icon('download', { size: 16 }), `До ${c.latest}`) : null,
+      isModel(c) ? (c.page ? h('button.ui-btn.secondary.slim', { onclick: () => openExternal(c.page) }, icon('externalLink', { size: 16 }), c.page.includes('civitai') ? 'Civitai' : 'Hugging Face') : null)
+        : h('button.ui-btn.secondary.slim', { onclick: () => openExternal(`https://pypi.org/project/${c.package}/`) }, icon('externalLink', { size: 16 }), 'PyPI')),
   ];
 }
 

@@ -18,16 +18,12 @@ input:not([type=checkbox]):not([type=radio]):hover, textarea:hover { border-colo
 input:not([type=checkbox]):not([type=radio]):focus, textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 input.bad, textarea.bad { border-color: var(--err); outline-color: var(--err); }
 textarea { resize: vertical; font: var(--mono); width: 100%; user-select: text; }
-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; background: var(--panel); border: 1px solid #4E5157; border-radius: 6px; padding: 2px 10px; cursor: pointer; white-space: nowrap; }
-button:hover { background: var(--panel2); }
-button:active { background: var(--hi); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover { background: var(--p-blue-7); border-color: var(--p-blue-7); }
-button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.icon { padding: 2px 6px; min-width: 26px; background: transparent; border-color: transparent; }
-button.icon:hover { background: #ffffff16; }
-button.icon:active { background: #ffffff26; }
-button:disabled { opacity: .45; cursor: default; }
+/* Кнопки — компоненты UI Kit: .ui-btn.primary/.secondary (.slim), .ui-ib (иконка), .ui-tb .b, .ui-seg > button.
+   Голый <button> — только сброс под цвета кита (на случай разметки без класса). */
+button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 5px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+button:hover { background: var(--ui-hover); }
+button:active { background: var(--ui-sel-off); }
+button:not(.ui-btn):disabled { opacity: .45; cursor: default; }
 .dim { color: var(--dim); }
 .mono { font: var(--mono); }
 .grow { flex: 1; }
@@ -163,15 +159,11 @@ button:disabled { opacity: .45; cursor: default; }
 .tree .item .tw { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .tree .item .nm { flex-shrink: 1; min-width: 24px; overflow: hidden; text-overflow: ellipsis; }
 .tree .item .tag { flex-shrink: 100; min-width: 0; color: var(--dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
-.tree .item.hidden-w { opacity: .5; }
 .tree .item .act { margin-left: auto; width: 20px; height: 20px; flex-shrink: 0; opacity: 0; }
 .tree .item:hover .act { opacity: .8; }
 .tree .item .act:hover { opacity: 1; }
 .tree .item.dirty::after { content: '●'; color: var(--orange); margin-left: auto; font-size: 9px; }
 .tree .grp { padding: 6px 10px 2px; color: var(--dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
-.sprite-pv { width: 26px; height: 26px; object-fit: contain; flex-shrink: 0; border-radius: 4px; border: 1px solid var(--ui-border); background: repeating-conic-gradient(#2a2b2f 0 25%, #232427 0 50%) 0 0 / 8px 8px; }
-.sprite-pv { cursor: pointer; }
-.sprite-pv:hover { border-color: var(--accent); }
 /* выборщик картинки (js/picker.js) */
 .ui-ddpop.pk { max-width: none; padding: 0; gap: 0; }
 .pk-top { display: flex; align-items: center; gap: 6px; padding: 8px; border-bottom: 1px solid var(--ui-sep); }
@@ -238,7 +230,6 @@ button:disabled { opacity: .45; cursor: default; }
 /* ---------- Inspector ---------- */
 .insp { padding: 6px 8px 20px; }
 .insp h3 { margin: 4px 0 6px; font-size: 13px; display: flex; gap: 6px; align-items: center; }
-.catdot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 .tree .item .tag .ui-ic { vertical-align: -2px; opacity: .7; }
 .insp h4 { margin: var(--sp-group) 0 var(--sp-ctrl); font-size: 11px; color: var(--ui-fg-dim); text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--ui-sep); padding-bottom: 2px; }
 .insp .f { display: grid; grid-template-columns: minmax(56px, 96px) minmax(0, 1fr); gap: var(--sp-label); align-items: center; padding: 3px 0; } /* инспектор плотнее диалогов: 3+3 между полями */
@@ -257,7 +248,6 @@ button:disabled { opacity: .45; cursor: default; }
 .insp .hint { color: var(--dim); font-size: 11px; margin: 2px 0 6px; }
 .insp .preview { background: repeating-conic-gradient(#2a2b2f 0 25%, #232427 0 50%) 0 0 / 14px 14px; border: 1px solid #3a3d43; border-radius: 3px; display: grid; place-items: center; min-height: 120px; padding: 6px; }
 .insp .preview img { max-width: 100%; max-height: 260px; }
-.drop-ok { outline: 2px dashed var(--accent) !important; }
 
 /* ---------- Console ---------- */
 #console-bar .ui-seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
@@ -269,45 +259,10 @@ button:disabled { opacity: .45; cursor: default; }
 .console .ln.error { color: #ff8a84; background: #3b1d1c; }
 .console .ln.ok { color: #8fe09c; }
 
-/* ---------- Scene / Game ---------- */
-.stagewrap { position: absolute; inset: 0; overflow: hidden; background: #141518; }
-.stage { position: absolute; transform-origin: 0 0; box-shadow: 0 0 0 1px #000, 0 8px 30px #0009; }
-.stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #1b1d24; }
-.overlay { position: absolute; inset: 0; cursor: default; }
-.overlay .gz { position: absolute; border: 1px dashed rgba(120, 180, 255, .35); pointer-events: none; }
-.overlay .gz.flow { border-color: rgba(200, 200, 200, .18); }
-.overlay .gz.hov { border: 1px solid #7cc4ff; background: rgba(80, 160, 255, .08); }
-.overlay .gz.sel { border: 1.5px solid #39a0ff; background: rgba(57, 160, 255, .07); }
-.overlay .gz .lbl { position: absolute; left: -1px; top: -16px; font: 10px/14px monospace; background: #1e6fb8; color: #fff; padding: 0 4px; white-space: nowrap; }
-.overlay .h { position: absolute; width: 8px; height: 8px; background: #fff; border: 1px solid #1e6fb8; margin: -4px 0 0 -4px; pointer-events: auto; }
-.overlay .grid { position: absolute; inset: 0; pointer-events: none; opacity: .18; }
 .msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); text-align: center; padding: 20px; }
 .msg button { margin-top: 10px; }
 
-/* ---------- Timeline ---------- */
-/* превью сверху (тянется), дорожки и шкала снизу фиксированной высоты */
-.an-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.an-stage { flex: 1; position: relative; min-height: 120px; }
-.an-bottom { height: 260px; flex-shrink: 0; display: grid; grid-template-columns: 220px 1fr; min-height: 0; }
-.an-split { height: 5px; flex-shrink: 0; cursor: row-resize; background: var(--line); }
-.an-split:hover { background: var(--accent); }
 /* левая колонка: шапка 29 px + полоса 22 px (= панель режимов + линейка справа), дальше прокручиваемые строки 24 px */
-.an-bottom .tracks { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
-.trk-list { flex: 1; overflow-y: auto; min-height: 0; }
-.trk-ruler { height: 22px; flex-shrink: 0; background: #1e1f22; color: #6c707a; font-size: 10px; line-height: 22px; padding-left: 8px; }
-.an-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.tl-modes { display: flex; gap: 4px; align-items: center; padding: 0 6px; height: 29px; flex-shrink: 0; overflow: hidden; background: var(--panel2); border-bottom: 1px solid var(--line); white-space: nowrap; }
-.trk-head { display: flex; justify-content: space-between; align-items: center; padding: 0 6px; background: var(--panel2); border-bottom: 1px solid var(--line); color: var(--dim); height: 29px; flex-shrink: 0; }
-.trk { display: flex; align-items: center; gap: 2px; height: 24px; padding: 0 4px 0 8px; border-bottom: 1px solid #2c2e33; cursor: pointer; }
-.trk:hover { background: #30333a; }
-.trk.sel { background: #2c3f55; }
-.trk .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.trk button.icon { padding: 0 4px; min-width: 20px; height: 18px; font-size: 10px; }
-/* canvas шкалы — вне потока: иначе его высота растягивает панель, а следующий кадр берёт уже новую высоту */
-.an-right .lanes { flex: 1; position: relative; overflow: hidden; min-height: 0; }
-.an-right .lanes canvas { position: absolute; left: 0; top: 0; }
-button.rec { background: #8a2a26; border-color: #e5534b; color: #fff; }
-.overlay .rot { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #ffd24a; border: 2px solid #1e6fb8; cursor: grab; pointer-events: auto; }
 
 /* ---------- Blueprint ---------- */
 .bp { display: grid; grid-template-columns: 200px 1fr; flex: 1; min-height: 0; }
@@ -318,14 +273,6 @@ button.rec { background: #8a2a26; border-color: #e5534b; color: #fff; }
 .bp .graph { position: relative; overflow: hidden; background: #1a1b1e; }
 .bp canvas { position: absolute; inset: 0; }
 
-/* ---------- Characters / Fields / Build ---------- */
-.form-page { padding: 12px 16px; max-width: 980px; }
-.form-page .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.poses { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
-.poses figure { margin: 0; background: repeating-conic-gradient(#2a2b2f 0 25%, #232427 0 50%) 0 0 / 12px 12px; border: 1px solid #3a3d43; border-radius: 3px; text-align: center; }
-.poses img { width: 100%; aspect-ratio: 1; object-fit: contain; display: block; }
-.poses figcaption { font-size: 10px; color: var(--dim); padding: 2px; }
-.portrait { width: 160px; height: 160px; object-fit: contain; background: #222326; border: 1px solid #3a3d43; border-radius: 3px; }
 /* таблица-редактор (монстры) — как .ui-table */
 table.mini { border-collapse: separate; border-spacing: 0; width: 100%; border: 1px solid var(--ui-sep); border-radius: 6px; overflow: hidden; background: var(--ui-bg); }
 table.mini th { font-weight: 500; color: var(--ui-fg-dim); text-align: left; height: 26px; padding: 0 6px; border-bottom: 1px solid var(--ui-sep); background: var(--ui-head); }
@@ -337,11 +284,11 @@ table.mini input:not([type=checkbox]) { width: 100%; border-color: transparent; 
 table.mini input:not([type=checkbox]):hover { border-color: var(--ui-border); }
 /* модальные окна (prompt) — как .ui-dialog */
 .modal-bg { position: fixed; inset: 0; background: #0009; display: grid; place-items: center; z-index: 200; }
-.modal { background: var(--ui-bg); border: 1px solid var(--ui-popup-border); box-shadow: 0 16px 40px #0007; padding: var(--sp-group) var(--sp-dlg-x) var(--sp-dlg-y); min-width: 380px; border-radius: 10px; overflow: hidden; }
-.modal h3 { margin: 0 0 var(--sp-unrel); font: 600 16px/20px Inter, 'Segoe UI', sans-serif; }
-.modal .f { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-label); align-items: center; padding: var(--sp-ctrl) 0; }
-.modal .btns { display: flex; justify-content: flex-end; gap: var(--sp-btn); margin: var(--sp-group) calc(-1 * var(--sp-dlg-x)) calc(-1 * var(--sp-dlg-y)); padding: var(--sp-dlg-y) var(--sp-dlg-x); border-top: 1px solid var(--ui-sep); background: var(--ui-head); }
-.modal .btns button { height: 28px; min-width: 76px; padding: 0 14px; }
+/* prompt() из util.js — .ui-dialog с полями «подпись: поле» */
+.pr-dlg { width: 440px; max-width: calc(100vw - 40px); }
+.pr-dlg > .bd { min-height: 0; }
+.pr-dlg .f { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-label); align-items: center; padding: var(--sp-ctrl) 0; }
+.pr-dlg .f > .ui-dd { width: 100%; }
 
 /* ---------- CodeEditor (рабочая область code): редактор кода как в JetBrains ---------- */
 .ce { display: flex; flex-direction: column; height: 100%; min-height: 0; flex: 1; }

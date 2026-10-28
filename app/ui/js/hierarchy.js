@@ -3,7 +3,7 @@
 import { h, prompt, confirmBox } from './util.js';
 import { icon } from './icons.js';
 import { popup } from './ctxmenu.js';
-import { S, on, emit, doc, select, addDoc, removeDoc, save } from './store.js';
+import { S, on, emit, doc, select, addDoc, removeDoc, save, idTaken } from './store.js';
 import { codeTreeItems } from './codeedit.js';
 import { resultsTreeItems } from './results.js';
 import { libraryTreeItems } from './library.js';
@@ -21,20 +21,18 @@ export async function newWorkflow(template = 'empty') {
     { key: 'tpl', label: 'Шаблон', type: 'select', value: template, options: Object.entries(TEMPLATES).map(([k, t]) => [k, t.title]) },
   ], 'Создать');
   if (!r?.id) return;
-  if (!VALID_ID.test(r.id) || S.docs.workflow.has(r.id)) return emit('log', { src: 'editor', level: 'warn', text: `id «${r.id}» недопустим или занят` });
+  if (!VALID_ID.test(r.id) || idTaken('workflow', r.id)) return emit('log', { src: 'editor', level: 'warn', text: `id «${r.id}» недопустим или занят` });
   const data = structuredClone(TEMPLATES[r.tpl || 'empty'].data);
   data.title = r.title || data.title || r.id;
-  addDoc('workflow', r.id, data);
-  openWf(r.id);
+  if (addDoc('workflow', r.id, data)) openWf(r.id);
 }
 
 async function duplicateWf() {
   const d = doc('workflow', S.current.workflow);
   if (!d) return;
   const r = await prompt('Копия воркфлоу', [{ key: 'id', label: 'id копии', value: `${d.id}_copy` }], 'Создать');
-  if (!r?.id || !VALID_ID.test(r.id) || S.docs.workflow.has(r.id)) return;
-  addDoc('workflow', r.id, { ...structuredClone(d.data), title: `${d.data.title || d.id} (копия)` });
-  openWf(r.id);
+  if (!r?.id || !VALID_ID.test(r.id) || idTaken('workflow', r.id)) return emit('log', { src: 'editor', level: 'warn', text: `id «${r?.id || ''}» недопустим или занят` });
+  if (addDoc('workflow', r.id, { ...structuredClone(d.data), title: `${d.data.title || d.id} (копия)` })) openWf(r.id);
 }
 
 async function delWf() {
@@ -56,10 +54,10 @@ function bar() {
   const b = document.getElementById('hier-bar');
   b.replaceChildren();
   if (S.ctx === 'workflow') {
-    b.append(h('button', { onclick: () => newWorkflow(), 'data-tip': 'Новый воркфлоу' }, icon('add', { size: 14 }), 'воркфлоу'),
-      h('button.icon', { 'data-tip': 'Дублировать', onclick: duplicateWf }, icon('copy', { size: 14 })),
-      h('button.icon', { 'data-tip': 'Сохранить', onclick: () => { const d = doc('workflow', S.current.workflow); if (d) save(d).then(draw); } }, icon('save', { size: 14 })),
-      h('button.icon', { 'data-tip': 'Удалить файл', onclick: delWf }, icon('delete', { size: 14 })));
+    b.append(h('button.ui-btn.secondary.slim', { onclick: () => newWorkflow(), 'data-tip': 'Новый воркфлоу' }, icon('add', { size: 16 }), 'воркфлоу'),
+      h('button.ui-ib', { 'data-tip': 'Дублировать', onclick: duplicateWf }, icon('copy', { size: 16 })),
+      h('button.ui-ib', { 'data-tip': 'Сохранить', onclick: () => { const d = doc('workflow', S.current.workflow); if (d) save(d).then(draw); } }, icon('save', { size: 16 })),
+      h('button.ui-ib', { 'data-tip': 'Удалить файл', onclick: delWf }, icon('delete', { size: 16 })));
   }
 }
 
@@ -69,7 +67,7 @@ function item({ depth = 0, ic, label, tag, sel, dirty, title, onClick, twisty, a
     oncontextmenu: menu ? e => popup(e, menu()) : null },
     h('span.tw', {}, twisty ? icon(twisty === 'open' ? 'down' : 'right', { size: 16 }) : null),
     ic ? icon(ic, { size: 16 }) : null, h('span.nm', {}, label), tag ? h('span.tag', {}, tag) : null,
-    act ? h('button.icon.act', { 'data-tip': act.tip || '', onclick: e => { e.stopPropagation(); act.onClick(); } }, icon(act.ic, { size: 14 })) : null);
+    act ? h('button.ui-ib.act', { 'data-tip': act.tip || '', onclick: e => { e.stopPropagation(); act.onClick(); } }, icon(act.ic, { size: 16 })) : null);
 }
 
 function wfTree(t) {

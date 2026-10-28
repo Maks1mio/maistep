@@ -15,10 +15,11 @@ import { registerInspector, typingIn } from './inspector.js';
 import { icon } from './icons.js';
 import { api, fileUrl, upload, interrupt } from './backend.js';
 import { isShown, activeView } from './dock.js';
-import { dropdown } from './kit.js';
+import { dropdown, colorPicker } from './kit.js';
 import { libraryPicker } from './library.js';
 import { cnNames, cnPick, loadCn, cnMissing } from './cnmodels.js';
 import { fetchRec } from './magic.js';
+import { K } from './graph.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage } from './images.js';
 
 const LS = 'maistep-canvas', OLD_LS = 'maistep-naizer';
@@ -491,7 +492,7 @@ function zoomInfo() { const el = document.getElementById('nz-zoom'); if (el) el.
 function checkerPattern(c) {
   if (!checker) {
     const t = mk(16, 16), x = t.getContext('2d');
-    x.fillStyle = '#2B2D30'; x.fillRect(0, 0, 16, 16);
+    x.fillStyle = K.node; x.fillRect(0, 0, 16, 16);
     x.fillStyle = '#35373B'; x.fillRect(0, 0, 8, 8); x.fillRect(8, 8, 8, 8);
     checker = t;
   }
@@ -505,7 +506,7 @@ function draw() {
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; cv.style.width = `${W}px`; cv.style.height = `${H}px`; }
   const c = cv.getContext('2d');
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
-  c.fillStyle = '#1E1F22';
+  c.fillStyle = K.bg;
   c.fillRect(0, 0, W, H);
   if (!fitted) fit();
   const d = doc(), z = view.z, r = d.bbox;
@@ -553,20 +554,20 @@ function draw() {
   c.restore();
   // активный слой — рамка его пикселей
   if (A && shown(A) && hasPix(A) && (st.tool === 'move' || A.type === 'raster')) {
-    c.setLineDash(st.tool === 'move' ? [] : [2, 3]); c.strokeStyle = st.tool === 'move' ? '#3574F0' : '#3574F066'; c.lineWidth = 1;
+    c.setLineDash(st.tool === 'move' ? [] : [2, 3]); c.strokeStyle = st.tool === 'move' ? K.accent : `${K.accent}66`; c.lineWidth = 1;
     c.strokeRect(...S2(A.x, A.y, A.w, A.h)); c.setLineDash([]);
   }
   // рамка генерации
   const br = S2(r.x, r.y, r.w, r.h), bt = st.tool === 'bbox';
   c.strokeStyle = '#000a'; c.lineWidth = 3; c.strokeRect(br[0] - 0.5, br[1] - 0.5, br[2] + 1, br[3] + 1);
-  c.strokeStyle = busy ? '#57965C' : bt ? '#548AF7' : '#DFE1E5'; c.lineWidth = 1.2;
+  c.strokeStyle = busy ? K.ok : bt ? K.sel : K.fg; c.lineWidth = 1.2;
   if (!bt && !busy) c.setLineDash([6, 4]);
   c.strokeRect(br[0] - 0.5, br[1] - 0.5, br[2] + 1, br[3] + 1); c.setLineDash([]);
-  if (bt) for (const [hx, hy] of handles(br)) { c.fillStyle = '#fff'; c.strokeStyle = '#548AF7'; c.fillRect(hx - 4, hy - 4, 8, 8); c.strokeRect(hx - 4, hy - 4, 8, 8); }
+  if (bt) for (const [hx, hy] of handles(br)) { c.fillStyle = '#fff'; c.strokeStyle = K.sel; c.fillRect(hx - 4, hy - 4, 8, 8); c.strokeRect(hx - 4, hy - 4, 8, 8); }
   badge(c, `${r.w}×${r.h} · ${MODES[mode][0]}`, br[0], br[1] - 24);
   // фигура в процессе
   if (shape?.kind === 'rect' || shape?.kind === 'lasso') {
-    c.setLineDash([5, 4]); c.strokeStyle = shape.erase ? '#DB5C5C' : '#fff'; c.lineWidth = 1.5;
+    c.setLineDash([5, 4]); c.strokeStyle = shape.erase ? K.err : '#fff'; c.lineWidth = 1.5;
     if (shape.kind === 'rect') c.strokeRect(Math.min(shape.a.x, shape.b.x), Math.min(shape.a.y, shape.b.y), Math.abs(shape.b.x - shape.a.x), Math.abs(shape.b.y - shape.a.y));
     else if (shape.pts.length > 1) { c.beginPath(); shape.pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.closePath(); c.stroke(); }
     c.setLineDash([]);
@@ -575,12 +576,12 @@ function draw() {
   if (mouse && (st.tool === 'brush' || st.tool === 'eraser') && !shape?.pan && !space && !mouse.alt) {
     c.beginPath(); c.arc(mouse.x, mouse.y, Math.max(1, st.size * z / 2), 0, 7);
     c.strokeStyle = '#000a'; c.lineWidth = 3; c.stroke();
-    c.strokeStyle = st.tool === 'eraser' ? '#DB5C5C' : A?.type === 'mask' ? A.color : st.color; c.lineWidth = 1.2; c.stroke();
+    c.strokeStyle = st.tool === 'eraser' ? K.err : A?.type === 'mask' ? A.color : st.color; c.lineWidth = 1.2; c.stroke();
   }
   if (busy) {
     const label = busy.max ? `шаг ${busy.step}/${busy.max}${busy.total > 1 ? ` · ${busy.total - busy.left}/${busy.total}` : ''}` : 'В очереди…';
     badge(c, label, 10, 10);
-    if (busy.max) { c.fillStyle = '#57965C'; c.fillRect(0, 0, W * clamp(busy.step / busy.max, 0, 1), 3); }
+    if (busy.max) { c.fillStyle = K.ok; c.fillRect(0, 0, W * clamp(busy.step / busy.max, 0, 1), 3); }
   }
 }
 function badge(c, text, x, y) {
@@ -888,7 +889,7 @@ function stagingBar() {
       h('span.mono', { style: { minWidth: '36px', textAlign: 'center' } }, `${d.si + 1}/${n}`),
       b('right', 'Следующий (→)', () => stageNav(1), n < 2),
       h('span.sep'),
-      h('button.primary', { onclick: accept, 'data-tip': 'Принять — новый растровый слой на месте рамки (Enter)' }, icon('check', { size: 14 }), 'Принять'),
+      h('button.ui-btn.primary.slim', { onclick: accept, 'data-tip': 'Принять — новый растровый слой на месте рамки (Enter)' }, icon('check', { size: 16 }), 'Принять'),
       b(st.stage ? 'show' : 'hide', 'Показать / скрыть результат (\\)', () => { st.stage = !st.stage; keep(); refresh(); }),
       b('refresh', 'Ещё вариант', () => run(true), !!busy),
       b('close', 'Отбросить этот (Del)', () => discard(false)),
@@ -902,33 +903,48 @@ function toolbar() {
   fileIn.onchange = async () => { const f = fileIn.files[0]; if (!f) return; try { addImage(await upload(f)); } catch (e) { log('error', `загрузка: ${e.message}`); } };
   return h('div.bar', {},
     fileIn,
-    h('button', { onclick: newCanvas, 'data-tip': 'Новый пустой холст — текущий останется в Hierarchy' }, icon('add', { size: 14 }), 'Новый'),
-    h('button', { onclick: e => imagePicker(e.currentTarget, { onPick: f => addImage(f) }), 'data-tip': 'Добавить картинку слоем: из input/, output/ или с диска\nМожно перетащить файл или вставить Ctrl+V' }, icon('open', { size: 14 }), 'Картинка'),
-    h('button.icon', { onclick: () => fileIn.click(), 'data-tip': 'С диска (проводник) — загрузится в input/' }, icon('upload', { size: 14 })),
-    h('button.icon', { onclick: e => saveImage(e.shiftKey), 'data-tip': 'Сохранить рамку в output/\nShift — весь холст' }, icon('save', { size: 14 })),
+    h('button.ui-btn.secondary.slim', { onclick: newCanvas, 'data-tip': 'Новый пустой холст — текущий останется в Hierarchy' }, icon('add', { size: 16 }), 'Новый'),
+    h('button.ui-btn.secondary.slim', { onclick: e => imagePicker(e.currentTarget, { onPick: f => addImage(f) }), 'data-tip': 'Добавить картинку слоем: из input/, output/ или с диска\nМожно перетащить файл или вставить Ctrl+V' }, icon('open', { size: 16 }), 'Картинка'),
+    h('button.ui-ib', { onclick: () => fileIn.click(), 'data-tip': 'С диска (проводник) — загрузится в input/' }, icon('upload', { size: 16 })),
+    h('button.ui-ib', { onclick: e => saveImage(e.shiftKey), 'data-tip': 'Сохранить рамку в output/\nShift — весь холст' }, icon('save', { size: 16 })),
     h('span.hsep'),
-    h('button.icon', { 'data-tip': 'Отменить (Ctrl+Z)', disabled: !hist.undo.length, onclick: () => undo() }, icon('undo', { size: 14 })),
-    h('button.icon', { 'data-tip': 'Повторить (Ctrl+Shift+Z)', disabled: !hist.redo.length, onclick: () => undo(true) }, icon('redo', { size: 14 })),
+    h('button.ui-ib', { 'data-tip': 'Отменить (Ctrl+Z)', disabled: !hist.undo.length, onclick: () => undo() }, icon('undo', { size: 16 })),
+    h('button.ui-ib', { 'data-tip': 'Повторить (Ctrl+Shift+Z)', disabled: !hist.redo.length, onclick: () => undo(true) }, icon('redo', { size: 16 })),
     h('span.hsep'),
-    h('button.icon', { 'data-tip': 'Вписать (F)', onclick: fit }, icon('fit', { size: 14 })),
-    h('button.icon', { 'data-tip': '100% (Ctrl+0)', onclick: () => zoomTo(1) }, icon('actualZoom', { size: 14 })),
+    h('button.ui-ib', { 'data-tip': 'Вписать (F)', onclick: fit }, icon('fit', { size: 16 })),
+    h('button.ui-ib', { 'data-tip': '100% (Ctrl+0)', onclick: () => zoomTo(1) }, icon('actualZoom', { size: 16 })),
     h('span.dim.mono#nz-zoom', { style: { minWidth: '40px', fontSize: '11px' } }, `${Math.round(view.z * 100)}%`),
     h('span.grow'),
     h('span.nz-mode#nz-mode', { 'data-tip': MODES[mode][1] }, MODES[mode][0]),
-    busy ? h('button', { onclick: () => { if (busy) busy.left = 0; interrupt(); } }, icon('stop', { size: 14 }), 'Прервать')
-      : h('button.primary', { onclick: () => run(), 'data-tip': 'Генерировать в рамке (Ctrl+Enter)' }, icon('play', { size: 14 }), 'Генерировать'));
+    busy ? h('button.ui-btn.secondary.slim', { onclick: () => { if (busy) busy.left = 0; interrupt(); } }, icon('stop', { size: 16 }), 'Прервать')
+      : h('button.ui-btn.primary.slim', { onclick: () => run(), 'data-tip': 'Генерировать в рамке (Ctrl+Enter)' }, icon('play', { size: 16 }), 'Генерировать'));
 }
 
 function toolStrip() {
   const b = (id, title, key, tip, on, click) => h(`button.b${on ? '.on' : ''}`, { 'data-tip': `${title}${key ? ` (${key})` : ''}${tip ? `\n${tip}` : ''}`, onclick: click }, svg(id));
   const sw = h('button.b.nz-color', { 'data-tip': `Цвет кисти ${st.color}\nAlt+клик кистью — пипетка` });
   sw.append(h('span', { style: { background: st.color } }));
-  const inp = h('input', { type: 'color', value: st.color, style: { position: 'absolute', opacity: 0, pointerEvents: 'none', width: 0, height: 0 } });
-  inp.addEventListener('input', () => { st.color = inp.value; sw.firstChild.style.background = inp.value; keep(); draw(); });
-  sw.onclick = () => inp.click();
+  // колор-пикер UI Kit (вместо системного <input type=color>): попап справа от панели инструментов
+  let pop = null;
+  const close = () => { if (!pop) return; pop.commit(); pop.remove(); pop = null; sw.classList.remove('on'); removeEventListener('pointerdown', outside, true); removeEventListener('keydown', key, true); };
+  const outside = e => { if (pop && !pop.contains(e.target) && !sw.contains(e.target)) close(); };
+  const key = e => { if (e.key === 'Escape' || e.key === 'Enter') { e.stopPropagation(); close(); } };
+  sw.onclick = () => {
+    if (pop) return close();
+    pop = colorPicker(st.color, v => { st.color = v; sw.firstChild.style.background = v; sw.dataset.tip = `Цвет кисти ${v}
+Alt+клик кистью — пипетка`; keep(); draw(); });
+    pop.classList.add('floating');
+    document.body.append(pop);
+    const q = sw.getBoundingClientRect();
+    pop.style.left = `${Math.min(innerWidth - pop.offsetWidth - 4, q.right + 6)}px`;
+    pop.style.top = `${Math.max(4, Math.min(innerHeight - pop.offsetHeight - 4, q.top))}px`;
+    sw.classList.add('on');
+    addEventListener('pointerdown', outside, true);
+    addEventListener('keydown', key, true);
+  };
   return h('div.ui-tb.vert.nz-tools', {},
     ...TOOLS.map(t => (t ? b(t[0], t[1], t[2], t[3], st.tool === t[0], () => setTool(t[0])) : h('span.sep'))),
-    h('span.sep'), sw, inp);
+    h('span.sep'), sw);
 }
 
 function optionsBar() {
@@ -949,8 +965,8 @@ function optionsBar() {
         const [w, hh] = v.split('x').map(Number);
         changeDoc(d => { const cx = d.bbox.x + d.bbox.w / 2, cy = d.bbox.y + d.bbox.h / 2; d.bbox = { x: snap8(cx - w / 2), y: snap8(cy - hh / 2), w, h: hh }; });
       }, { width: 110 }),
-      h('button', { 'data-tip': 'Рамка по видимым слоям', onclick: () => { const u = union(rasters().filter(L => shown(L) && hasPix(L))); if (u) changeDoc(d => { d.bbox = { x: u.x, y: u.y, w: Math.max(64, u.w), h: Math.max(64, u.h) }; }); } }, 'по слоям'),
-      h('button', { 'data-tip': 'Рамка вокруг масок (с полями 32 px)', onclick: fitBboxToMasks }, 'по маскам'),
+      h('button.ui-btn.secondary.slim', { 'data-tip': 'Рамка по видимым слоям', onclick: () => { const u = union(rasters().filter(L => shown(L) && hasPix(L))); if (u) changeDoc(d => { d.bbox = { x: u.x, y: u.y, w: Math.max(64, u.w), h: Math.max(64, u.h) }; }); } }, 'по слоям'),
+      h('button.ui-btn.secondary.slim', { 'data-tip': 'Рамка вокруг масок (с полями 32 px)', onclick: fitBboxToMasks }, 'по маскам'),
       h('span', {}, 'Shift — пропорции')) : null,
     st.tool === 'move' ? h('span', {}, A ? `${target} · ${A.x}, ${A.y}` : 'выберите слой') : null,
     h('span.grow'));
@@ -1059,14 +1075,14 @@ function sidePanel() {
       h('div.row', { style: { gap: '8px' } }, h('span.dim', { style: { width: '84px' } }, 'цвет'),
         ...MASK_COLORS.map(c => h(`button.nz-sw${A.color === c ? '.on' : ''}`, { style: { background: c }, onclick: () => recolor(A, c) }))),
       h('div.row', { style: { flexWrap: 'wrap', gap: '4px' } },
-        h('button', { onclick: () => invertMask(A), 'data-tip': 'Инвертировать в пределах рамки (Ctrl+I)' }, svg('invert', 14), 'Инвертировать'),
-        h('button', { onclick: () => clearLayer(A), 'data-tip': 'Стереть маску целиком (Shift+Del)' }, svg('clear', 14), 'Очистить')))
+        h('button.ui-btn.secondary.slim', { onclick: () => invertMask(A), 'data-tip': 'Инвертировать в пределах рамки (Ctrl+I)' }, svg('invert', 14), 'Инвертировать'),
+        h('button.ui-btn.secondary.slim', { onclick: () => clearLayer(A), 'data-tip': 'Стереть маску целиком (Shift+Del)' }, svg('clear', 14), 'Очистить')))
       : h('div.nz-props', {},
         slider('непрозрачность', Math.round((A.opacity ?? 1) * 100), 0, 100, 1, v => { A.opacity = v / 100; }, v => `${v}%`),
         h('div.row', { style: { flexWrap: 'wrap', gap: '4px' } },
-          h('button', { onclick: () => fitToBbox(A), disabled: !hasPix(A), 'data-tip': 'Вписать слой в рамку (с сохранением пропорций)' }, svg('fitbox', 14), 'В рамку'),
-          h('button', { onclick: () => layerToMask(A), disabled: !hasPix(A), 'data-tip': 'Маска по непрозрачной части слоя' }, svg('tomask', 14), 'В маску'),
-          h('button', { onclick: () => clearLayer(A), disabled: !hasPix(A), 'data-tip': 'Стереть всё на слое (Shift+Del)' }, svg('clear', 14), 'Очистить')),
+          h('button.ui-btn.secondary.slim', { onclick: () => fitToBbox(A), disabled: !hasPix(A), 'data-tip': 'Вписать слой в рамку (с сохранением пропорций)' }, svg('fitbox', 14), 'В рамку'),
+          h('button.ui-btn.secondary.slim', { onclick: () => layerToMask(A), disabled: !hasPix(A), 'data-tip': 'Маска по непрозрачной части слоя' }, svg('tomask', 14), 'В маску'),
+          h('button.ui-btn.secondary.slim', { onclick: () => clearLayer(A), disabled: !hasPix(A), 'data-tip': 'Стереть всё на слое (Shift+Del)' }, svg('clear', 14), 'Очистить')),
         A.seed != null ? h('div.hint', {}, `seed ${A.seed}`) : null);
   const side = h('div.nz-side', { style: { width: `${st.side}px` } },
     h('div.nz-split', { onpointerdown: e => {
@@ -1188,7 +1204,7 @@ function inspector() {
   };
   const ck = ckptName();
   const ckIn = h('input', { type: 'text', value: ck, spellcheck: false, readOnly: true });
-  const ckBtn = h('button.icon', { 'data-tip': 'Галерея чекпоинтов', onclick: () => libraryPicker(ckBtn, { cat: 'checkpoints', value: ck, onPick: name => { st.ckpt = name; keep(); rec = null; loadRec(); refresh(); } }) }, icon('image', { size: 14 }));
+  const ckBtn = h('button.ui-ib', { 'data-tip': 'Галерея чекпоинтов', onclick: () => libraryPicker(ckBtn, { cat: 'checkpoints', value: ck, onPick: name => { st.ckpt = name; keep(); rec = null; loadRec(); refresh(); } }) }, icon('image', { size: 16 }));
   ckIn.addEventListener('click', () => ckBtn.click());
   if (!rec && ck && S.server.running) loadRec();
   const d = doc(), r = d.bbox;
@@ -1206,8 +1222,8 @@ function inspector() {
     row('чекпоинт', h('div.row', { style: { flex: 1 } }, ckIn, ckBtn), 'шаги, cfg, сэмплер и негатив подбирает Magic под чекпоинт'),
     rec?.error ? h('div.hint', { style: { color: 'var(--err)' } }, `Magic: ${rec.error}`) : null,
     h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap' } },
-      busy ? h('button', { onclick: () => { if (busy) busy.left = 0; interrupt(); } }, icon('stop', { size: 14 }), 'Прервать')
-        : h('button.primary', { onclick: () => run() }, icon('play', { size: 14 }), `Генерировать (${MODES[mode][0]})`)),
+      busy ? h('button.ui-btn.secondary.slim', { onclick: () => { if (busy) busy.left = 0; interrupt(); } }, icon('stop', { size: 16 }), 'Прервать')
+        : h('button.ui-btn.primary.slim', { onclick: () => run() }, icon('play', { size: 16 }), `Генерировать (${MODES[mode][0]})`)),
   ];
 }
 

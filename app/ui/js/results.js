@@ -73,12 +73,12 @@ function render() {
   const q = S.queue || { running: null, pending: [] };
   v.replaceChildren(
     h('div.bar', {},
-      h('button', { onclick: refresh }, icon('refresh', { size: 14 }), 'Обновить'),
+      h('button.ui-btn.secondary.slim', { onclick: refresh }, icon('refresh', { size: 16 }), 'Обновить'),
       h('div.ui-seg', {}, seg('all', 'Все'), seg('img', 'Картинки'), seg('text', 'Тексты'), seg('err', 'Ошибки')),
       h('span.grow'),
       h('span.dim', {}, q.running ? `выполняется: ${q.running.title}` : 'очередь пуста', q.pending.length ? ` · ждут ${q.pending.length}` : ''),
-      h('button', { onclick: interrupt, disabled: !q.running }, icon('stop', { size: 14 }), 'Прервать'),
-      h('button', { onclick: clearQueue, disabled: !q.pending.length }, icon('delete', { size: 14 }), 'Очистить очередь')),
+      h('button.ui-btn.secondary.slim', { onclick: interrupt, disabled: !q.running }, icon('stop', { size: 16 }), 'Прервать'),
+      h('button.ui-btn.secondary.slim', { onclick: clearQueue, disabled: !q.pending.length }, icon('delete', { size: 16 }), 'Очистить очередь')),
     h('div.rgrid', {}, ...(list.length ? list.map(card) : [h('div.msg', {}, S.server.running ? 'Запусков пока нет — нажмите «Запуск» (Ctrl+Enter)' : 'Сервер не запущен')])));
 }
 
@@ -88,7 +88,7 @@ function runInspector(s) {
   return [
     h('h3', {}, icon(it.ok ? 'success' : 'error', { size: 16 }), it.title), h('div.hint', {}, `#${it.number} · ${it.at} · ${it.time} с`),
     it.error ? h('pre.out.err', {}, `${it.error.node ? `нода ${it.error.node}: ` : ''}${it.error.message}`) : null,
-    h('button.primary', { style: { margin: '6px 0' }, onclick: () => openAsWorkflow(it) }, icon('blueprint', { size: 14 }), 'Открыть граф'),
+    h('button.ui-btn.primary.slim', { style: { margin: '6px 0' }, onclick: () => openAsWorkflow(it) }, icon('blueprint', { size: 16 }), 'Открыть граф'),
     ...outsOf(it).flatMap(([id, o]) => {
       const imgs = [...(o._ui?.images || []), ...Object.values(o).filter(v => v?.image).map(v => v.image)];
       const t = o._ui?.text ?? Object.values(o).find(v => v?.text != null)?.text;

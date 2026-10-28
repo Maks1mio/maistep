@@ -316,12 +316,14 @@ input.ui-ac:hover { background-image: url(../icons/general/chevronDown_dark.svg)
 /* ---------- тулбары ---------- */
 .ui-tb { display: inline-flex; align-items: center; gap: 2px; color: var(--ui-fg); font: var(--ui-font); }
 .ui-tb.vert { flex-direction: column; }
-.ui-tb .b { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 26px; height: 26px; padding: 0 5px;
+/* .ui-ib — та же кнопка-иконка без тулбара (одиночные кнопки в строках, полях, карточках) */
+.ui-tb .b, .ui-ib { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 26px; height: 26px; padding: 0 5px;
   border-radius: 5px; border: 0; background: transparent; color: inherit; cursor: pointer; }
-.ui-tb .b:hover, .ui-tb .b.is-hover { background: var(--ui-hover); }
-.ui-tb .b:active, .ui-tb .b.on { background: var(--ui-sel-off); }
+.ui-tb .b:hover, .ui-tb .b.is-hover, .ui-ib:hover { background: var(--ui-hover); }
+.ui-tb .b:active, .ui-tb .b.on, .ui-ib:active, .ui-ib.on { background: var(--ui-sel-off); }
 .ui-tb .b.drop::after { content: ''; position: absolute; right: 2px; bottom: 2px; border: 2px solid transparent; border-right-color: var(--ui-fg-dim); border-bottom-color: var(--ui-fg-dim); }
 .ui-tb .b.txt { padding: 0 8px; }
+.ui-tb .b:disabled, .ui-ib:disabled { opacity: .4; cursor: default; background: transparent; }
 .ui-tb .dd { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px; border-radius: 5px; color: var(--ui-fg-dim); cursor: pointer; }
 .ui-tb .dd b { color: var(--ui-fg); font-weight: 400; }
 .ui-tb .dd:hover { background: var(--ui-hover); }

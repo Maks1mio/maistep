@@ -2,7 +2,7 @@
 // справа, подвал Отмена / Применить / OK). Разделы: Общие, Провайдеры LLM (+ перевод), llama.cpp, MCP-серверы, AI Chat,
 // Производительность, Civitai. Каждый раздел — { el, apply } и строится при первом открытии; OK применяет изменённые.
 // openSettings('mcp') открывает сразу нужный раздел.
-import { h, fill } from './util.js';
+import { h, fill, stepper } from './util.js';
 import { S, emit } from './store.js';
 import { icon } from './icons.js';
 import { api } from './backend.js';
@@ -25,7 +25,7 @@ export function input(value, onChange, { type = 'text', placeholder = '', width 
   const el = h('input', { type, value: value ?? '', placeholder, spellcheck: false, autocomplete: 'off', style: width ? { width: `${width}px` } : {} });
   el.addEventListener('input', () => onChange?.(type === 'number' ? Number(el.value) : el.value));
   el.addEventListener('keydown', e => e.stopPropagation());
-  return el;
+  return type === 'number' ? stepper(el) : el; // числа — со стрелками UI Kit (.ui-num)
 }
 const head = (text, ...extra) => h('div.st-h', {}, text, ...extra);
 const card = (...kids) => h('div.st-card', {}, ...kids);

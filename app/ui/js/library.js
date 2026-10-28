@@ -141,7 +141,7 @@ function render() {
     gridEl = h('div.lgrid');
     gridEl.style.setProperty('--lsz', `${st.size}px`);
     v.replaceChildren(h('div.bar', {}, q, h('div.ui-seg', {}, sortBtn('name', 'Имя'), sortBtn('size', 'Размер'), sortBtn('date', 'Дата')), blur, size, h('span.grow'), countEl,
-      h('button', { 'data-tip': 'Пересканировать папки', onclick: () => loadLibrary(true) }, icon('refresh', { size: 14 }), 'Обновить')), gridEl);
+      h('button.ui-btn.secondary.slim', { 'data-tip': 'Пересканировать папки', onclick: () => loadLibrary(true) }, icon('refresh', { size: 16 }), 'Обновить')), gridEl);
   }
   fill();
 }
@@ -164,9 +164,9 @@ function libInspector(s) {
     showPv(it) ? h(`div.preview${blurPv(it) ? '.nsfw' : ''}`, { onclick: e => { if (e.currentTarget.classList.contains('nsfw')) { e.stopPropagation(); e.currentTarget.classList.remove('nsfw'); } } }, h('img', { src: previewUrl(it.id), alt: it.name })) : null,
     it.has_preview && !showPv(it) ? h('div.hint', {}, 'Превью скрыто (NSFW скрыт)') : null,
     h('div.row', { style: { margin: '6px 0', flexWrap: 'wrap' } },
-      h('button.primary', { onclick: () => emit('library-insert', it) }, icon('add', { size: 14 }), 'Нода в граф'),
-      h('button', { onclick: () => copy(it.name) }, icon('copy', { size: 14 }), 'Имя'),
-      h('button', { onclick: () => copy(it.path) }, icon('copy', { size: 14 }), 'Путь')),
+      h('button.ui-btn.primary.slim', { onclick: () => emit('library-insert', it) }, icon('add', { size: 16 }), 'Нода в граф'),
+      h('button.ui-btn.secondary.slim', { onclick: () => copy(it.name) }, icon('copy', { size: 16 }), 'Имя'),
+      h('button.ui-btn.secondary.slim', { onclick: () => copy(it.path) }, icon('copy', { size: 16 }), 'Путь')),
     box,
   ];
   box.append(h('div.dim', {}, 'чтение заголовка…'));
@@ -193,7 +193,7 @@ function libInspector(s) {
       d.tags?.length ? h('div.ltags', {}, ...d.tags.map(t => h('span.mbadge', { onclick: () => copy(t) }, t))) : null,
       c.tags?.length ? h('h4', {}, 'Теги Civitai') : null,
       c.tags?.length ? h('div.ltags', {}, ...c.tags.map(t => h('span.mbadge', {}, t))) : null,
-      c.url ? h('button', { style: { marginTop: '8px' }, onclick: () => openExternal(c.url) }, icon('externalLink', { size: 14 }), 'Открыть на Civitai') : null,
+      c.url ? h('button.ui-btn.secondary.slim', { style: { marginTop: '8px' }, onclick: () => openExternal(c.url) }, icon('externalLink', { size: 16 }), 'Открыть на Civitai') : null,
       c.description ? h('details', {}, h('summary', {}, 'Описание'), h('pre.out', {}, c.description)) : null,
       d.meta && Object.keys(d.meta).length ? h('details', {}, h('summary', {}, `Метаданные safetensors (${Object.keys(d.meta).length})`),
         h('pre.out', {}, Object.entries(d.meta).map(([k, v]) => `${k}: ${v}`).join('\n'))) : null,

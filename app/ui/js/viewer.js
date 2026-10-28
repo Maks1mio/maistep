@@ -43,7 +43,7 @@ export function openViewer(list, i = 0, { actions } = {}) {
   const stage = h('div.vw-stage', {}, img);
   const title = h('b.vw-name'), info = h('span.vw-info'), zoomEl = h('button.vw-zoom', { 'data-tip': 'Вписать (0)', onclick: () => fit() });
   const extra = h('span.vw-extra');
-  const btn = (ic, tip, fn) => h('button.icon', { 'data-tip': tip, onclick: e => { e.stopPropagation(); fn(); } }, icon(ic, { size: 16 }));
+  const btn = (ic, tip, fn) => h('button.ui-ib', { 'data-tip': tip, onclick: e => { e.stopPropagation(); fn(); } }, icon(ic, { size: 16 }));
   const strip = items.length > 1 ? h('div.vw-strip', {}, ...items.map((it, k) => h('img', { src: it.src, loading: 'lazy', alt: '', draggable: false, onclick: () => go(k) }))) : null;
   const el = h('div.vw', { tabIndex: -1 },
     h('div.vw-top', {},

@@ -28,7 +28,7 @@ export function modelPicker(at, { provider, value, onPick }) {
   const box = h('div.gsearch.mlist');
   const info = h('span.dim');
   const chip = (label, tip, get, set) => h(`button.mchip${get() ? '.on' : ''}`, { 'data-tip': tip, onclick: e => { set(!get()); e.currentTarget.classList.toggle('on', get()); fill(); input.focus(); } }, label);
-  const refresh = h('button.icon', { 'data-tip': 'Обновить каталог', onclick: () => load(true) }, icon('refresh', { size: 14 }));
+  const refresh = h('button.ui-ib', { 'data-tip': 'Обновить каталог', onclick: () => load(true) }, icon('refresh', { size: 16 }));
   pop = h('div.gfloat.mpick', { onpointerdown: e => e.stopPropagation() },
     h('div.row', {}, input, refresh),
     h('div.row.mfilters', {}, chip('👁 картинки', 'только модели с картинками на входе', () => onlyVision, v => { onlyVision = v; }),

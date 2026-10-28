@@ -110,7 +110,7 @@ function drawMetrics(s) {
   if (!box) return;
   const g = s.gpu, f = flags(s), lim = s.limits || {}, hist = s.history || [];
   if (!mp || mp.box !== box || mp.gpu !== !!g) {
-    const C = { cpu: css('--p-yellow-6'), ram: '#c58af9', gpu: css('--p-green-7'), vram: css('--p-blue-8') };
+    const C = { cpu: css('--p-yellow-6'), ram: css('--p-purple-7'), gpu: css('--p-green-7'), vram: css('--p-blue-8') };
     mp = { box, gpu: !!g, cpu: metric('CPU', C.cpu), ram: metric('RAM', C.ram), ramS: spark(C.ram),
       g: metric('GPU', C.gpu), gS: spark(C.gpu), vram: metric('VRAM', C.vram), proc: h('b'), torch: h('b'), torchL: h('span', {}, 'torch') };
     box.replaceChildren(mp.cpu.e, mp.ram.e, mp.ramS,
@@ -157,7 +157,7 @@ export function limitsBox(cur) {
   };
   return h('div.sst-limits', {}, LIMITS.map(L => {
     const out = h('span.v', {}, L.fmt(vals[L.key]));
-    const r = h('input', { type: 'range', min: L.min, max: Math.max(L.max(), vals[L.key] || 0), step: L.step, value: vals[L.key] ?? L.min });
+    const r = h('input.ui-range', { type: 'range', min: L.min, max: Math.max(L.max(), vals[L.key] || 0), step: L.step, value: vals[L.key] ?? L.min });
     const paint = () => r.style.setProperty('--f', `${(100 * (r.value - r.min)) / (r.max - r.min || 1)}%`);
     r.addEventListener('input', () => { vals[L.key] = Number(r.value); out.textContent = L.fmt(vals[L.key]); paint(); });
     r.addEventListener('change', save);

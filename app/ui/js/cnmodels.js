@@ -63,13 +63,13 @@ export function cnMissing(kind, { why = '', fallback = '', slim = true } = {}) {
   const text = names == null ? 'Проверяю модели ControlNet…'
     : busy ? `Скачивается ${row?.title || CN[kind].title}: ${line || '…'}`
       : `Модель не установлена: ${row?.title || CN[kind].title} (${row?.size || '2,5 ГБ'}).${why ? ` ${why}` : ''}`;
-  const b = slim ? '.ui-btn.slim' : '';
+  const b = slim ? '.ui-btn.slim' : '.ui-btn';
   return h('div.cn-miss', { 'data-cn': kind },
     h('div.cn-miss-t', {}, text),
     names == null ? null : h('div.row', { style: { gap: '6px', flexWrap: 'wrap' } },
       h(`button${b}.primary`, { type: 'button', disabled: busy || !S.server.running || !row, onclick: () => downloadCn(kind) },
-        icon('download', { size: 14 }), busy ? 'Скачивается…' : `Скачать${row?.size ? ` (${row.size})` : ''}`),
-      h(`button${b}${slim ? '.secondary' : ''}`, { type: 'button', onclick: () => openWorkspace('components'), 'data-tip': 'Вкладка «Компоненты» — модели и пакеты' }, 'Компоненты')),
+        icon('download', { size: 16 }), busy ? 'Скачивается…' : `Скачать${row?.size ? ` (${row.size})` : ''}`),
+      h(`button${b}.secondary`, { type: 'button', onclick: () => openWorkspace('components'), 'data-tip': 'Вкладка «Компоненты» — модели и пакеты' }, 'Компоненты')),
     fallback ? h('div.hint.cn-miss-h', {}, fallback) : null);
 }
 

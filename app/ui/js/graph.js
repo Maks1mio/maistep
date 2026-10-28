@@ -20,7 +20,8 @@ import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage
 const NW = 280, HEAD = 30, ROW = 24, PAD = 10, PREV_MAX = 420, R = 8;
 const FONT = 'Inter, "Segoe UI", system-ui, sans-serif', MONO = '"JetBrains Mono", Consolas, monospace';
 // цвета холста — палитра UI Kit (uikit.css, New UI Dark): читаются из CSS-переменных при сборке вида
-const K = { bg: '#1E1F22', dots: '#393B40', node: '#2B2D30', head: '#313337', edge: '#1A1B1D', field: '#1E1F22', fieldBd: '#43454A',
+// цвета палитры UI Kit для холстов (граф, ImageNaizer): canvas не читает CSS-переменные
+export const K = { bg: '#1E1F22', dots: '#393B40', node: '#2B2D30', head: '#313337', edge: '#1A1B1D', field: '#1E1F22', fieldBd: '#43454A',
   fieldHi: '#6F737A', fg: '#DFE1E5', fg2: '#B4B8BF', dim: '#868A91', off: '#5A5D63', accent: '#3574F0', ok: '#57965C', warn: '#D6AE58',
   err: '#DB5C5C', errBg: '#402929', sel: '#548AF7' };
 function readTheme() {
@@ -526,7 +527,25 @@ const drag = (mm, mu) => {
 // ---------- правка ----------
 const wfEdit = (fn, opts) => edit('workflow', S.current.workflow, fn, opts);
 
+// from уже ниже to по связям — новая связь to ← from замкнёт цикл (запуск упадёт «в графе цикл»)
+function makesCycle(links, from, to) {
+  const seen = new Set(), stack = [to];
+  while (stack.length) {
+    const id = stack.pop();
+    if (id === from) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const l of links) if (l.from === id) stack.push(l.to);
+  }
+  return false;
+}
+
 export function connect(from, out, to, inp) {
+  const d = cur();
+  if (d && makesCycle(d.data.links.filter(l => !(l.to === to && l.in === inp)), from, to)) {
+    emit('log', { src: 'editor', level: 'warn', text: `связь ${from} → ${to} замкнёт цикл — не соединяю` });
+    return;
+  }
   wfEdit(wf => {
     wf.links = wf.links.filter(l => !(l.to === to && l.in === inp)); // у входа одна связь
     wf.links.push({ from, out, to, in: inp });

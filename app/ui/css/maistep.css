@@ -557,7 +557,7 @@ pre.agb-diff .a { color: var(--p-green-7); } pre.agb-diff .d { color: var(--p-re
 .nz-stage .b:hover:not(:disabled) { background: var(--ui-hover); }
 .nz-stage .b:disabled { opacity: .4; }
 .nz-stage .sep { width: 1px; height: 16px; background: var(--ui-sep); margin: 0 3px; }
-.nz-stage button.primary { gap: 4px; height: 26px; }
+.nz-stage .ui-btn.primary { gap: 4px; height: 26px; }
 .nz-opts .nz-bbox input { width: 58px; }
 .nz-help { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--ui-sep); color: var(--dim); font-size: 11px; font-weight: 600;
   display: inline-flex; align-items: center; justify-content: center; cursor: help; }
@@ -640,7 +640,8 @@ pre.agb-diff .a { color: var(--p-green-7); } pre.agb-diff .d { color: var(--p-re
 .tc-f { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .tc-f > label { color: var(--ui-fg-dim); font: 400 12px/16px var(--ui-sans); }
 .tc-f textarea { resize: vertical; font: 400 13px/18px var(--ui-sans); min-height: 44px; }
-.tc-f input[type=number] { width: 100%; box-sizing: border-box; }
+.tc-f .ui-num { width: 100%; }
+.tc-f .ui-num > input { box-sizing: border-box; }
 .tc-hint { font: 400 12px/16px var(--ui-sans); color: var(--ui-fg-dim); }
 .tc-row { display: flex; gap: var(--sp-unrel); }
 .tc-rng { display: flex; align-items: center; gap: var(--sp-unrel); }
@@ -677,8 +678,8 @@ pre.agb-diff .a { color: var(--p-green-7); } pre.agb-diff .d { color: var(--p-re
 .vw-top { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 8px 0 12px; background: var(--ui-head, var(--p-gray-2)); border-bottom: 1px solid var(--ui-popup-border); flex: none; }
 .vw-top .vw-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
 .vw-top .vw-info { color: var(--ui-fg-dim); font-size: 12px; white-space: nowrap; }
-.vw-top button.icon { width: 28px; height: 28px; border-radius: 6px; }
-.vw-top button.icon:hover, .vw-zoom:hover { background: var(--ui-hover); }
+.vw-top .ui-ib { width: 28px; height: 28px; border-radius: 6px; }
+.vw-top .ui-ib:hover, .vw-zoom:hover { background: var(--ui-hover); }
 .vw-zoom { min-width: 54px; height: 28px; border-radius: 6px; font-variant-numeric: tabular-nums; color: var(--ui-fg); background: none; border: 0; }
 .vw-sep { width: 1px; height: 18px; background: var(--ui-popup-border); margin: 0 4px; }
 .vw-extra { display: flex; gap: 2px; }

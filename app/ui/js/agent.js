@@ -123,7 +123,7 @@ function onAgent(d) {
 function applyWorkflow(d) {
   if (d.created || !doc('workflow', d.id)) {
     if (doc('workflow', d.id)) return;
-    addDoc('workflow', d.id, d.data);
+    if (!addDoc('workflow', d.id, d.data)) return;
     log('ok', `агент создал воркфлоу «${d.data.title || d.id}»`);
     emit('open-workflow', d.id);
     return;

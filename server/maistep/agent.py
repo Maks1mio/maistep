@@ -902,7 +902,7 @@ def run_tool(ctx, name, inp):
         return json.dumps({"applied": done, "graph": _summary(wf), "issues": issues}, ensure_ascii=False), []
     if name == "create_workflow":
         wid = re.sub(r"[^A-Za-z0-9_-]", "_", inp["id"])[:60] or "agent_wf"
-        if wid in ctx.wfs or wid in ctx.hidden:
+        if wid.lower() in {w.lower() for w in [*ctx.wfs, *ctx.hidden]}:  # Windows: Foo.json и foo.json — один файл
             raise ValueError(f"workflow {wid} already exists — pick another id")
         wf = {"title": inp.get("title") or wid, "about": inp.get("about", ""), "nodes": [], "links": []}
         _apply(wf, [{"op": "add_node", **n} for n in inp.get("nodes") or []])

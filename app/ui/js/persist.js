@@ -58,7 +58,7 @@ async function outputsFromHistory() {
     let changed = false;
     for (const it of [...await history(200)].reverse()) {
       const wf = it.workflow?.id;
-      if (!wf || !S.docs.workflow.has(wf) || !it.outputs) continue;
+      if (!wf || !it.ok || !S.docs.workflow.has(wf) || !it.outputs) continue;
       if (S.outputs[wf] && Object.keys(S.outputs[wf]).length && !S.outputs[wf]._fromHistory) continue;
       S.outputs[wf] = { ...(S.outputs[wf] || {}), ...it.outputs, _fromHistory: true };
       changed = true;

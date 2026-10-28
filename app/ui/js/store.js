@@ -76,9 +76,17 @@ export function undo() { const e = undoStack.pop(); if (e) { redoStack.push(e); 
 export function redo() { const e = redoStack.pop(); if (e) { undoStack.push(e); apply(e, 'after'); } }
 
 // ---------- создание / сохранение ----------
+// занят ли id без учёта регистра: на Windows workflows/Foo.json и foo.json — один файл, новый затёр бы старый
+export const idTaken = (kind, id) => [...S.docs[kind].keys()].some(k => k.toLowerCase() === String(id).toLowerCase());
+
 export function addDoc(kind, id, data) {
+  if (!S.docs[kind].has(id) && idTaken(kind, id)) {
+    emit('log', { src: 'editor', level: 'error', text: `${PATHS[kind](id)}: уже есть документ с тем же именем в другом регистре — не создаю` });
+    return false;
+  }
   S.docs[kind].set(id, { kind, id, data: normalize(data), dirty: true, created: true });
   emit('change', { kind, id, created: true });
+  return true;
 }
 
 export async function removeDoc(kind, id) {
@@ -115,7 +123,7 @@ export function select(sel) {
 }
 
 export function uniqueId(base, taken) {
-  const t = new Set(taken);
-  if (!t.has(base)) return base;
-  for (let i = 2; ; i++) if (!t.has(`${base}${i}`)) return `${base}${i}`;
+  const t = new Set([...taken].map(x => String(x).toLowerCase())); // без учёта регистра — как файловая система Windows
+  if (!t.has(base.toLowerCase())) return base;
+  for (let i = 2; ; i++) if (!t.has(`${base}${i}`.toLowerCase())) return `${base}${i}`;
 }

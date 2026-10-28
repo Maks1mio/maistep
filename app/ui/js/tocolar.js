@@ -5,7 +5,7 @@
 // а цвет — из генерации, поэтому линии, тон и текст остаются как нарисованы.
 // Цвета придумывает vision-LLM (скрытый llm.chat): общие персонажи + подсказка страницы, всё можно править.
 // Состояние (список, настройки, подсказки) — localStorage; результаты — PNG в output/ (colored_*).
-import { h, check, clamp } from './util.js';
+import { h, check, clamp, stepper } from './util.js';
 import { S, on, emit } from './store.js';
 import { icon } from './icons.js';
 import { api, upload, fileUrl, getSettings, getModels } from './backend.js';
@@ -456,10 +456,10 @@ function stop() {
 // ---------- отрисовка ----------
 const field = (label, ctrl, hint) => h('div.tc-f', {}, h('label', {}, label), ctrl, hint ? h('div.tc-hint', {}, hint) : null);
 function num(key, opts) {
-  return h('input', { type: 'number', min: opts.min, max: opts.max, step: opts.step, value: st[key] ?? '', placeholder: opts.ph ?? '', onchange: e => {
+  return stepper(h('input', { type: 'number', min: opts.min, max: opts.max, step: opts.step, value: st[key] ?? '', placeholder: opts.ph ?? '', onchange: e => {
     const v = e.target.value === '' ? null : Number(e.target.value);
     st[key] = v == null ? (DEF[key] ?? null) : v; keep(); render();
-  } });
+  } }));
 }
 function textarea(value, oninput, ph, rows = 2) {
   const t = h('textarea', { rows, spellcheck: false, placeholder: ph });
@@ -486,7 +486,7 @@ function llmLine() {
   return h('div.tc-llm', {}, icon('eye', { size: 13 }), prov, pick);
 }
 
-const range = (key, min, max, step) => h('div.tc-rng', {}, h('input', { type: 'range', min, max, step, value: st[key] ?? DEF[key],
+const range = (key, min, max, step) => h('div.tc-rng', {}, h('input.ui-range', { type: 'range', min, max, step, value: st[key] ?? DEF[key],
   oninput: e => { st[key] = Number(e.target.value); e.target.nextSibling.textContent = st[key].toFixed(2); keep(); } }), h('b', {}, (st[key] ?? DEF[key]).toFixed(2)));
 
 // «Контуры»: ControlNet по линиям страницы (или прежний img2img), скачивание модели, если её нет
@@ -536,10 +536,10 @@ function manual(p) {
     ninjaReady() ? h('div.tc-auto', {}, h('label.tc-check', { 'data-tip': 'После SDXL (или сразу по вашему референсу) MangaNinja перекрашивает каждую панель, строго по линиям' },
       check(st.engine === 'ninja', v => { st.engine = v ? 'ninja' : 'sd'; keep(); render(); }), 'MangaNinja по панелям')) : null,
     ...contours(),
-    field('Насыщенность', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1.6, step: 0.05, value: st.strength,
+    field('Насыщенность', h('div.tc-rng', {}, h('input.ui-range', { type: 'range', min: 0, max: 1.6, step: 0.05, value: st.strength,
       oninput: e => { st.strength = Number(e.target.value); e.target.nextSibling.textContent = st.strength.toFixed(2); keep(); } }), h('b', {}, st.strength.toFixed(2))),
       'слабый цвет генерации подтягивается автоматически'),
-    field('Тени', h('div.tc-rng', {}, h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: st.shading ?? 0.55,
+    field('Тени', h('div.tc-rng', {}, h('input.ui-range', { type: 'range', min: 0, max: 1, step: 0.05, value: st.shading ?? 0.55,
       oninput: e => { st.shading = Number(e.target.value); e.target.nextSibling.textContent = st.shading.toFixed(2); keep(); } }), h('b', {}, (st.shading ?? 0.55).toFixed(2))),
       '0 — плоская заливка, 1 — вся светотень генерации; линии всегда из оригинала'),
     h('div.tc-auto', {}, h('label.tc-check', { 'data-tip': 'Линии страницы делят её на области, каждая берёт один цвет генерации: '

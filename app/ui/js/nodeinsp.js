@@ -22,13 +22,13 @@ function widget(d, n, k, inp) {
   if (inp.picker === 'library_model') {
     const i = text(v, set, { placeholder: 'имя модели' });
     const cat = () => inp.cat || (n.props?.[inp.cat_input] ?? defs()[n.type].inputs[inp.cat_input]?.default);
-    const btn = h('button.icon', { 'data-tip': 'Галерея моделей', onclick: () => libraryPicker(btn, { cat: cat(), value: i.value, onPick: name => { i.value = name; set(name); } }) }, icon('image', { size: 14 }));
+    const btn = h('button.ui-ib', { 'data-tip': 'Галерея моделей', onclick: () => libraryPicker(btn, { cat: cat(), value: i.value, onPick: name => { i.value = name; set(name); } }) }, icon('image', { size: 16 }));
     return h('div.row', { style: { flex: 1 } }, i, btn);
   }
   if (inp.picker === 'llm_model') {
     const i = text(v, set, { placeholder: 'id модели' });
     const pid = () => n.props?.[inp.provider_input] ?? defs()[n.type].inputs[inp.provider_input]?.default;
-    const btn = h('button.icon', { 'data-tip': 'Выбрать из каталога', onclick: () => modelPicker(btn, { provider: pid(), value: i.value, onPick: id => { i.value = id; set(id); } }) }, icon('search', { size: 14 }));
+    const btn = h('button.ui-ib', { 'data-tip': 'Выбрать из каталога', onclick: () => modelPicker(btn, { provider: pid(), value: i.value, onPick: id => { i.value = id; set(id); } }) }, icon('search', { size: 16 }));
     i.addEventListener('focus', () => modelPicker(i, { provider: pid(), value: i.value, onPick: id => { i.value = id; set(id); } }));
     return h('div.row', { style: { flex: 1 } }, i, btn);
   }
@@ -53,8 +53,8 @@ function widget(d, n, k, inp) {
       try { put(await upload(f.files[0])); }
       catch (e) { emit('log', { src: 'editor', level: 'error', text: `загрузка: ${e.message}` }); }
     };
-    const lib = h('button.icon', { 'data-tip': 'Выбрать из библиотеки приложения (input/, output/)', onclick: () => imagePicker(lib, { value: i.value, onPick: put }) }, icon('image', { size: 14 }));
-    return h('div.row', { style: { flex: 1 } }, i, f, lib, h('button.icon', { 'data-tip': 'Загрузить с диска (проводник) в input/…', onclick: () => f.click() }, icon('upload', { size: 14 })));
+    const lib = h('button.ui-ib', { 'data-tip': 'Выбрать из библиотеки приложения (input/, output/)', onclick: () => imagePicker(lib, { value: i.value, onPick: put }) }, icon('image', { size: 16 }));
+    return h('div.row', { style: { flex: 1 } }, i, f, lib, h('button.ui-ib', { 'data-tip': 'Загрузить с диска (проводник) в input/…', onclick: () => f.click() }, icon('upload', { size: 16 })));
   }
   return i;
 }
@@ -63,7 +63,7 @@ function widget(d, n, k, inp) {
 function modelCard(n, def) {
   if (!Object.values(def.inputs).some(i => i.picker === 'llm_model')) return [];
   const m = llmModel(n, def);
-  if (!m) return [h('div.hint', { style: { color: '#e0a35f' } }, 'модели нет в каталоге провайдера (или каталог ещё не загружен)')];
+  if (!m) return [h('div.hint', { style: { color: 'var(--ui-warn)' } }, 'модели нет в каталоге провайдера (или каталог ещё не загружен)')];
   return [h('div.mcard', {}, h('div.row', {}, h('b', {}, m.name), h('span.grow'), ...badges(m)),
     h('div.hint', {}, [m.company, m.series, m.max_output ? `вывод до ${m.max_output.toLocaleString('ru')} ток.` : '', m.tools ? 'инструменты' : ''].filter(Boolean).join(' · ')),
     !m.vision ? h('div.hint', {}, 'картинки не принимает — вход image скрыт') : null)];
@@ -76,7 +76,7 @@ function magicCard(d, n) {
   if (!m.src.ckpt) return [h('div.mcard', {}, h('b', {}, '✦ Magic'), h('div.hint', {}, 'Подключите вход model к Load Checkpoint (можно через Load LoRA) — параметры подберутся под модель.'))];
   if (!m.full && !m.loading && !m.error) fetchRec(m.src);
   const r = m.full;
-  const copy = t => h('button.icon', { 'data-tip': 'Копировать', onclick: () => navigator.clipboard?.writeText(t) }, icon('copy', { size: 14 }));
+  const copy = t => h('button.ui-ib', { 'data-tip': 'Копировать', onclick: () => navigator.clipboard?.writeText(t) }, icon('copy', { size: 16 }));
   const rows = MAGIC_KEYS.map(k => {
     const ch = m.changed.includes(k);
     return h('div.f', {}, h('label', {}, k), h('div.v', {}, h('span.mono', {}, String(m.rec?.[k] ?? '—')),
@@ -113,7 +113,7 @@ function result(n) {
   for (const [k, v] of Object.entries(o)) if (!k.startsWith('_') && v?.text != null) texts.push([k, v.text]);
   for (const [k, t] of texts.slice(0, 4)) {
     parts.push(h('div.row', { style: { justifyContent: 'space-between' } }, h('span.dim', {}, k || 'текст'),
-      h('button.icon', { 'data-tip': 'Копировать', onclick: () => navigator.clipboard?.writeText(t) }, icon('copy', { size: 14 }))), h('pre.out', {}, t));
+      h('button.ui-ib', { 'data-tip': 'Копировать', onclick: () => navigator.clipboard?.writeText(t) }, icon('copy', { size: 16 }))), h('pre.out', {}, t));
   }
   for (const f of o._ui?.files || []) parts.push(h('div.hint.mono', {}, `файл: ${f}`));
   return parts;

@@ -1,5 +1,6 @@
 // DOM-помощники и поля форм (инспектор, панели персонажей/полей), модальные окна.
 import { colorField, messageBox, dropdown, autocomplete } from './kit.js';
+import { icon } from './icons.js';
 
 export function h(tag, attrs = {}, ...kids) {
   // 'tag.класс.класс#id'
@@ -60,6 +61,7 @@ export function num(value, onChange, opts = {}) {
 // Стрелки числового поля (.ui-num из UI Kit): шевроны вместо системных, зажатие повторяет шаг, протяжка по
 // стрелкам вверх/вниз меняет значение, колесо — когда поле в фокусе. Shift — шаг ×10, Alt — ×0.1.
 export function stepper(i, opts = {}) {
+  const changed = debounce(() => i.dispatchEvent(new Event('change')), 400);
   const base = opts.wheel ?? (Number(i.step) || 1);
   const mul = e => (e.shiftKey ? 10 : e.altKey ? 0.1 : 1);
   const bump = (dir, k = 1) => {
@@ -81,7 +83,7 @@ export function stepper(i, opts = {}) {
         bump(Math.sign(n), Math.abs(n) * mul(ev));
         document.body.style.cursor = 'ns-resize';
       };
-      const up = () => { clearTimeout(timer); if (!moved) bump(dir, k); document.body.style.cursor = ''; removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+      const up = () => { clearTimeout(timer); if (!moved) bump(dir, k); document.body.style.cursor = ''; removeEventListener('pointermove', move); removeEventListener('pointerup', up); i.dispatchEvent(new Event('change')); };
       addEventListener('pointermove', move);
       addEventListener('pointerup', up);
     },
@@ -90,6 +92,7 @@ export function stepper(i, opts = {}) {
     if (document.activeElement !== i) return;
     e.preventDefault();
     bump(e.deltaY < 0 ? 1 : -1, mul(e));
+    changed();
   }, { passive: false });
   return h('span.ui-num', {}, i, h('span.sp', { title: 'Щёлкните или тяните вверх/вниз (Shift ×10, Alt ×0.1)' }, arrow(1), arrow(-1)));
 }
@@ -130,12 +133,20 @@ export function prompt(title, fields, okText = 'OK') {
         : text(vals[f.key], v => { vals[f.key] = v; }, { placeholder: f.placeholder || '' });
       return h('div.f', {}, h('label', {}, f.label), ctl);
     });
-    const bg = h('div.modal-bg', { onmousedown: e => { if (e.target === bg) close(null); } },
-      h('div.modal', { onkeydown: e => { if (e.key === 'Enter') close(vals); if (e.key === 'Escape') close(null); } },
-        h('h3', {}, title), ...rows,
-        h('div.btns', {}, h('button', { onclick: () => close(null) }, 'Отмена'), h('button.primary', { onclick: () => close(vals) }, okText))));
+    // диалог UI Kit: заголовок с крестиком, поля, подвал с кнопками .ui-btn
+    const dlg = h('div.ui-dialog.pr-dlg', { tabIndex: -1, onkeydown: e => {
+      e.stopPropagation();
+      if (e.key === 'Escape') close(null);
+      else if (e.key === 'Enter' && !e.target.closest('.ui-dd') && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); close(vals); }
+    } },
+      h('div.ttl', {}, title, h('span.x', { onclick: () => close(null) }, icon('close', { size: 16 }))),
+      h('div.bd', {}, ...rows),
+      h('div.ft', {}, h('span.grow'),
+        h('button.ui-btn.secondary', { onclick: () => close(null) }, 'Отмена'),
+        h('button.ui-btn.primary', { onclick: () => close(vals) }, okText)));
+    const bg = h('div.modal-bg', { onmousedown: e => { if (e.target === bg) close(null); } }, dlg);
     document.body.append(bg);
-    bg.querySelector('input,select')?.focus();
+    (dlg.querySelector('input, .ui-dd') || dlg).focus(); // первое поле (бывший <select> — теперь .ui-dd)
   });
 }
 

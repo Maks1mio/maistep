@@ -478,7 +478,9 @@ def delete_job(job_id):
             raise ValueError("сначала остановите загрузку")
         dest = Path(j.dest)
         removed = []
-        if dest.exists():
+        # файл по пути незавершённой загрузки — чужой: загрузка кладёт его только при успехе, а с «file already exists»
+        # падает как раз потому, что он уже был. Раньше «Убрать из истории» у такой записи стирал модель пользователя.
+        if j.state == "done" and dest.exists():
             if dest.suffix.lower() not in L.MODEL_EXT:
                 raise ValueError("это не файл модели — удаление отменено")
             if not _in_library(dest):
@@ -490,7 +492,8 @@ def delete_job(job_id):
                 raise RuntimeError(f"не удалось удалить {dest.name}: {e}") from None
         if dest.parent.exists() and _in_library(dest.parent):
             stem = dest.with_suffix("")
-            for p in (dest.with_name(dest.name + ".part"), Path(f"{stem}.cminfo.json"), Path(f"{stem}.preview.jpeg")):
+            sidecars = (Path(f"{stem}.cminfo.json"), Path(f"{stem}.preview.jpeg")) if j.state == "done" else ()
+            for p in (dest.with_name(dest.name + ".part"), *sidecars):
                 try:
                     if p.is_file():
                         p.unlink()

@@ -2,7 +2,7 @@
 
     python server/main.py [--port 3300] [--host 127.0.0.1]
 
-HTTP API (CORS открыт — окно редактора ходит сюда с другого origin):
+HTTP API (CORS — только для окна maistep и страниц на localhost, см. Handler._allowed):
   GET  /api/nodes              каталог нод { type: { title, cat, inputs, outputs, output, hint } }
   POST /api/check              { workflow } → { issues: [{ node, message }] }
   POST /api/prompt             { workflow, id? } → { prompt_id, number } — в очередь
@@ -13,7 +13,7 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   POST /api/reload             перечитать ноды (server/nodes, custom_nodes)
   GET  /api/settings, POST /api/settings  провайдеры LLM (user/settings.json; ключи в ответе замаскированы)
   GET  /api/models?provider=id&refresh=1  каталог моделей провайдера (кэш 6 ч)
-  POST /api/upload?name=x.png  тело — файл → input/x.png (&dir=output — в output/)
+  POST /api/upload?name=x.png  тело — файл → input/x.png (&dir=output — в output/); имя занято другим файлом → x_2.png
   GET  /api/files?dir=input    файлы input/ или output/
   GET  /api/library?refresh=1   библиотека моделей (только чтение): корни, категории, модели
   GET  /api/library/model?id=cat/name   карточка модели (заголовок safetensors, .cminfo.json, …)
@@ -50,7 +50,7 @@ HTTP API (CORS открыт — окно редактора ходит сюда 
   GET  /api/llamacpp | llamacpp/models · POST /api/llamacpp { …настройки } | llamacpp/start | llamacpp/stop
   GET  /view?file=output/a.png файл из input/ или output/
   GET  /agentfs/<диалог>/<№ папки>/<путь>  файл проекта для браузера AI Chat (только папки, выданные диалогу)
-  GET  /events                 SSE: status, start, executing, progress, preview, stream, executed, error, done, log, nodes,
+  GET  /events                 SSE: status, start, executing, progress, preview, stream, executed, run-error, done, log, nodes,
                                components, comp-log, agent, update
 """
 import argparse
@@ -197,7 +197,7 @@ class Queue:
                 err = {"node": None, "message": f"{type(e).__name__}: {e}\n{traceback.format_exc()}"}
             dt = round(time.time() - t0, 2)
             if err:
-                r.emit("error", err)
+                r.emit("run-error", err)  # не «error»: в браузере это имя у обрыва EventSource (onerror)
                 log("error", f"запуск #{r.number} «{r.title}»: {err['message'].splitlines()[0]}" + (f" (нода {err['node']})" if err["node"] else ""))
             else:
                 log("info", f"запуск #{r.number} «{r.title}» — {dt} с")
@@ -219,8 +219,20 @@ class Queue:
             self.running.cancel.set()
 
     def clear(self, ids=None):
+        """Убрать ждущие запуски. Каждый попадает в историю с ошибкой и шлёт done: иначе ждущие его (агент — wait_run,
+        аватар персонажа, MCP) висели до часа, а окно не узнавало, что запуска не будет."""
         with self.cond:
-            self.pending = [r for r in self.pending if ids is not None and r.id not in ids]
+            gone = [r for r in self.pending if ids is None or r.id in ids]
+            self.pending = [r for r in self.pending if r not in gone]
+            err = {"node": None, "message": "убран из очереди"}
+            for r in gone:
+                self.history.insert(0, {"prompt_id": r.id, "number": r.number, "title": r.title, "ok": False, "error": err, "time": 0,
+                                        "at": time.strftime("%Y-%m-%d %H:%M:%S"), "outputs": {}, "workflow": r.workflow})
+            del self.history[200:]
+            if gone:
+                self.save()
+        for r in gone:
+            r.emit("done", {"ok": False, "time": 0, "error": err})
         HUB.emit("status", self.status())
 
 
@@ -279,6 +291,24 @@ def civitai_post(op, d):
     raise ValueError(f"нет такого пути civitai/{op}")
 
 
+BIND_HOST = "127.0.0.1"  # --host; не loopback (0.0.0.0) — пользователь сам открыл сервер в сеть
+ORIGIN_SCHEMES = ("http", "https", "tauri", "mai")
+
+
+def _local_host(host):
+    host = (host or "").lower().strip("[]")
+    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
+
+
+def _local_origin(origin):
+    """Окно Tauri (tauri://localhost, http://tauri.localhost), mai://, веб-режим и страницы на localhost."""
+    try:
+        u = urlparse(origin)
+    except ValueError:
+        return False
+    return u.scheme in ORIGIN_SCHEMES and _local_host(u.hostname)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "maistep"
@@ -286,10 +316,24 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _allowed(self):
+        """Запрос от окна maistep или локальной страницы, а не от стороннего сайта. Без проверки любой сайт,
+        открытый в браузере, мог POST-ом на 127.0.0.1 добавить MCP-сервер с командой и запустить её.
+        Host — защита от DNS rebinding (чужое имя, указывающее на 127.0.0.1); Origin — от прямых запросов сайта.
+        Без Origin — не браузер (MCP, curl) или обычная навигация: пропускаем."""
+        host = urlparse(f"//{self.headers.get('host') or ''}").hostname or ""
+        if not _local_host(host) and host != BIND_HOST and BIND_HOST not in ("0.0.0.0", "::"):
+            return False
+        origin = self.headers.get("origin")
+        return origin is None or _local_origin(origin)
+
     def _head(self, code=200, ctype="application/json; charset=utf-8", length=None, extra=None):
         self.send_response(code)
         self.send_header("content-type", ctype)
-        self.send_header("access-control-allow-origin", "*")
+        origin = self.headers.get("origin")
+        if origin and _local_origin(origin):
+            self.send_header("access-control-allow-origin", origin)
+            self.send_header("vary", "origin")
         self.send_header("access-control-allow-headers", "content-type")
         self.send_header("access-control-allow-methods", "GET, POST, OPTIONS")
         if length is not None:
@@ -308,9 +352,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n) if n else b""
 
     def do_OPTIONS(self):
-        self._head(204, length=0)
+        self._head(204 if self._allowed() else 403, length=0)
 
     def do_GET(self):
+        if not self._allowed():
+            return self.json({"error": "запрос с чужого сайта"}, 403)
         u = urlparse(self.path)
         qs = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path == "/events":
@@ -435,6 +481,9 @@ class Handler(BaseHTTPRequestHandler):
         self.json({"error": f"нет такого пути {u.path}"}, 404)
 
     def do_POST(self):
+        if not self._allowed():
+            self.body()  # дочитать тело: соединение keep-alive
+            return self.json({"error": "запрос с чужого сайта"}, 403)
         u = urlparse(self.path)
         qs = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
@@ -443,8 +492,16 @@ class Handler(BaseHTTPRequestHandler):
                 d = "output" if qs.get("dir") == "output" else "input"
                 p = ROOT / d / name
                 p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_bytes(self.body())
-                return self.json({"file": f"{d}/{name}"})
+                data = self.body()
+                # то же имя, другое содержимое (photo.png из другой папки) — новое имя: перезапись молча меняла картинку
+                # во всех воркфлоу и холстах, где стоял прежний файл. Такой же файл — отдаём существующий.
+                for i in range(2, 10000):
+                    if not p.exists() or p.read_bytes() == data:
+                        break
+                    p = p.with_name(f"{Path(name).stem}_{i}{Path(name).suffix}")
+                if not p.exists():
+                    p.write_bytes(data)
+                return self.json({"file": f"{d}/{p.name}"})
             data = json.loads(self.body() or b"{}")
         except ValueError as e:
             return self.json({"error": f"плохой JSON: {e}"}, 400)
@@ -629,11 +686,12 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
-    global Q
+    global Q, BIND_HOST
     ap = argparse.ArgumentParser(description="maistep server")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 3300)))
     ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     a = ap.parse_args()
+    BIND_HOST = a.host
     lifetime.bind()  # до любых дочерних процессов: они не переживут сервер
     logs.setup()
     sysmon.configure(lambda: Q.running if Q else None, low_memory, lambda level, text: log("info", f"[{level}] {text}"))

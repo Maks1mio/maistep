@@ -150,7 +150,9 @@ def preview(t, v):
 
 def run(wf, runner, root):
     """Исполнить граф; runner — объект запуска (emit, cancel, settings). Возвращает {node: {выход: превью}}."""
-    for i in check(wf):
+    # только ноды, которые исполнятся, — как /api/prompt: иначе выключенная или посторонняя недособранная нода
+    # проходила проверку при постановке в очередь и роняла сам запуск
+    for i in check(wf, only_needed=True):
         raise GraphError(i["message"], i["node"])
     nodes = {n["id"]: n for n in wf["nodes"]}
     live = [n for n in wf["nodes"] if n.get("mode") != "mute"]
@@ -200,7 +202,7 @@ def run(wf, runner, root):
         volatile = d.volatile(args) if callable(d.volatile) else d.volatile
         dynamic[nid] = bool(volatile) or inherited
         if not dynamic[nid] and key in CACHE:
-            values[nid], ui = CACHE[key]
+            values[nid], ui = CACHE[key] = CACHE.pop(key)  # в конец: вытесняются давно не нужные, а не просто старые
             results[nid] = ui
             runner.emit("executed", {"node": nid, "output": ui, "cached": True})
             continue

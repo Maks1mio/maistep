@@ -248,7 +248,7 @@ function renderPreviewBar() {
   prevBtns.replaceChildren();
   if (!isNodeCode()) return;
   prevBtns.append(icon('python', { size: 14 }), h('span.dim', {}, 'Файл нод:'),
-    h('button.primary', { onclick: async () => { await saveActive(); if (S.server.running) reloadNodes(); else emit('log', { src: 'editor', level: 'warn', text: 'сервер не запущен — ноды подхватятся при старте' }); } },
+    h('button.ui-btn.primary.slim', { onclick: async () => { await saveActive(); if (S.server.running) reloadNodes(); else emit('log', { src: 'editor', level: 'warn', text: 'сервер не запущен — ноды подхватятся при старте' }); } },
       icon('refresh', { size: 14 }), 'Сохранить и перезагрузить ноды'),
     h('span.dim', {}, 'API нод — server/maistep/__init__.py'));
 }
@@ -473,9 +473,9 @@ function build() {
     icon('target', { size: 14 }),
     findInput = h('input', { type: 'text', spellcheck: false, placeholder: 'Поиск в файле (Enter — следующее, Shift+Enter — назад)', onkeydown: e => { e.stopPropagation(); if (e.key === 'Enter') findNext(e.shiftKey); if (e.key === 'Escape') { findBar.classList.remove('on'); ta.focus(); } } }),
     findInfo = h('span.dim', {}, ''),
-    h('button.icon', { onclick: () => findNext(false) }, icon('down', { size: 14 })),
-    h('button.icon', { onclick: () => findNext(true) }, icon('up', { size: 14 })),
-    h('button.icon', { onclick: () => findBar.classList.remove('on') }, icon('close', { size: 14 })));
+    h('button.ui-ib', { onclick: () => findNext(false) }, icon('down', { size: 16 })),
+    h('button.ui-ib', { onclick: () => findNext(true) }, icon('up', { size: 16 })),
+    h('button.ui-ib', { onclick: () => findBar.classList.remove('on') }, icon('close', { size: 16 })));
   prevBtns = h('div.bar');
   prevWrap = h('div.ce-prev', {}, prevBtns);
 
@@ -485,11 +485,11 @@ function build() {
 
   root = h('div.ce', {},
     h('div.bar', {},
-      h('button', { onclick: saveActive, title: 'Сохранить (Ctrl+S)' }, icon('save', { size: 14 }), 'Сохранить'),
-      h('button', { onclick: reloadActive, title: 'Перечитать с диска' }, icon('restart', { size: 14 })),
-      h('button', { onclick: openFind, title: 'Поиск (Ctrl+F)' }, icon('search', { size: 14 })),
-      h('button', { onclick: gotoDef, title: 'К определению (F12 / Ctrl+клик)' }, icon('target', { size: 14 }), 'К определению'),
-      h('button', { onclick: jumpBack, title: 'Назад (Alt+←)' }, icon('left', { size: 14 })),
+      h('button.ui-btn.secondary.slim', { onclick: saveActive, title: 'Сохранить (Ctrl+S)' }, icon('save', { size: 16 }), 'Сохранить'),
+      h('button.ui-btn.secondary.slim', { onclick: reloadActive, title: 'Перечитать с диска' }, icon('restart', { size: 16 })),
+      h('button.ui-btn.secondary.slim', { onclick: openFind, title: 'Поиск (Ctrl+F)' }, icon('search', { size: 16 })),
+      h('button.ui-btn.secondary.slim', { onclick: gotoDef, title: 'К определению (F12 / Ctrl+клик)' }, icon('target', { size: 16 }), 'К определению'),
+      h('button.ui-btn.secondary.slim', { onclick: jumpBack, title: 'Назад (Alt+←)' }, icon('left', { size: 16 })),
       crumbs),
     tabbar, prevWrap, ed);
   v.replaceChildren(root);

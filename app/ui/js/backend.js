@@ -1,4 +1,5 @@
 // Связь с Python-сервером исполнения (server/main.py): каталог нод, очередь запусков, события SSE.
+// Сервер принимает запросы только с локальных origin (окно, веб-режим, localhost) — см. main.py Handler._allowed.
 // События сервера пересылаются в шину store: run-start, run-node, run-progress, run-preview, run-stream, run-output, run-error, run-done,
 // queue, nodes; запуск текущего воркфлоу — queuePrompt().
 import { S, on, emit, doc } from './store.js';
@@ -40,7 +41,8 @@ function connect() {
   // у EventSource есть и родное событие error (обрыв связи) — без data, его здесь не разбираем
   const ev = (name, fn) => es.addEventListener(name, e => { if (e.data != null) fn(JSON.parse(e.data)); });
   es.onopen = () => { retry = 0; fetchNodes(); };
-  es.onerror = () => {
+  es.onerror = e => {
+    if (e.data != null) return; // событие сервера с именем «error» — не обрыв связи
     es.close(); es = null;
     if (!S.server.running) return;
     setTimeout(() => S.server.running && !es && connect(), Math.min(5000, 400 * ++retry));
@@ -78,16 +80,23 @@ function connect() {
   ev('civitai', d => emit('civitai', d));
   ev('library-changed', () => emit('library-changed'));
   ev('agent', d => emit('agent', d));
-  ev('error', d => {
+  // ошибка запуска: «run-error», не «error» — то имя у EventSource занято обрывом связи (onerror рвал соединение,
+  // и следом терялось «done» — интерфейс оставался «в запуске»)
+  const runError = d => {
     const wf = runs.get(d.prompt_id);
     if (wf && d.node) (S.outputs[wf] ||= {})[d.node] = { _error: d.message };
     log('error', `${d.node ? `нода ${d.node}: ` : ''}${d.message}`);
     emit('run-error', { ...d, wf });
-  });
+  };
+  ev('run-error', runError);
+  ev('error', runError); // сервер до перезапуска (UI подхватывается на лету, Python — нет) ещё шлёт «error»
   ev('done', d => {
     const wf = runs.get(d.prompt_id);
     if (d.ok) log('ok', `готово${wf ? ` «${wf}»` : ''} за ${d.time} с`);
-    S.run = null;
+    else if (d.error?.message === 'убран из очереди') log('warn', `убран из очереди${wf ? ` «${wf}»` : ''}`);
+    // done приходит и у ждущих запусков, убранных из очереди, — идущий запуск при этом не сбрасываем
+    if (!S.run || S.run.prompt_id === d.prompt_id) S.run = null;
+    runs.delete(d.prompt_id);
     emit('run-done', { ...d, wf });
   });
 }
