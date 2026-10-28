@@ -111,7 +111,7 @@ function previewOf(n, def = defs()[n.type], pw = (n.w || NW) - 20) {
   const st = run?.stream[n.id];
   if (st) return { kind: 'stream', text: st, h: lineCount(st) * 15 + 12 };
   const o = outputsOf(n.id);
-  if (o?._error) return { kind: 'error', text: o._error.split('\n').slice(0, 6).join('\n'), h: Math.min(6, lineCount(o._error)) * 15 + 12 };
+  if (o?._error) return { kind: 'error', text: o._error.split('\n').slice(0, 6).map(l => l.slice(0, 600)).join('\n'), h: Math.min(6, lineCount(o._error)) * 15 + 12 };
   if (n.type === 'sd.lora') {
     const tags = loraTriggers(n.props?.lora_name ?? def?.inputs?.lora_name?.default);
     if (tags.length) return tagsPv(tags, pw);
@@ -398,8 +398,9 @@ function drawNode(c, n, L) {
       }
     } else if (!lod) {
       c.font = `11px ${MONO}`; c.fillStyle = pv.kind === 'error' ? '#F0A8A6' : pv.kind === 'stream' ? '#9FE0B4' : K.fg2;
-      const lines = wrapText(c, pv.text, pw - 14);
-      const shown = pv.kind === 'stream' ? lines.slice(-Math.floor((ph - 8) / 15)) : lines;
+      const rows = Math.max(1, Math.floor((ph - 8) / 15));
+      const lines = pv.kind === 'stream' ? wrapText(c, String(pv.text).slice(-rows * 200), pw - 14) : wrapText(c, pv.text, pw - 14, rows + 1);
+      const shown = pv.kind === 'stream' ? lines.slice(-rows) : lines;
       shown.forEach((ln, i) => { const yy = y + 16 + i * 15; if (yy < y + ph) c.fillText(ln, x + 7, yy); });
     }
     c.restore();
@@ -437,20 +438,35 @@ function dot(c, p, color, filled, hot = false, r = 4.5) {
 }
 const isLinkedIn = (id, k) => cur()?.data.links.some(l => l.to === id && l.in === k);
 
-function wrapText(c, text, width) {
+// перенос по ширине — только до max строк: ошибка загрузки LoRA бывает одной строкой из тысяч ключей, и перенос
+// всей строки на каждом кадре (measureText на символ) клал холст
+function wrapText(c, text, width, max = 200) {
   const out = [];
   for (const para of String(text).split('\n')) {
-    if (!para) { out.push(''); continue; }
-    let line = '';
-    for (const ch of para) {
-      if (c.measureText(line + ch).width > width) { out.push(line); line = ch; } else line += ch;
+    if (!para) out.push('');
+    else {
+      let line = '';
+      for (const ch of para) {
+        if (c.measureText(line + ch).width > width) { out.push(line); line = ch; if (out.length >= max) return out; } else line += ch;
+      }
+      out.push(line);
     }
-    out.push(line);
-    if (out.length > 200) break;
+    if (out.length >= max) break;
   }
   return out;
 }
-function clipText(c, s, w) { s = String(s); if (w <= 8) return ''; if (c.measureText(s).width <= w) return s; while (s.length > 1 && c.measureText(`${s}…`).width > w) s = s.slice(0, -1); return `${s}…`; }
+// обрезка с «…»: длинный промпт в виджете раньше укорачивался по символу с measureText всей строки на каждом кадре;
+// символ шрифта холста не уже ~1.5 px, так что дальше w/1.5 символов не смотрим, а длину ищем делением пополам
+function clipText(c, s, w) {
+  s = String(s);
+  if (w <= 8) return '';
+  const cut = s.length > w / 1.5 + 2;
+  if (cut) s = s.slice(0, Math.ceil(w / 1.5) + 2);
+  else if (c.measureText(s).width <= w) return s;
+  let lo = 1, hi = s.length;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (c.measureText(`${s.slice(0, m)}…`).width <= w) lo = m; else hi = m - 1; }
+  return `${s.slice(0, lo)}…`;
+}
 function rr(c, x, y, w, h0, r) { c.beginPath(); c.roundRect(x, y, w, h0, r); }
 
 // ---------- попадания ----------
@@ -734,6 +750,7 @@ function place(el, e) {
   const r = el.getBoundingClientRect();
   el.style.left = `${Math.min(e.clientX, innerWidth - r.width - 8)}px`;
   el.style.top = `${Math.min(e.clientY, innerHeight - r.height - 8)}px`;
+  el.born = e; // нажатие, открывшее меню, ещё всплывёт до окна — оно не должно его тут же закрыть
   float = el;
 }
 
@@ -1041,6 +1058,6 @@ export function initGraph() {
   on('run-issues', r => { if (r.wf === S.current.workflow) setIssues(r.issues); });
   on('open-workflow', id => { if (!S.docs.workflow.has(id)) return; S.current.workflow = id; emit('current', 'workflow'); showView('graph'); select({ kind: 'workflow', doc: id, id }); });
   addEventListener('view', e => { if (e.detail === 'graph') requestAnimationFrame(draw); });
-  addEventListener('pointerdown', e => { if (float && !float.contains(e.target)) closeFloat(); });
+  addEventListener('pointerdown', e => { if (float && float.born !== e && !float.contains(e.target)) closeFloat(); });
   addEventListener('paste', onPaste);
 }

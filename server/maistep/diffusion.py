@@ -630,6 +630,13 @@ def _lora_arch(path):
 def _load_lora(pipe, path, ctx=None):
     """Адаптер LoRA в пайплайне (загружается один раз), возвращает его имя."""
     st = _state
+    if _is_lyco(path):  # LoHa/LoKr — diffusers их не грузит, вшиваем сами (_fuse_lyco); здесь только проверка
+        if str(path) not in st["lora_ok"]:
+            _lyco_check(pipe, path)
+            st["lora_ok"].add(str(path))
+            if ctx:
+                ctx.log(f"LoRA loaded: {path.name} (LyCORIS)")
+        return None
     ad = st["loras"].get(str(path))
     if ad is not None:
         return ad
@@ -637,7 +644,11 @@ def _load_lora(pipe, path, ctx=None):
     try:
         pipe.load_lora_weights(str(path), adapter_name=ad)
     except Exception as e:
-        raise ValueError(f"LoRA «{path.name}» failed to load: {type(e).__name__}: {e}") from e
+        msg = str(e)  # у diffusers здесь бывает список всех ключей файла — сотни КБ в одной строке
+        if "not been correctly renamed" in msg:
+            msg = ("unsupported key layout (not LoRA / LoCon / LoHa / LoKr in kohya or diffusers format) — "
+                   "try another version of this LoRA")
+        raise ValueError(f"LoRA «{path.name}» failed to load: {type(e).__name__}: {msg[:400]}") from e
     if ad not in _present_adapters(pipe):
         raise ValueError(
             f"LoRA «{path.name}» does not match the checkpoint (file: {_lora_arch(path)}). "
@@ -685,6 +696,153 @@ def _restore(pipe, comps):
             _base_of(getattr(pipe, c).get_submodule(name)).weight.data.copy_(w)
 
 
+# ---------- LyCORIS (LoHa / LoKr) ----------
+# diffusers такие файлы не грузит («keys have not been correctly renamed»), а на Civitai их много. LoRA у нас и так
+# вшиваются в веса — ΔW LoHa/LoKr считаем сами по формулам ComfyUI (comfy/weight_adapter/loha.py, lokr.py) и
+# прибавляем к весу слоя; оригиналы — в той же резервной копии, что и у обычных LoRA.
+_LYCO_PRE = (("lora_unet_", "unet"), ("lora_te1_", "text_encoder"), ("lora_te2_", "text_encoder_2"),
+             ("lora_te_", "text_encoder"))
+
+
+def _is_lyco(path):
+    cache = _state.setdefault("lyco", {})
+    key = str(path)
+    if key not in cache:
+        try:
+            from safetensors import safe_open
+            with safe_open(key, "pt") as f:
+                cache[key] = any(".hada_" in k or ".lokr_" in k for k in f.keys())
+        except Exception:
+            cache[key] = False
+    return cache[key]
+
+
+def _resolve(mod, toks):
+    """kohya-имя модуля (части через «_») → путь в дереве модулей: части имён тоже бывают с «_» (self_attn, k_proj),
+    поэтому перебор с возвратом. None — не нашлось."""
+    if not toks:
+        return ""
+    for j in range(1, len(toks) + 1):
+        child = mod._modules.get("_".join(toks[:j]))
+        if child is not None:
+            rest = _resolve(child, toks[j:])
+            if rest is not None:
+                return "_".join(toks[:j]) + ("." + rest if rest else "")
+    return None
+
+
+def _lyco_map(pipe, names):
+    """Имена слоёв файла → (компонент, путь модуля). SD1.5 и энкодеры — по дереву модулей; SDXL от kohya обучают на
+    sgm-UNet (input_blocks_4_1…) — эти имена переводит конвертер diffusers (на подставном словаре lora_down/up)."""
+    import torch
+    out, sgm = {}, []
+    for n in names:
+        for pre, comp in _LYCO_PRE:
+            if n.startswith(pre):
+                m = getattr(pipe, comp, None)
+                toks = n[len(pre):].split("_")
+                path = _resolve(m, toks) if m is not None else None
+                if path is None and m is not None and toks[:2] == ["text", "model"]:
+                    path = _resolve(m, toks[2:])  # у CLIPTextModel в transformers 5 нет обёртки text_model
+                if path is not None and hasattr(m.get_submodule(path), "weight"):
+                    out[n] = (comp, path)
+                elif comp == "unet":
+                    sgm.append(n)
+                break
+    if sgm:
+        from diffusers.utils import convert_unet_state_dict_to_peft
+        fake = {}
+        for i, n in enumerate(sgm):
+            fake[f"{n}.lora_down.weight"] = torch.full((1, 1), float(i))
+            fake[f"{n}.lora_up.weight"] = torch.zeros(1, 1)
+        try:
+            sd, _a = type(pipe).lora_state_dict(fake, unet_config=pipe.unet.config)
+            sd = convert_unet_state_dict_to_peft({k[5:]: v for k, v in sd.items() if k.startswith("unet.")})
+        except Exception as e:
+            _dbg("lyco sgm", e)
+            sd = {}
+        for k, v in sd.items():
+            if ".lora_A." not in k:
+                continue
+            path = k.split(".lora_A.")[0]
+            try:
+                if hasattr(pipe.unet.get_submodule(path), "weight"):
+                    out[sgm[int(v.flatten()[0])]] = ("unet", path)
+            except AttributeError:
+                pass
+    return out
+
+
+def _lyco_names(path):
+    from safetensors import safe_open
+    with safe_open(str(path), "pt") as f:
+        return sorted({k.split(".")[0] for k in f.keys() if ".hada_" in k or ".lokr_" in k})
+
+
+def _lyco_check(pipe, path):
+    names = _lyco_names(path)
+    found = _lyco_map(pipe, names)
+    if not found:
+        raise ValueError(f"LoRA «{path.name}» does not match the checkpoint (file: {_lora_arch(path)}). "
+                         "Use a LoRA for the same base: SDXL checkpoint — SDXL LoRA, SD1.5 — SD1.5 LoRA.")
+    return names, found
+
+
+def _lyco_delta(torch, get, n, dev):
+    """ΔW слоя (fp32) и множитель alpha/rank, как в ComfyUI. None — слой не LoHa/LoKr."""
+    t = lambda s: get(f"{n}.{s}", dev)  # noqa: E731
+    alpha = t("alpha")
+    alpha = float(alpha) if alpha is not None else None
+    w1a = t("hada_w1_a")
+    if w1a is not None:
+        w1b, w2a, w2b, t1, t2 = t("hada_w1_b"), t("hada_w2_a"), t("hada_w2_b"), t("hada_t1"), t("hada_t2")
+        if t1 is not None:
+            m1 = torch.einsum("i j k l, j r, i p -> p r k l", t1, w1b, w1a)
+            m2 = torch.einsum("i j k l, j r, i p -> p r k l", t2, w2b, w2a)
+        else:
+            m1, m2 = w1a @ w1b, w2a @ w2b
+        return m1 * m2, (alpha / w1b.shape[0] if alpha is not None else 1.0)
+    w1, w2 = t("lokr_w1"), t("lokr_w2")
+    if w1 is None and w2 is None and t("lokr_w1_a") is None:
+        return None
+    dim = None
+    if w1 is None:
+        b = t("lokr_w1_b")
+        dim = b.shape[0]
+        w1 = t("lokr_w1_a") @ b
+    if w2 is None:
+        b, a, t2 = t("lokr_w2_b"), t("lokr_w2_a"), t("lokr_t2")
+        dim = b.shape[0]
+        w2 = a @ b if t2 is None else torch.einsum("i j k l, j r, i p -> p r k l", t2, b, a)
+    if w2.dim() == 4:
+        w1 = w1.unsqueeze(2).unsqueeze(2)
+    return torch.kron(w1, w2), (alpha / dim if alpha is not None and dim is not None else 1.0)
+
+
+def _fuse_lyco(torch, pipe, path, strength, comps):
+    """Вшить LoHa/LoKr в слои компонентов comps (оригиналы — в lora_backup до первого изменения)."""
+    from safetensors import safe_open
+    names, found = _lyco_check(pipe, path)
+    bk = _state["lora_backup"]
+    done = 0
+    with safe_open(str(path), "pt") as f:
+        keys = set(f.keys())
+        get = lambda k, dev: f.get_tensor(k).to(dev, torch.float32) if k in keys else None  # noqa: E731
+        for n in names:
+            if n not in found or found[n][0] not in comps:
+                continue
+            comp, mpath = found[n]
+            w = _base_of(getattr(pipe, comp).get_submodule(mpath)).weight
+            r = _lyco_delta(torch, get, n, w.device)
+            if r is None or r[0].numel() != w.numel():
+                continue
+            if (comp, mpath) not in bk:
+                bk[(comp, mpath)] = w.detach().to("cpu", copy=True)
+            w.data += (r[0].reshape(w.shape) * (r[1] * float(strength))).to(w.dtype)
+            done += 1
+    return done
+
+
 def _apply_loras(pipe, part, pairs, ctx=None):
     """LoRA вшиваются в веса, как patch weights у ComfyUI, — адаптерами PEFT они не висят. Адаптеры на 8 ГБ картах
     добавляли к UNet SDXL ~0,6 ГБ и лишние матмулы на каждом слое: память переполнялась, Windows уводила её
@@ -705,10 +863,16 @@ def _apply_loras(pipe, part, pairs, ctx=None):
             _restore(pipe, comps)
             st["fused"][part] = ()
             if want:
-                names = [_load_lora(pipe, Path(p), ctx) for p, _s in want]
-                _backup(pipe, comps)
-                pipe.set_adapters(names, adapter_weights=[s for _p, s in want])
-                pipe.fuse_lora(components=comps, adapter_names=names)
+                regular = [(p, s) for p, s in want if not _is_lyco(p)]
+                if regular:
+                    names = [_load_lora(pipe, Path(p), ctx) for p, _s in regular]
+                    _backup(pipe, comps)
+                    pipe.set_adapters(names, adapter_weights=[s for _p, s in regular])
+                    pipe.fuse_lora(components=comps, adapter_names=names)
+                for p, s in want:
+                    if _is_lyco(p):
+                        _load_lora(pipe, Path(p), ctx)  # проверка и строка в логе — один раз
+                        _fuse_lyco(torch, pipe, Path(p), s, comps)
                 st["fused"][part] = want
         except Exception as e:
             _unload_adapters(pipe)

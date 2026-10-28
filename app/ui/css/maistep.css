@@ -469,6 +469,9 @@ pre.agb-diff { max-height: calc(100vh - 200px); border: 1px solid var(--ui-sep);
 pre.agb-diff .a { color: var(--p-green-7); } pre.agb-diff .d { color: var(--p-red-8); } pre.agb-diff .h { color: var(--p-blue-9); }
 /* выбор папки и среды под полем ввода */
 .ag-row .ag-modedd.ui-dd.link, .ag-row .ag-fold.ui-dd.link { flex-shrink: 0; max-width: 160px; }
+/* разрешения: не сжимаются в узкой панели; «Всё сам» — заметным цветом */
+.ag-row .ag-perm.ui-dd.link { flex-shrink: 0; }
+.ag-perm.auto { color: var(--p-orange-8); }
 .ag-fpop { min-width: 300px; }
 .ag-fpop .item .sc, .ag-pop .item .sc { margin-left: auto; padding-left: var(--sp-inline); color: var(--ui-fg-dim); }
 .ag-fsr { margin: 2px 6px var(--sp-ctrl); width: calc(100% - 12px); box-sizing: border-box; }

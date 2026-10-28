@@ -11,7 +11,8 @@ character, cwd, folders, connectors, messages }.
   connectors — MCP-серверы диалога (None — все включённые в настройках, [] — ни одного);
   adult   — метка 18+: разговор ушёл во взрослую тему (ставится сама — маркер модели ⟦18+⟧ или откровенный промпт
             картинки); взрослый контент разрешён всегда, переключателя нет (по просьбе пользователя 2026-10-25);
-  perm    — ask: запись файлов, команды и JS спрашивают разрешения в чате · auto: без вопросов.
+  perm    — ask: запуск воркфлоу и генерация, скачивание, запись файлов, команды и JS спрашивают разрешения
+            в чате · auto: всё сам.
 Действия в интерфейсе (вкладки, ImageNaizer, JS) исполняет клиент: событие SSE agent/client → POST /api/agent/client.
 Сообщения хранятся в нейтральном виде и переводятся под протокол провайдера (providers.route):
   user      { text, images: ["input/…"] }
@@ -374,8 +375,10 @@ Model names (ckpt_name, lora_name, vae_name) must be real files — look them up
 Missing model (a character/style LoRA, a checkpoint): find it with find_models (or web_search), then install it with download_model — it goes through the app's Downloads queue and returns the exact name for props. Never claim a model is downloaded or installed unless download_model returned «installed»; if a download fails, say so plainly and offer alternatives (another version, a similar LoRA from the library). edit_workflow/run_workflow report missing models as issues.
 
 Use the tools to read and change workflows instead of asking the user to do it by hand. Changes appear in the editor \
-immediately and can be undone with Ctrl+Z. Running a workflow can take minutes (image generation) — run it only when \
-the user asks or clearly expects it. Never try to access workflows that are not listed as visible to you.
+immediately and can be undone with Ctrl+Z. Running a workflow can take minutes (image generation): after building or \
+editing a graph, do NOT run it on your own — say what you changed and offer to run it; call run_workflow only when the \
+user asked to run/generate in this request. Runs and generation may need the user's approval in the chat (permission \
+mode «ask») — that is normal; if they decline, don't retry. Never try to access workflows that are not listed as visible to you.
 
 Images: generate_image draws a picture with the local Stable Diffusion checkpoint; edit_image changes a picture the \
 user attached (files like input/chat_…): the whole picture (img2img) or only inside `regions` — rectangles in fractions \
@@ -388,6 +391,24 @@ ImageNaizer is the canvas tab (like InvokeAI Canvas: layers, inpaint masks, a ge
 frame), naizer_generate (prompt + strength; results land in the staging strip, the user accepts them), \
 naizer_snapshot (the frame as an image file you can see). Use it when the user wants to keep working on the picture \
 by hand; use edit_image for quick one-shot edits right in the chat.
+Prompting (SD prompts, sd.text_encode, generate_image):
+- Art style first. When the user names or shows a style to imitate (an artist, anime/game, a design, an attached \
+reference), lead the positive prompt with it and make it concrete: medium and rendering (cel shading, flat colors, \
+thick/thin lineart, painterly, watercolor, 3d render, pixel art), palette, lighting, line and shading style, \
+proportions and eye style — weight the key style tags, e.g. (flat color, thick outlines:1.2). For a reference image, \
+view it first and describe its style in those terms. Illustrious/NoobAI/Pony bases want Danbooru tags and their \
+quality tags (masterpiece, best quality, very aesthetic / score_9…); keep the negative focused on defects.
+- If tags alone don't reproduce a style or a character, use a style/character LoRA (see below).
+- Explicit (18+) requests: make them beautiful and precise rather than vague — exact Danbooru tags for pose, action, \
+body, clothing state, expression, camera angle and framing, a coherent scene and lighting; anatomy in the negative \
+(bad anatomy, bad hands, extra limbs, extra fingers, deformed, fused fingers). Every character is an adult. Look at \
+the result and fix wrong anatomy or missing details with edit_image (regions) instead of settling for it.
+- After every generation, compare the image with what was asked. If something requested is missing or wrong \
+(a character who doesn't look right, a style, outfit, pose or concept the checkpoint doesn't know), first look in the \
+library (list_models loras), then search Civitai with find_models (type LORA, the base of the checkpoint — \
+Illustrious, Pony, SDXL 1.0 …), install the best match with download_model, add it with sd.lora (strength 0.6–0.9) \
+and its trigger words, and tell the user what you added and why. LoRA, LoCon, LoHa and LoKr files all work; if a \
+file still fails to load («unsupported key layout»), pick another LoRA instead of retrying.
 App control (`app`): state (current tab, workflow, selection), open_tab, open_workflow, show_image, notify.
 Internet: web_search and web_fetch (a page → text; an image URL → saved into input/ so you can view or edit it). \
 Use them for documentation, model info, references and ComfyUI examples. browser_open shows a page to the user in the \
@@ -897,6 +918,9 @@ def run_tool(ctx, name, inp):
         issues = executor.check(wf, only_needed=True)
         if issues:
             return json.dumps({"error": "graph has issues, not started", "issues": issues}, ensure_ascii=False), []
+        # запуск — с разрешения (режим «Спрашивать»): после правки графа агент не гоняет генерацию сам
+        _approve(ctx, name, inp, f"Запустить воркфлоу «{wf.get('title') or wid}»"
+                 + (f" до {', '.join(inp['targets'])}" if inp.get("targets") else ""))
         item = ctx.run(wf)
         ctx.outputs[wid] = item.get("outputs") or {}
         text, images = _results(item.get("outputs"), wf)
@@ -970,6 +994,8 @@ def run_more(ctx, name, inp):
     if name in ("generate_image", "edit_image", "send_photo") and _EXPLICIT.search(f"{inp.get('prompt', '')} {inp.get('scene', '')}"):
         _mark_adult(ctx.chat)
     if name in ("generate_image", "edit_image"):
+        _approve(ctx, name, inp, f"{'Сгенерировать' if name == 'generate_image' else 'Изменить картинку'} "
+                 f"×{inp.get('count') or 1}: {(inp.get('prompt') or '')[:160]}")
         image = inp.get("image") if name == "edit_image" else None
         for f in (image, inp.get("mask")):
             if f:

@@ -2,7 +2,7 @@
 пересчитываются только изменённые ноды и всё, что ниже них).
 
 Воркфлоу: { nodes: [{ id, type, props, mode? }], links: [{ from, out, to, in }] }.
-mode: "mute" — нода выключена (не исполняется, её выходы = None).
+mode: "mute" — нода выключена: не исполняется, входы того же типа проходят насквозь (как Bypass), остальные выходы = None.
 """
 import hashlib
 import json
@@ -168,9 +168,19 @@ def run(wf, runner, root):
         n = nodes[nid]
         d = NODES[n["type"]]
         if n.get("mode") == "mute":
-            values[nid] = {k: None for k in d.outputs}
-            keys[nid] = "mute"
-            dynamic[nid] = False
+            # выключенная нода пропускает входы насквозь (как Bypass в ComfyUI): выход берёт подключённый вход с тем
+            # же именем, иначе первый того же типа; нет такого — None. Выключенная LoRA больше не рвёт цепочку
+            # model/clip (раньше ниже неё приходил None: «'NoneType' object has no attribute 'ckpt'»).
+            links_in = {l["in"]: l for l in ins.get(nid, [])}
+            out, parts, dyn = {}, ["mute"], False
+            for k, t in d.outputs.items():
+                src = next((links_in[i] for i in [k, *d.inputs] if i in links_in and d.inputs.get(i, (None,))[0] == t), None)
+                out[k] = values[src["from"]].get(src["out"]) if src else None
+                parts.append(f"{k}<{keys[src['from']]}.{src['out']}" if src else f"{k}=None")
+                dyn = dyn or bool(src and dynamic.get(src["from"]))
+            values[nid] = out
+            keys[nid] = hashlib.sha1("|".join(parts).encode()).hexdigest()
+            dynamic[nid] = dyn
             continue
         props = n.get("props") or {}
         args, key_parts = {}, [n["type"]]

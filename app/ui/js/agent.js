@@ -879,8 +879,11 @@ class ChatView {
     place(box, anchor, true);
   }
   permDropdown(withIcon = true) {
-    return tipped(dropdown(this.chat.perm || 'ask', [['ask', 'Спрашивать'], ['auto', 'Без вопросов']], v => this.patch({ perm: v }), { link: true, icon: withIcon ? 'general/locked' : null }),
-      'Запись файлов, команды, JS и вызовы MCP: спрашивать разрешение или выполнять сразу');
+    const el = dropdown(this.chat.perm || 'ask', [['ask', 'Спрашивать'], ['auto', 'Всё сам']], v => this.patch({ perm: v }), { link: true, icon: withIcon ? 'general/locked' : null });
+    el.classList.add('ag-perm');
+    el.classList.toggle('auto', this.chat.perm === 'auto');
+    return tipped(el,
+      'Запуск воркфлоу и генерация, скачивание моделей, запись файлов, команды, JS и MCP: спрашивать разрешение или выполнять сразу');
   }
 
   wfDropdown(c) {
@@ -964,6 +967,7 @@ class ChatView {
     if (!provOpts.some(([pid]) => pid === c.provider)) provOpts.push([c.provider, c.provider]);
     return [
       c.mode === 'character' ? null : this.modeDropdown(), this.folderChip(),
+      c.mode === 'character' ? null : this.permDropdown(),
       tipped(dropdown(c.provider, provOpts, v => this.patch({ provider: v }), { link: true }), 'Провайдер'),
       ddLink('', 'Модель', a => modelPicker(a, { provider: c.provider, value: c.model, onPick: id => this.patch({ model: id }) }), h(`span.t${c.model ? '' : '.ph'}`, {}, c.model || 'модель')),
       tipped(dropdown(c.effort || 'medium', ['low', 'medium', 'high', 'xhigh', 'max'], v => this.patch({ effort: v }), { link: true }), 'Усилие (effort, только Claude): больше — умнее и дороже'),
