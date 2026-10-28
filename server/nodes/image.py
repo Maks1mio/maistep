@@ -144,13 +144,15 @@ def _edges(gray):
               "regions": ("BOOLEAN", {"default": True, "hint": "flat color per region: the original's lines split the page into "
                                                              "areas, each takes one color of the generation — color never crosses "
                                                              "a line; off — smoothed color pixel by pixel"}),
+              "hints": ("IMAGE", {"optional": True, "hint": "color hints (RGBA, page size): a stroke recolors the whole area "
+                                                            "between the lines it touches; big areas — around the stroke"}),
               "prefix": ("STRING", {"default": "colored"})},
       outputs={"image": "IMAGE"},
       hint="Takes lightness from the original and color from the generated image (Lab): lines, screentones and "
            "lettering stay exactly as drawn, only the color (and, with shading, its shadows) is added. Chroma is smoothed "
            "and faint colors are balanced, so a shy generation still gives a colored page. The generation's overall tint "
            "(a bluish or yellow page) is removed. Saves a PNG to output/ at the original size.")
-def image_keep_lines(lines, colors, strength, shading, prefix, ctx, smooth=5, balance=True, regions=True):
+def image_keep_lines(lines, colors, strength, shading, prefix, ctx, smooth=5, balance=True, regions=True, hints=None):
     from PIL import Image, ImageChops, ImageFilter
     base = _open(ctx, lines)
     W, H = base.size
@@ -173,6 +175,9 @@ def image_keep_lines(lines, colors, strength, shading, prefix, ctx, smooth=5, ba
     if abs(strength - 1) > 0.001:  # насыщенность — вокруг нейтрального, поверх авто-баланса
         lut = [max(0, min(255, round(128 + (v - 128) * strength))) for v in range(256)]
         a, b = a.point(lut), b.point(lut)
+    if hints and hints.get("file"):
+        hint = _open(ctx, hints, "RGBA")
+        a, b = _apply_hints(L0, a, b, hint.resize((W, H), Image.NEAREST) if hint.size != (W, H) else hint)
     out = Image.merge("LAB", (L, a, b)).convert("RGB")
     prefix = re.sub(r"[^\w.-]+", "_", prefix or "colored").lstrip(".")[:60] or "colored"
     p = ctx.output_dir / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.png"
@@ -331,6 +336,53 @@ def _region_chroma(L0, a, b, smooth):
     else:
         out.append(None)
     return out[0], out[1], out[2]
+
+
+def _apply_hints(L0, a, b, hint):
+    """Подсказки цвета поверх раскраски, как заливка ведром во флэтах: штрих кисти перекрашивает всю область между
+    линиями оригинала, которой касается: до 25 % страницы — целиком, крупнее (фон, слитое через щель) — в 120 px
+    вокруг штриха. В одной области несколько цветов делят её по ближайшему штриху. Светлота не меняется: линии, тон
+    и тени остаются. Нужны numpy и scipy."""
+    try:
+        import numpy as np
+        from scipy import ndimage as nd
+    except ImportError:
+        return a, b
+    from PIL import Image
+    W, H = L0.size
+    s = min(1.0, (2_000_000 / (W * H)) ** 0.5)
+    w2, h2 = max(1, round(W * s)), max(1, round(H * s))
+    k = max(0.5, (w2 * h2 / 1e6) ** 0.5)
+    small = (lambda im, f=Image.BOX: im.resize((w2, h2), f)) if s < 1 else (lambda im, f=None: im)
+    stroke = np.asarray(small(hint.getchannel("A"), Image.NEAREST)) > 127
+    if not stroke.any():
+        return a, b
+    hl = small(hint.convert("RGB"), Image.NEAREST).convert("LAB")
+    ha, hb = (np.asarray(c).astype(np.float32) for c in hl.split()[1:])
+    lum = np.asarray(small(L0))
+    wall = _walls(lum, k)
+    lab, n = nd.label(~wall)
+    idx = nd.distance_transform_edt(lab == 0, return_distances=False, return_indices=True)
+    full = lab[tuple(idx)]  # линии — ближайшей области
+    touched = np.unique(full[stroke])
+    touched = touched[touched > 0]
+    if not touched.size:
+        return a, b
+    # цвет каждого пикселя — ближайшего штриха
+    dist, near = nd.distance_transform_edt(~stroke, return_indices=True)
+    ca, cb = ha[tuple(near)], hb[tuple(near)]
+    area = np.bincount(full.ravel(), minlength=n + 1)
+    big = area > 0.25 * w2 * h2
+    m = np.isin(full, touched)
+    m &= ~big[full] | (dist <= 120 * k)  # крупная область (фон, слитые через щель) — только около штриха
+    m = nd.gaussian_filter(m.astype(np.float32), 0.8 * k)
+    out = []
+    for ch, cc in ((a, ca), (b, cb)):
+        mm, cv = _img(np.clip(m * 255, 0, 255)), _img(np.clip(cc, 0, 255))
+        if s < 1:
+            mm, cv = mm.resize((W, H), Image.BICUBIC), cv.resize((W, H), Image.NEAREST)
+        out.append(Image.composite(cv, ch, mm))
+    return out[0], out[1]
 
 
 def _boost(a, b, target=30.0, most=2.5):

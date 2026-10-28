@@ -28,8 +28,8 @@ const DEFAULTS = {
   code: () => split('h', [0.16, 0.58, 0.26], area('hier'), area('code'), split('v', [0.55, 0.45], area('inspector'), area('console'))),
   // группы пакетов слева, таблица, карточка пакета и лог pip справа
   components: () => split('h', [0.16, 0.58, 0.26], area('hier'), split('v', [0.75, 0.25], area('components'), area('console')), area('inspector')),
-  // версии и файлы слева, холст с выделением, настройки правки справа
-  naizer: () => split('h', [0.15, 0.6, 0.25], area('hier'), split('v', [0.85, 0.15], area('naizer'), area('console')), area('inspector')),
+  // холст, промпт, слои и результаты — всё в самой странице (2026-10-28: Hierarchy и Inspector рядом дробили её на 5 колонок)
+  naizer: () => split('v', [0.86, 0.14], area('naizer'), area('console')),
   // список страниц, сравнение до/после, настройки — всё в самой странице
   tocolar: () => split('v', [0.85, 0.15], area('tocolar'), area('console')),
   // большой чат агента (как Claude): диалоги и персонажи слева — внутри вида, консоль снизу для проверок
@@ -365,6 +365,9 @@ export function startDock() {
   state = { active: WS.some(w => w[0] === saved.active) ? saved.active : 'graph', layouts: {} };
   // старая раскладка «Компонентов» была без Hierarchy и Inspector — берём новую по умолчанию
   if (saved.layouts?.components && !JSON.stringify(saved.layouts.components).includes('"inspector"')) delete saved.layouts.components;
+  // v2: ImageNaizer и ToColar стали цельными страницами — их старые раскладки сбрасываются один раз
+  if ((saved.v || 1) < 2) { delete saved.layouts?.naizer; delete saved.layouts?.tocolar; }
+  state.v = 2;
   for (const [id] of WS) state.layouts[id] = (saved.layouts?.[id] && sanitize(structuredClone(saved.layouts[id]))) || defaultLayout(id);
   layer = h('div.dock-layer', {}, [...panels.values()].map(p => p.el));
   dock.replaceChildren(h('div.dock-tree'), layer);

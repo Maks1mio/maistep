@@ -6,9 +6,11 @@
 // Результаты попадают в staging: листать, принять (новый растровый слой на месте рамки) или отбросить.
 // Документ — один холст (localStorage); пиксели слоёв — файлы input/naizer_layer_* (выгружаются после правок).
 // Под капотом — скрытый граф (Load Checkpoint → CLIP Text Encode ×2 → Canvas Generate) в общей очереди: прогресс
-// и поэтапное превью рисуются прямо в рамке. Hierarchy — файлы output/ и input/ (щелчок — добавить слоем).
-// Inspector — только промпт, сила (и «дорисовка» для outpaint), число вариантов и чекпоинт: шаги, cfg, сэмплер и
-// негатив — из рекомендации Magic, остальное — значения по умолчанию (упрощено по просьбе пользователя 2026-10-25).
+// и поэтапное превью рисуются прямо в рамке.
+// Страница цельная (2026-10-28, по образцу Krita AI Diffusion): холсты — переключатель в тулбаре, справа — промпт,
+// сила, «Генерировать», модель/сэмплер (свёрнуто) и слои; кисть рисует то «цветом», то «маской» (переключатель, M) —
+// нужный слой выбирается/создаётся сам; результаты — лентой миниатюр на холсте. Inspector и Hierarchy не нужны
+// (Hierarchy по-прежнему показывает холсты и файлы, если её добавить). Негатив и шаги/cfg «авто» — из Magic.
 import { h, num, debounce, clamp, confirmBox, prompt } from './util.js';
 import { S, on, emit, select } from './store.js';
 import { registerInspector, typingIn } from './inspector.js';
@@ -16,6 +18,7 @@ import { icon } from './icons.js';
 import { api, fileUrl, upload, interrupt } from './backend.js';
 import { isShown, activeView } from './dock.js';
 import { dropdown, colorPicker } from './kit.js';
+import { popup } from './ctxmenu.js';
 import { libraryPicker } from './library.js';
 import { cnNames, cnPick, loadCn, cnMissing } from './cnmodels.js';
 import { fetchRec } from './magic.js';
@@ -24,7 +27,8 @@ import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage
 
 const LS = 'maistep-canvas', OLD_LS = 'maistep-naizer';
 const DEF = {
-  docs: {}, cur: '', prompt: '', denoise: 0.75, fill: 0.85, ckpt: '', batch: 1, tool: 'brush', size: 40, color: '#D9B38C', side: 260, stage: true,
+  docs: {}, cur: '', prompt: '', denoise: 0.75, fill: 0.85, ckpt: '', batch: 1, tool: 'brush', size: 40, color: '#D9B38C', side: 300, stage: true,
+  paint: 'raster', adv: false,
 };
 const st = (() => { try { return { ...DEF, ...JSON.parse(localStorage.getItem(LS)) }; } catch { return { ...DEF }; } })();
 const keep = debounce(() => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch {} }, 200);
@@ -71,7 +75,7 @@ const TOOLS = [
   ['picker', 'Пипетка', 'I', 'Цвет кисти с холста'],
 ];
 
-let cv = null, wrap = null, view = { x: 0, y: 0, z: 1 }, fitted = false;
+let cv = null, wrap = null, view = { x: 0, y: 0, z: 1 }, fitted = false, autoFit = true; // autoFit — вид не трогали: вписывать и при смене размера
 let mouse = null, shape = null, busy = null, files = { output: [], input: [] };
 let hist = { undo: [], redo: [] }, space = false, dragRow = null, editName = null, mode = 'txt2img';
 let rec = null; // рекомендация Magic для чекпоинта
@@ -254,7 +258,25 @@ function addLayer(type, props = {}) {
   d.active = L.id;
   return L;
 }
-function setActive(id) { const d = doc(); if (d.active === id) return; d.active = id; keep(); refresh(); }
+function setActive(id) {
+  const d = doc();
+  if (d.active === id) return;
+  d.active = id;
+  const L = activeL();
+  if (L) st.paint = L.type; // кисть рисует туда, что выбрано
+  keep(); refresh();
+}
+// «Рисую: цвет / маску» — кисть сама берёт верхний видимый слой этого вида (нет — новый)
+function setPaint(type) {
+  st.paint = type;
+  const A = activeL();
+  if (A?.type !== type) {
+    const L = [...doc().layers].reverse().find(l => l.type === type && l.visible !== false);
+    doc().active = L?.id || null;
+  }
+  if (!['brush', 'eraser', 'rect', 'lasso'].includes(st.tool)) st.tool = 'brush';
+  keep(); refresh();
+}
 function delLayer(L) {
   changeDoc(d => {
     const i = d.layers.indexOf(L);
@@ -447,10 +469,12 @@ const detect = debounce(() => {
   const r = doc().bbox, k = Math.min(1, 256 / Math.max(r.w, r.h));
   const [lo, hi] = alphaRange(compose(r, k));
   const m = maskComposite(r, k);
+  const was = mode;
   mode = hi === 0 ? 'txt2img' : lo < 250 ? 'outpaint' : m && anyLit(m) ? 'inpaint' : 'img2img';
   const el = document.getElementById('nz-mode');
   if (el) { el.textContent = MODES[mode][0]; el.dataset.tip = MODES[mode][1]; }
-  draw();
+  if (was !== mode) render(); // панель «Генерация» зависит от режима (сила, дорисовка, подсказки)
+  else draw();
   if (S.sel?.kind === 'naizer') refresh_();
 }, 200);
 
@@ -476,14 +500,14 @@ function fit() {
   view.z = clamp(Math.min((W - 60) / r.w, (H - 90) / r.h), 0.05, 4);
   view.x = (W - r.w * view.z) / 2 - r.x * view.z;
   view.y = (H - 30 - r.h * view.z) / 2 - r.y * view.z;
-  fitted = true;
+  fitted = true; autoFit = true;
   zoomInfo();
   draw();
 }
 function zoomTo(z, p = { x: wrap.clientWidth / 2, y: wrap.clientHeight / 2 }) {
   z = clamp(z, 0.05, 16);
   view.x = p.x - (p.x - view.x) * (z / view.z); view.y = p.y - (p.y - view.y) * (z / view.z); view.z = z;
-  fitted = true;
+  fitted = true; autoFit = false;
   zoomInfo();
   draw();
 }
@@ -576,7 +600,7 @@ function draw() {
   if (mouse && (st.tool === 'brush' || st.tool === 'eraser') && !shape?.pan && !space && !mouse.alt) {
     c.beginPath(); c.arc(mouse.x, mouse.y, Math.max(1, st.size * z / 2), 0, 7);
     c.strokeStyle = '#000a'; c.lineWidth = 3; c.stroke();
-    c.strokeStyle = st.tool === 'eraser' ? K.err : A?.type === 'mask' ? A.color : st.color; c.lineWidth = 1.2; c.stroke();
+    c.strokeStyle = st.tool === 'eraser' ? K.err : st.paint === 'mask' ? (A?.type === 'mask' ? A.color : MASK_COLORS[0]) : st.color; c.lineWidth = 1.2; c.stroke();
   }
   if (busy) {
     const label = busy.max ? `шаг ${busy.step}/${busy.max}${busy.total > 1 ? ` · ${busy.total - busy.left}/${busy.total}` : ''}` : 'В очереди…';
@@ -607,10 +631,13 @@ function bboxHit(p) {
   if (i >= 0) return HANDLE_SIDES[i];
   return p.x > br[0] && p.x < br[0] + br[2] && p.y > br[1] && p.y < br[1] + br[3] ? 'move' : null;
 }
-// слой для рисования: активный; нет — новый (растровый для кисти, маска — если активна маска)
+// слой для рисования: активный, если он того вида, что выбран в «Рисую»; иначе верхний видимый такого вида; нет — новый
 function paintTarget() {
+  const want = st.paint === 'mask' ? 'mask' : 'raster';
   let L = activeL();
-  if (!L) { pushHist(); L = addLayer('raster'); keep(); refresh(); }
+  if (L?.type !== want) L = [...doc().layers].reverse().find(l => l.type === want && l.visible !== false) || null;
+  if (!L) { pushHist(); L = addLayer(want); keep(); refresh(); }
+  else if (doc().active !== L.id) { doc().active = L.id; keep(); refresh(); }
   return L;
 }
 function pickColor(p) {
@@ -629,7 +656,7 @@ function onDown(e) {
     const v0 = { ...view };
     shape = { pan: true };
     cv.style.cursor = 'grabbing';
-    return track(ev => { const q = pos(ev); view.x = v0.x + q.x - p.x; view.y = v0.y + q.y - p.y; draw(); }, () => { shape = null; setCursor(); draw(); });
+    return track(ev => { const q = pos(ev); view.x = v0.x + q.x - p.x; view.y = v0.y + q.y - p.y; autoFit = false; draw(); }, () => { shape = null; setCursor(); draw(); });
   }
   if (e.button !== 0) return;
   const d = doc();
@@ -880,7 +907,12 @@ function stagingBar() {
   if (!n && !busy) return null;
   const it = d.staging[d.si];
   const b = (k, tip, fn, dis = false, cls = '') => h(`button.b${cls}`, { 'data-tip': tip, disabled: dis, onclick: fn }, typeof k === 'string' && SVG[k] ? svg(k, 14) : icon(k, { size: 14 }));
-  return h('div.nz-stage', {},
+  // миниатюры вариантов: щелчок — показать в рамке, двойной — принять
+  const thumbs = n > 1 ? h('div.nz-thumbs', {}, ...d.staging.map((s, i) => h(`img${i === d.si ? '.on' : ''}`, {
+    src: fileUrl(s.file), alt: '', draggable: false, title: `вариант ${i + 1}${s.seed != null ? ` · seed ${s.seed}` : ''}\nдвойной щелчок — принять`,
+    onclick: () => { d.si = i; st.stage = true; keep(); refresh(); }, ondblclick: () => { d.si = i; accept(); },
+  }))) : null;
+  return h('div.nz-stage', {}, thumbs,
     busy ? h('span.row', { style: { gap: '6px' } }, h('span.nz-spin'), h('span#nz-pend', {}, busy.max ? `шаг ${busy.step}/${busy.max}` : 'в очереди'),
       busy.total > 1 ? h('span.dim', {}, `${busy.total - busy.left}/${busy.total}`) : null,
       h('button.b', { 'data-tip': 'Прервать (Ctrl+Shift+Enter)', onclick: () => { if (busy) busy.left = 0; interrupt(); } }, icon('stop', { size: 14 }))) : null,
@@ -902,9 +934,25 @@ function stagingBar() {
 function toolbar() {
   const fileIn = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' } });
   fileIn.onchange = async () => { const f = fileIn.files[0]; if (!f) return; try { addImage(await upload(f)); } catch (e) { log('error', `загрузка: ${e.message}`); } };
+  // холсты — прямо здесь: переключатель, новый, меню (переименовать, копия, удалить)
+  const list = byRecent().map(([id, d]) => [id, d.name || 'Холст', 'image']);
+  const canvases = dropdown(st.cur, list, id => { if (id && id !== st.cur) openCanvas(id); }, { width: 150 });
+  canvases.dataset.tip = 'Холст: у каждого свои слои, рамка и результаты';
+  const more = h('button.ui-ib', { 'data-tip': 'Холст: переименовать, копия, удалить', onclick: e => {
+    const r = e.currentTarget.getBoundingClientRect();
+    popup({ clientX: r.left, clientY: r.bottom + 2 }, [
+      { ic: 'edit', label: 'Переименовать…', fn: () => renameCanvas(st.cur) },
+      { ic: 'copy', label: 'Копия холста', fn: () => dupCanvas(st.cur) },
+      '-',
+      { ic: 'delete', label: 'Удалить холст…', fn: () => deleteCanvas(st.cur) },
+    ]);
+  } }, icon('more', { size: 16 }));
   return h('div.bar', {},
     fileIn,
-    h('button.ui-btn.secondary.slim', { onclick: newCanvas, 'data-tip': 'Новый пустой холст — текущий останется в Hierarchy' }, icon('add', { size: 16 }), 'Новый'),
+    canvases,
+    h('button.ui-ib', { onclick: newCanvas, 'data-tip': 'Новый пустой холст' }, icon('add', { size: 16 })),
+    more,
+    h('span.hsep'),
     h('button.ui-btn.secondary.slim', { onclick: e => imagePicker(e.currentTarget, { onPick: f => addImage(f) }), 'data-tip': 'Добавить картинку слоем: из input/, output/ или с диска\nМожно перетащить файл или вставить Ctrl+V' }, icon('open', { size: 16 }), 'Картинка'),
     h('button.ui-ib', { onclick: () => fileIn.click(), 'data-tip': 'С диска (проводник) — загрузится в input/' }, icon('upload', { size: 16 })),
     h('button.ui-ib', { onclick: e => saveImage(e.shiftKey), 'data-tip': 'Сохранить рамку в output/\nShift — весь холст' }, icon('save', { size: 16 })),
@@ -954,12 +1002,16 @@ function optionsBar() {
   size.addEventListener('input', () => setSize(+size.value));
   const T = TOOLS.find(t => t?.[0] === st.tool), A = activeL(), r = doc().bbox;
   const target = A ? `${A.type === 'mask' ? 'маска' : 'слой'} «${A.name}»` : 'новый слой';
+  const into = A?.type === (st.paint === 'mask' ? 'mask' : 'raster') ? target : st.paint === 'mask' ? 'новая маска' : 'новый слой';
+  const paintSeg = h('span.ui-seg.nz-paint', { 'data-tip': 'Что рисует кисть (M):\nцвет — растровый слой, маска — где перерисовать (inpaint)' },
+    h(`button${st.paint !== 'mask' ? '.on' : ''}`, { onclick: () => setPaint('raster') }, svg('raster', 14), 'Цвет'),
+    h(`button${st.paint === 'mask' ? '.on' : ''}`, { onclick: () => setPaint('mask') }, svg('mask', 14), 'Маска'));
   const dim = (k, v) => num(v, x => changeDoc(d => { d.bbox[k] = Math.max(64, snap8(x)); }), { int: true, min: 64, max: 4096, step: 8 });
   const presets = [[1024, 1024], [832, 1216], [1216, 832], [896, 1152], [1152, 896], [512, 512], [512, 768], [768, 512]];
   return h('div.nz-opts', {},
     h('b', {}, T?.[1] || ''),
     brush ? h('span.row', { style: { gap: '6px' } }, 'размер', size, h('span.mono#nz-sizen', {}, `${st.size} px`)) : null,
-    brush || st.tool === 'rect' || st.tool === 'lasso' ? h('span', {}, `→ ${target}`) : null,
+    brush || st.tool === 'rect' || st.tool === 'lasso' ? h('span.row', { style: { gap: '6px' } }, paintSeg, h('span', {}, `→ ${into}`)) : null,
     st.tool === 'bbox' ? h('span.row.nz-bbox', { style: { gap: '6px' } }, 'ш', dim('w', r.w), 'в', dim('h', r.h),
       dropdown('', [['', 'пропорции…'], ...presets.map(([w, hh]) => [`${w}x${hh}`, `${w}×${hh}`])], v => {
         if (!v) return;
@@ -1051,13 +1103,74 @@ function layerRow(L) {
   return row;
 }
 
+// промпт живёт между перерисовками: иначе каждое событие (прогресс, результат) сбрасывало бы фокус и курсор
+let promptEl = null;
+function promptBox() {
+  if (!promptEl) {
+    promptEl = h('textarea.nz-prompt', { rows: 4, spellcheck: false, title: 'Ctrl+Enter — генерация · Ctrl+↑/↓ — вес тега: (girl:1.2)' });
+    promptEl.dataset.promptWeight = '';
+    promptEl.addEventListener('input', () => { st.prompt = promptEl.value; keep(); });
+    promptEl.addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); run(); } });
+  }
+  if (document.activeElement !== promptEl) promptEl.value = st.prompt || '';
+  promptEl.placeholder = { inpaint: 'что должно появиться под маской: red rose in a glass vase',
+    img2img: 'что в рамке — те же формы, новые детали: detailed face, sharp eyes',
+    outpaint: 'что вокруг: beach, sunset, wide sky' }[mode] || 'что нарисовать: girl in a garden, sunset';
+  return promptEl;
+}
+
+// «Генерация»: режим, промпт, сила, «Генерировать», модель и сэмплер (свёрнуто)
+function genPanel() {
+  const r = doc().bbox;
+  const row = (label, ctl, tip) => h('div.f', { title: tip || '' }, h('label', {}, label), h('div.v', {}, ctl));
+  const slider = (value, min, max, step, set) => {
+    const el = h('input.ui-range', { type: 'range', min, max, step, value });
+    const n = h('span.mono', { style: { width: '36px', textAlign: 'right' } }, String(value));
+    el.addEventListener('input', () => { n.textContent = el.value; set(+el.value); });
+    return h('div.row', { style: { flex: 1, gap: '8px' } }, el, n);
+  };
+  const ck = ckptName();
+  const ckBtn = h('button.ui-dd.nz-ck', { type: 'button', 'data-tip': 'Чекпоинт: негатив и сэмплер «авто» подбирает Magic',
+    onclick: () => libraryPicker(ckBtn, { cat: 'checkpoints', value: ck, onPick: name => { st.ckpt = name; keep(); rec = null; loadRec(); refresh(); } }) },
+  icon('image', { size: 16 }), h(`span.t${ck ? '' : '.ph'}`, {}, ck ? ck.split(/[\\/]/).pop().replace(/\.\w+$/, '') : 'выберите чекпоинт'), h('span.chev', {}, icon('down', { size: 16 })));
+  if (!rec && ck && S.server.running) loadRec();
+  const strengthTip = { img2img: '0.2–0.4 — детали, те же формы; 0.5–0.8 — заметно перерисовать',
+    inpaint: '0.3–0.5 — доработать под маской; 0.8–1 — заменить по промпту', outpaint: 'сила под масками; пустое — «дорисовка»' }[mode];
+  const pct = busy?.max ? `${Math.round(100 * busy.step / busy.max)}%` : '0%';
+  const go = busy
+    ? h('div.nz-busy', {}, h('div.nz-bar', {}, h('div#nz-gfill', { style: { width: pct } })),
+      h('span#nz-gtext', {}, busy.max ? `шаг ${busy.step}/${busy.max}` : 'в очереди…'),
+      busy.total > 1 ? h('span.dim', {}, `${busy.total - busy.left}/${busy.total}`) : null,
+      h('button.ui-btn.secondary.slim', { onclick: () => { if (busy) busy.left = 0; interrupt(); }, 'data-tip': 'Ctrl+Shift+Enter' }, icon('stop', { size: 16 }), 'Прервать'))
+    : h('div.nz-go', {},
+      h('button.ui-btn.primary.nz-run', { onclick: () => run(), 'data-tip': 'Генерировать в рамке (Ctrl+Enter)' }, icon('play', { size: 16 }), 'Генерировать'),
+      h('span.nz-cnt', { 'data-tip': 'Сколько вариантов за раз — листаются на холсте' }, '×',
+        num(st.batch, x => { st.batch = clamp(x | 0, 1, 16); keep(); }, { int: true, min: 1, max: 16 })));
+  const adv = h('details.nz-adv', { open: !!st.adv },
+    h('summary', {}, 'Модель и сэмплер', h('span.dim', {}, ck ? ` · ${ck.split(/[\\/]/).pop().replace(/\.\w+$/, '')}` : ' · не выбран')),
+    row('чекпоинт', ckBtn),
+    rec?.error ? h('div.hint', { style: { color: 'var(--err)' } }, `Magic: ${rec.error}`) : null,
+    ...samplerCard(row));
+  adv.addEventListener('toggle', () => { st.adv = adv.open; keep(); });
+  return h('div.nz-gen', {},
+    h('div.nz-gh', {}, h('span.nz-mode', { 'data-tip': MODES[mode][1] }, MODES[mode][0]), h('span.dim', {}, `рамка ${r.w}×${r.h}`),
+      h('span.grow'), h('span.nz-help', { 'data-tip': KEYS_TIP }, '?')),
+    h('div.hint', {}, MODES[mode][1]),
+    promptBox(),
+    mode === 'txt2img' ? null : [row('сила', slider(st.denoise, 0.05, 1, 0.05, x => { st.denoise = x; keep(); }), strengthTip), h('div.hint', {}, strengthTip)],
+    ...(mode === 'outpaint' ? outpaintCard(row, slider) : []),
+    go,
+    !ck ? h('div.hint', { style: { color: 'var(--err)' } }, 'Сначала выберите чекпоинт — «Модель и сэмплер»') : null,
+    adv);
+}
+
 function sidePanel() {
   const d = doc(), A = activeL();
   const btn = (k, tip, fn, dis = false) => h('button.b', { 'data-tip': tip, disabled: dis, onclick: fn }, typeof k === 'string' && SVG[k] ? svg(k, 14) : icon(k, { size: 14 }));
   const group = (type, title) => {
     const list = d.layers.filter(L => L.type === type);
     return [h('div.nz-grp', {}, svg(type === 'mask' ? 'mask' : 'raster', 14), h('span', {}, title), h('span.grow'),
-      btn('add', type === 'mask' ? 'Новая маска inpaint (Shift+M)' : 'Новый растровый слой (Shift+N)', () => { pushHist(); addLayer(type); keep(); refresh(); if (st.tool !== 'brush' && st.tool !== 'rect' && st.tool !== 'lasso') setTool('brush'); })),
+      btn('add', type === 'mask' ? 'Новая маска inpaint (Shift+M)' : 'Новый растровый слой (Shift+N)', () => { pushHist(); addLayer(type); st.paint = type; keep(); refresh(); if (st.tool !== 'brush' && st.tool !== 'rect' && st.tool !== 'lasso') setTool('brush'); })),
     ...[...list].reverse().map(layerRow),
     !list.length ? h('div.hint', { style: { padding: '2px 8px 6px' } }, type === 'mask' ? 'нет масок — вся рамка img2img' : 'нет слоёв — рамка txt2img') : null];
   };
@@ -1089,8 +1202,9 @@ function sidePanel() {
     h('div.nz-split', { onpointerdown: e => {
       e.preventDefault();
       const x0 = e.clientX, w0 = st.side;
-      track(ev => { st.side = clamp(w0 - (ev.clientX - x0), 200, 480); side.style.width = `${st.side}px`; draw(); }, () => keep());
+      track(ev => { st.side = clamp(w0 - (ev.clientX - x0), 260, 520); side.style.width = `${st.side}px`; draw(); }, () => keep());
     } }),
+    genPanel(),
     h('div.hd', {}, svg('layers', 14), h('span', {}, 'Слои'), h('span.grow'),
       btn('copy', 'Дублировать', () => A && dupLayer(A), !A),
       btn('merge', 'Слить с нижним (Ctrl+E)', () => A && mergeDown(A), !A),
@@ -1115,10 +1229,19 @@ function render() {
     cv.addEventListener('dragover', e => e.preventDefault());
     cv.addEventListener('drop', onDrop);
     wrap = h('div.nz-wrap', {}, cv);
-    new ResizeObserver(() => { if (!fitted) fit(); draw(); }).observe(wrap);
+    new ResizeObserver(() => { if (!fitted || autoFit) fit(); draw(); }).observe(wrap);
   }
-  wrap.replaceChildren(cv, stagingBar() || '');
-  v.replaceChildren(toolbar(), h('div.nz-body', {}, toolStrip(), wrap, sidePanel()), optionsBar());
+  // пустой холст — подсказка, с чего начать
+  const empty = !busy && !doc().staging.length && !doc().layers.some(hasPix)
+    ? h('div.nz-empty', {}, h('b', {}, 'Пустой холст'),
+      h('span', {}, 'Напишите промпт справа и нажмите «Генерировать» — или перетащите сюда картинку / Ctrl+V, чтобы доработать её.'),
+      h('span', {}, 'Кисть «Маска» отмечает, что перерисовать; рамка (C) — где генерировать.')) : null;
+  wrap.replaceChildren(cv, empty || '', stagingBar() || '');
+  const foc = document.activeElement === promptEl ? [promptEl.selectionStart, promptEl.selectionEnd, promptEl.scrollTop] : null;
+  const scroll = [...v.querySelectorAll('.nz-gen, .nz-list')].map(e => e.scrollTop);
+  v.replaceChildren(toolbar(), optionsBar(), h('div.nz-body', {}, toolStrip(), wrap, sidePanel()));
+  [...v.querySelectorAll('.nz-gen, .nz-list')].forEach((e, i) => { e.scrollTop = scroll[i] || 0; });
+  if (foc) { promptEl.focus({ preventScroll: true }); promptEl.setSelectionRange(foc[0], foc[1]); promptEl.scrollTop = foc[2]; }
   setCursor();
   draw();
 }
@@ -1182,7 +1305,7 @@ function outpaintCard(row, slider) {
 }
 
 const KEYS_TIP = 'C — рамка, V — слой, H — рука, B — кисть (Alt — пипетка), E — ластик, U — прямоугольник, L — лассо, I — пипетка\n'
-  + '[ ] — размер кисти, Shift+N / Shift+M — новый слой / маска, Ctrl+I — инвертировать маску, Ctrl+E — слить с нижним\n'
+  + 'M — кисть рисует цвет / маску, [ ] — размер кисти, Shift+N / Shift+M — новый слой / маска, Ctrl+I — инвертировать маску, Ctrl+E — слить с нижним\n'
   + 'Del — удалить слой (в staging — отбросить), Shift+Del — очистить слой\n'
   + 'Enter — принять результат, ← → — листать, \\ — показать/скрыть результат\n'
   + 'Ctrl+Z / Ctrl+Shift+Z — отмена / повтор, колесо — масштаб, ПКМ/Space — сдвиг, F — вписать, Ctrl+Enter — генерация';
@@ -1206,45 +1329,15 @@ function samplerCard(row) {
   ];
 }
 
+// Inspector: всё управление — на самой странице; здесь только справка
 function inspector() {
-  const area = (value, ph, set, rows = 3) => {
-    const t = h('textarea', { rows, spellcheck: false, placeholder: ph, title: 'Ctrl+↑ / Ctrl+↓ — вес тега: (girl:1.2)' });
-    t.dataset.promptWeight = '';
-    t.value = value || '';
-    t.addEventListener('input', () => set(t.value));
-    t.addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); run(); } });
-    return t;
-  };
-  const row = (label, ctl, tip) => h('div.f', { title: tip || '' }, h('label', {}, label), h('div.v', {}, ctl));
-  const slider = (value, min, max, step, set) => {
-    const r = h('input.ui-range', { type: 'range', min, max, step, value });
-    const n = h('span.mono', { style: { width: '36px', textAlign: 'right' } }, String(value));
-    r.addEventListener('input', () => { n.textContent = r.value; set(+r.value); });
-    return h('div.row', { style: { flex: 1, gap: '8px' } }, r, n);
-  };
-  const ck = ckptName();
-  const ckIn = h('input', { type: 'text', value: ck, spellcheck: false, readOnly: true });
-  const ckBtn = h('button.ui-ib', { 'data-tip': 'Галерея чекпоинтов', onclick: () => libraryPicker(ckBtn, { cat: 'checkpoints', value: ck, onPick: name => { st.ckpt = name; keep(); rec = null; loadRec(); refresh(); } }) }, icon('image', { size: 16 }));
-  ckIn.addEventListener('click', () => ckBtn.click());
-  if (!rec && ck && S.server.running) loadRec();
-  const d = doc(), r = d.bbox;
-  const strengthTip = { txt2img: 'в пустой рамке не используется (всегда 1)', img2img: '0.3–0.5 — те же формы, больше деталей; 0.6–0.8 — заметно перерисовать',
-    inpaint: '0.3–0.5 — детализировать под маской, 0.8–1 — заменить по промпту', outpaint: 'сила под масками; пустое — «дорисовка»' }[mode];
+  const d = doc();
   return [
-    h('h3', {}, icon('spark', { size: 16 }), 'ImageNaizer', h('span.grow'), h('span.nz-help', { 'data-tip': KEYS_TIP }, '?')),
-    h('div.hint', {}, `рамка ${r.w}×${r.h} · ${MODES[mode][0]} — ${MODES[mode][1].toLowerCase()} · слоёв: ${d.layers.length}`),
-    h('h4', {}, 'Промпт'),
-    area(st.prompt, mode === 'inpaint' ? 'что должно быть под маской, например: red rose in a glass vase' : 'что в рамке, например: girl in a garden, sunset', t => { st.prompt = t; keep(); }),
-    row('сила', slider(st.denoise, 0.05, 1, 0.05, x => { st.denoise = x; keep(); }), `denoise: ${strengthTip}`),
-    h('div.hint', {}, strengthTip),
-    ...(mode === 'outpaint' ? outpaintCard(row, slider) : []),
-    row('вариантов', num(st.batch, x => { st.batch = clamp(x | 0, 1, 16); keep(); }, { int: true, min: 1, max: 16 }), 'сколько результатов положить в staging за один запуск'),
-    row('чекпоинт', h('div.row', { style: { flex: 1 } }, ckIn, ckBtn), 'негатив и значения сэмплера «авто» подбирает Magic под чекпоинт'),
-    rec?.error ? h('div.hint', { style: { color: 'var(--err)' } }, `Magic: ${rec.error}`) : null,
-    ...samplerCard(row),
-    h('div.row', { style: { marginTop: '10px', flexWrap: 'wrap' } },
-      busy ? h('button.ui-btn.secondary.slim', { onclick: () => { if (busy) busy.left = 0; interrupt(); } }, icon('stop', { size: 16 }), 'Прервать')
-        : h('button.ui-btn.primary.slim', { onclick: () => run() }, icon('play', { size: 16 }), `Генерировать (${MODES[mode][0]})`)),
+    h('h3', {}, icon('spark', { size: 16 }), 'ImageNaizer'),
+    h('div.hint', {}, `«${d.name}» · рамка ${d.bbox.w}×${d.bbox.h} · ${MODES[mode][0]} · слоёв: ${d.layers.length}`),
+    h('div.hint', {}, 'Промпт, сила, модель и слои — справа на странице ImageNaizer.'),
+    h('h4', {}, 'Клавиши'),
+    h('div.hint', { style: { whiteSpace: 'pre-wrap' } }, KEYS_TIP),
   ];
 }
 
@@ -1260,8 +1353,9 @@ function keys(e) {
   else if (e.ctrlKey && (k === 'e' || k === 'у')) { if (A) mergeDown(A); }
   else if (e.ctrlKey && e.key === '0') zoomTo(1);
   else if (e.ctrlKey) done = false;
-  else if (e.shiftKey && (k === 'n' || k === 'т')) { pushHist(); addLayer('raster'); keep(); refresh(); }
-  else if (e.shiftKey && (k === 'm' || k === 'ь')) { pushHist(); addLayer('mask'); keep(); refresh(); }
+  else if (e.shiftKey && (k === 'n' || k === 'т')) { pushHist(); addLayer('raster'); st.paint = 'raster'; keep(); refresh(); }
+  else if (e.shiftKey && (k === 'm' || k === 'ь')) { pushHist(); addLayer('mask'); st.paint = 'mask'; keep(); refresh(); }
+  else if (k === 'm' || k === 'ь') setPaint(st.paint === 'mask' ? 'raster' : 'mask');
   else if (e.key === 'Enter' && staged) accept();
   else if (e.key === 'ArrowLeft' && staged) stageNav(-1);
   else if (e.key === 'ArrowRight' && staged) stageNav(1);
@@ -1298,6 +1392,8 @@ export function initNaizer() {
     if (!busy || d.prompt_id !== busy.pid || d.node !== 'gen') return;
     busy.step = d.value; busy.max = d.max;
     const el = document.getElementById('nz-pend'); if (el) el.textContent = `шаг ${busy.step}/${busy.max}`;
+    const gt = document.getElementById('nz-gtext'); if (gt) gt.textContent = `шаг ${busy.step}/${busy.max}`;
+    const gf = document.getElementById('nz-gfill'); if (gf) gf.style.width = `${Math.round(100 * busy.step / (busy.max || 1))}%`;
     draw();
   });
   on('run-preview', d => {

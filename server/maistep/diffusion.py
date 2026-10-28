@@ -1913,9 +1913,8 @@ def canvas(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, s
                 ctx.log("outpaint without LaMa (component inpaint-lama): blur infill — the empty part is drawn almost anew")
     if rgb is None:
         rgb = _infill(src.convert("RGB"), alpha)
-    part = rgb.resize((tw, th), Image.LANCZOS)
-    lat = encode_pil(ctx, vae, part)
     if mode == "img2img":
+        lat = encode_pil(ctx, vae, rgb.resize((tw, th), Image.LANCZOS))
         out = sample(ctx, model, positive, negative, lat, seed, steps, cfg, sampler, scheduler, denoise)
         gen = decode_pils(ctx, vae, out)[0].resize((W, H), Image.LANCZOS)
         return save_pils(ctx, [gen.convert("RGBA")], "naizer", int(seed))[0], {"mode": mode, "w": W, "h": H}
@@ -1930,14 +1929,39 @@ def canvas(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, s
     if e:
         ring = vimg.filter(ImageFilter.MaxFilter(min(e, 31) // 2 * 2 + 1)).filter(ImageFilter.GaussianBlur(e / 2))
         vimg = Image.fromarray(np.maximum(np.asarray(vimg), np.asarray(ring)), "L")
-    lm = vimg.resize((tw // 8, th // 8), Image.BILINEAR)
+    # inpaint небольшой маски — только её область с полями, растянутая до родного размера модели (как «Inpaint only
+    # masked» A1111 / Krita AI): раньше перерисовывалась вся рамка, и под маской на ~1 Мп рамки деталей не прибавлялось
+    vb = vimg.point(lambda x: 255 if x > 2 else 0).getbbox()
+    if not vb:
+        raise ValueError("nothing to change inside the frame — paint an inpaint mask or move the frame")
+    crop = (0, 0, W, H)
+    if mode == "inpaint":
+        pad = max(48, round(max(vb[2] - vb[0], vb[3] - vb[1]) * 0.25))  # контекст вокруг: свет, стиль, соседи
+        x0, x1 = _span(max(0, vb[0] - pad), min(W, vb[2] + pad), W, min(W, max(64, res // 2)))
+        y0, y1 = _span(max(0, vb[1] - pad), min(H, vb[3] + pad), H, min(H, max(64, res // 2)))
+        if (x1 - x0) * (y1 - y0) < 0.7 * W * H:
+            crop = (x0, y0, x1, y1)
+    cw, ch = crop[2] - crop[0], crop[3] - crop[1]
+    if crop != (0, 0, W, H):
+        kc = min(4.0, (res * res / (cw * ch)) ** 0.5)
+        tw, th = max(64, int(round(cw * kc / 8)) * 8), max(64, int(round(ch * kc / 8)) * 8)
+        if ctx:
+            ctx.log(f"canvas: inpaint area {cw}×{ch} at ({crop[0]},{crop[1]}) → {tw}×{th}")
+            ctx.preview_meta = {"box": {"x": crop[0], "y": crop[1], "w": cw, "h": ch, "W": W, "H": H}}
+    lat = encode_pil(ctx, vae, rgb.crop(crop).resize((tw, th), Image.LANCZOS))
+    lm = vimg.crop(crop).resize((tw // 8, th // 8), Image.BILINEAR)
     nm = torch.tensor(np.asarray(lm, dtype=np.float32) / 255.0).view(1, 1, th // 8, tw // 8)
     top = float(nm.max())
     if top <= 0:
         raise ValueError("nothing to change inside the frame — paint an inpaint mask or move the frame")
     out = sample(ctx, model, positive, negative, lat, seed, steps, cfg, sampler, scheduler, top, noise_mask=nm,
-                 gradient=True)
-    gen = decode_pils(ctx, vae, out)[0].resize((W, H), Image.LANCZOS)
+                 gradient=True, control_box={"x": crop[0], "y": crop[1], "w": cw, "h": ch, "W": W, "H": H})
+    piece = decode_pils(ctx, vae, out)[0].resize((cw, ch), Image.LANCZOS)
+    if crop == (0, 0, W, H):
+        gen = piece
+    else:  # вне области — исходное (там альфа всё равно 0)
+        gen = rgb.copy()
+        gen.paste(piece, crop[:2])
     # альфа: всё, что менялось, + растушёвка наружу (снаружи латент — исходный, так что шов не виден)
     changed = vimg.point(lambda x: 255 if x > 2 else 0)
     b = max(0, int(blur))
