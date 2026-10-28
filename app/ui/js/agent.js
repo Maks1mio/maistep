@@ -26,7 +26,7 @@ import { recentLog } from './console.js';
 import { openExternal } from './api.js';
 
 let chats = [], chars = [], provs = null, pop = null, projects = [], mcpSt = { servers: [] };
-const busy = new Set(), approvals = new Map(), views = [];
+const busy = new Set(), approvals = new Map(), asks = new Map(), views = [];  // asks: chat → вопрос ask_user с вариантами
 const log = (level, text) => emit('log', { src: 'agent', level, text });
 const MODES = {
   agent: ['Agent', 'ai', 'Только программа: графы, картинки, ImageNaizer, интернет, управление окном'],
@@ -81,6 +81,7 @@ function trackRun(d) {
   }
   else if (d.kind === 'tool_result') r.phase = 'Думает';
   else if (d.kind === 'approve') r.phase = 'Ждёт вашего разрешения';
+  else if (d.kind === 'ask') r.phase = 'Ждёт вашего ответа';
   else if (d.kind === 'status') r.phase = d.text;
   else if (d.kind === 'stopping') { r.phase = 'Останавливается…'; r.stopping = true; }
   else if (d.kind === 'message' && d.message.usage) { r.tok += d.message.usage.out || 0; r.chars = 0; }
@@ -110,11 +111,13 @@ function onAgent(d) {
   if (d.kind === 'client') return clientAction(d);
   if (d.kind === 'approve') { (approvals.get(d.chat) || approvals.set(d.chat, []).get(d.chat)).push(d); }
   if (d.kind === 'approve_done') { const a = approvals.get(d.chat); if (a) approvals.set(d.chat, a.filter(x => x.req !== d.req)); }
+  if (d.kind === 'ask') asks.set(d.chat, { ...d, picked: [] });
+  if (d.kind === 'ask_done' && asks.get(d.chat)?.req === d.req) asks.delete(d.chat);
   if (d.kind === 'proc_log') { for (const l of d.lines) emit('log', { src: 'agent', level: /error|ошибк|failed|exception/i.test(l) ? 'error' : 'info', text: `[${d.id}] ${l}` }); return; }
   if (d.kind === 'proc') { procs.set(d.proc.id, d.proc); for (const v of views) v.renderEnv(); return; }
   if (d.kind === 'proc_gone') { procs.delete(d.id); for (const v of views) v.renderEnv(); return; }
   if (d.kind === 'start') busy.add(d.chat);
-  if (d.kind === 'done') { busy.delete(d.chat); approvals.delete(d.chat); loadList(); }
+  if (d.kind === 'done') { busy.delete(d.chat); approvals.delete(d.chat); asks.delete(d.chat); loadList(); }
   trackRun(d);
   for (const v of views) v.onAgent(d);
 }
@@ -235,14 +238,14 @@ const TOOL_LABEL = { list_workflows: 'Список воркфлоу', get_workfl
   generate_image: 'Генерирует картинку', edit_image: 'Правит картинку', web_search: 'Ищет в интернете', web_fetch: 'Открывает страницу',
   app: 'Действие в окне', list_files: 'Файлы', read_file: 'Читает файл', search_code: 'Ищет в коде', edit_file: 'Правит файл',
   write_file: 'Пишет файл', run_command: 'Команда', run_js: 'JS в окне', send_photo: 'Фото', todo_write: 'Список задач',
-  process_output: 'Вывод процесса', process_stop: 'Останавливает процесс', process_list: 'Процессы', app_console: 'Читает консоль',
+  process_output: 'Вывод процесса', process_stop: 'Останавливает процесс', process_list: 'Процессы', app_console: 'Читает консоль', ask_user: 'Спрашивает',
   browser_open: 'Открывает в браузере', find_models: 'Ищет на Civitai', download_model: 'Скачивает модель' };
 
 // mcp__сервер__инструмент → «MCP сервер · инструмент»
 const toolLabel = n => TOOL_LABEL[n] || (n.startsWith('mcp__') ? `MCP ${n.slice(5).replace('__', ' · ')}` : n);
 function toolArg(t) {
   const i = t.input || {};
-  const a = i.id || i.file || i.path || i.query || i.url || i.source || i.action || i.command || i.image || i.cat || i.type || i.pattern || i.prompt || i.scene || '';
+  const a = i.id || i.file || i.path || i.query || i.url || i.source || i.action || i.command || i.image || i.cat || i.type || i.pattern || i.prompt || i.scene || i.question || '';
   return String(a).slice(0, 90);
 }
 // ---------- вызовы инструментов: группа с итогом, как у Claude («Изменил agent.js +12 −3, прочитал 2 файла ▸») ----------
@@ -374,6 +377,11 @@ class ChatView {
   async open(id, focus = true) {
     try { this.chat = await api(`/api/agent/chat?id=${id}`); } catch (e) { log('error', e.message); return; }
     try { localStorage.setItem(this.LS, id); } catch {}
+    for (const w of this.chat.waiting || []) { // окно открылось заново посреди хода — вопрос и разрешения не теряются
+      if (w.kind === 'ask' && asks.get(id)?.req !== w.req) asks.set(id, { ...w, chat: id, picked: [] });
+      const ap = approvals.get(id) || [];
+      if (w.kind === 'approve' && !ap.some(x => x.req === w.req)) approvals.set(id, [...ap, { ...w, chat: id }]);
+    }
     this.draft = busy.has(id) ? { text: '', thinking: '', tools: [] } : null;
     this.running.clear();
     this.status = '';
@@ -434,6 +442,11 @@ class ChatView {
     if (!this.chat) await this.newChat();
     const text = (textArg ?? this.ta.value).trim();
     if (!text && !this.attach.length) return;
+    const q = asks.get(this.chat.id);
+    if (q && text && !label) { // агент ждёт ответа на вопрос: написанное — свой вариант ответа
+      this.ta.value = ''; this.autosize();
+      return this.answerAsk(q, { text });
+    }
     if (busy.has(this.chat.id)) {
       if (label) return;
       // как у Claude: пока агент отвечает, сообщение встаёт в очередь и уходит после ответа
@@ -489,6 +502,7 @@ class ChatView {
     if (d.kind === 'delta') { fresh().text += d.text; this.renderDraft(); return; }
     if (d.kind === 'thinking') { fresh().thinking += d.text; this.renderDraft(); return; }
     if (d.kind === 'approve' || d.kind === 'approve_done') { this.renderDraft(); return; }
+    if (d.kind === 'ask' || d.kind === 'ask_done') { this.renderDraft(); if (d.kind === 'ask') this.scrollDown(); return; }
     if (d.kind === 'tool_run' && this.chat.messages.some(m => m.tools?.some(t => t.id === d.id))) {
       // вызов уже в сообщении — отмечаем «выполняется» там, без копии в черновике
       this.running.add(d.id);
@@ -632,7 +646,9 @@ class ChatView {
     const run = runInfo.get(this.chat?.id);
     if (busy.has(this.chat?.id) && !run) runInfo.set(this.chat.id, { t0: (this.chat.since || Date.now() / 1000) * 1000, tok: 0, chars: 0, phase: 'Работает' });
     const r = runInfo.get(this.chat?.id);
+    const q = asks.get(this.chat?.id);
     fill(el,
+      q ? this.askCard(q) : null,
       r && busy.has(this.chat.id) ? h('div.ag-run', { 'data-chat': this.chat.id }, h('span.ag-spin'), h('span.t', {}, runText(r))) : null,
       showTodos ? h('div.ag-todos', {},
         h('div.ag-todoh', { onclick: () => { ui.todosOff = !ui.todosOff; saveUi(); this.renderTodos(); } },
@@ -645,6 +661,30 @@ class ChatView {
         h('span.ui-tb', {}, tbBtn('closeSmall', 'Отменить правку', () => { this.editing = null; this.ta.value = ''; this.attach = []; this.renderAttach(); this.renderTodos(); }))) : null,
       ...this.queue.map((q, k) => h('div.ag-qrow', {}, icon('history', { size: 14 }), h('span.t', {}, `В очереди: ${q.text || 'картинка'}`),
         h('span.ui-tb', {}, tbBtn('closeSmall', 'Убрать из очереди', () => { this.queue.splice(k, 1); this.renderTodos(); })))));
+  }
+
+  answerAsk(q, body) {
+    asks.delete(this.chat.id);
+    this.renderTodos();
+    api('/api/agent/approve', { req: q.req, ...body }).catch(e => log('error', e.message));
+  }
+  // вопрос агента (ask_user): варианты — плитки над полем ввода, щелчок — ответ; своё — написать в поле
+  askCard(q) {
+    const pick = o => {
+      if (!q.multi) return this.answerAsk(q, { picked: [o.label] });
+      q.picked = q.picked.includes(o.label) ? q.picked.filter(x => x !== o.label) : [...q.picked, o.label];
+      this.renderTodos();
+    };
+    return h('div.ag-ask', {},
+      h('div.ag-askq', {}, icon('help', { size: 16 }), h('b', {}, q.question || 'Вопрос')),
+      h('div.ag-opts', {}, ...(q.options || []).map((o, k) => h(`div.ag-opt${q.picked.includes(o.label) ? '.on' : ''}`, {
+        role: 'button', tabindex: 0, onclick: () => pick(o), onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(o); } } },
+        h('span.n', {}, q.multi ? (q.picked.includes(o.label) ? '✓' : '') : String(k + 1)),
+        h('span.t', {}, h('b', {}, o.label), o.description ? h('span', {}, o.description) : null)))),
+      h('div.ag-apb', {},
+        h('span.dim', {}, 'Или напишите свой ответ ниже'), h('span.grow'),
+        q.multi ? h('button.ui-btn.primary.slim', { disabled: !q.picked.length, onclick: () => this.answerAsk(q, { picked: q.picked }) }, 'Ответить') : null,
+        h('button.ui-btn.secondary.slim', { onclick: () => this.answerAsk(q, {}), 'data-tip': 'Агент решит сам' }, 'Пропустить')));
   }
 
   approveCard(a) {

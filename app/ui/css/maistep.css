@@ -416,6 +416,20 @@ pre.ag-code:hover .ag-copy { display: inline-flex; }
 .ag-aph b { font-weight: 600; word-break: break-word; }
 .ag-approve pre.ag-json { max-height: 220px; overflow: auto; margin: 0; }
 .ag-apb { display: flex; align-items: center; gap: var(--sp-ctrl); }
+/* вопрос агента (ask_user): варианты-плитки над полем ввода */
+.ag-ask { border: 1px solid var(--ui-accent); border-radius: 10px; background: var(--ui-bg1); padding: var(--sp-ctrl) 10px; display: flex; flex-direction: column; gap: var(--sp-ctrl); }
+.ag-askq { display: flex; align-items: flex-start; gap: var(--sp-ctrl); font: 400 13px/18px var(--ui-sans); }
+.ag-askq svg { flex-shrink: 0; margin-top: 1px; color: var(--ui-accent); }
+.ag-opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; }
+.ag-opt { display: flex; align-items: flex-start; gap: var(--sp-unrel); padding: 7px 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); cursor: pointer; min-width: 0; }
+.ag-opt:hover { background: var(--ui-hover); }
+.ag-opt:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -1px; }
+.ag-opt.on { border-color: var(--ui-accent); background: var(--ui-sel); }
+.ag-opt .n { flex-shrink: 0; width: 18px; height: 18px; border-radius: 50%; background: var(--ui-bg2, var(--ui-hover)); color: var(--ui-fg-dim); font: 600 11px/18px var(--ui-sans); text-align: center; }
+.ag-opt:first-child .n { background: var(--ui-accent); color: #fff; }
+.ag-opt .t { display: flex; flex-direction: column; gap: 1px; min-width: 0; font: 400 13px/18px var(--ui-sans); }
+.ag-opt .t span { color: var(--ui-fg-dim); font-size: 12px; line-height: 16px; }
+.ag-ask .ag-apb .dim { color: var(--ui-fg-dim); font: 400 12px/16px var(--ui-sans); }
 .ag-mode.ui-seg > button { display: inline-flex; align-items: center; }
 .ag-set { padding-bottom: var(--sp-ctrl); }
 .ag-srow { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-inline); padding: 4px 10px; }

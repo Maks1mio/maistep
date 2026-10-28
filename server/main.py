@@ -516,7 +516,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/agent/chat":
             try:
                 c = agent.load(qs.get("id"))
-                return self.json({**agent.meta(c), "messages": c["messages"]})
+                return self.json({**agent.meta(c), "messages": c["messages"], "waiting": agent.waiting(c["id"])})
             except (KeyError, ValueError):
                 return self.json({"error": "нет такого диалога"}, 404)
         if u.path.startswith("/api/civitai/"):

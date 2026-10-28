@@ -274,9 +274,15 @@ def answer(req, res):
     return {"ok": bool(p)}
 
 
+def waiting(cid):
+    """Вопросы и разрешения, которых ждёт ход диалога: окно, открывшееся заново (перезагрузка UI), показывает их снова."""
+    return [{"kind": p["kind"], "req": r, **p["data"]} for r, p in list(_pending.items())
+            if p.get("chat") == cid and p.get("kind") in ("ask", "approve")]
+
+
 def _wait(ctx, kind, timeout=None, **data):
     req = uuid.uuid4().hex[:12]
-    p = _pending[req] = {"ev": threading.Event(), "res": None}
+    p = _pending[req] = {"ev": threading.Event(), "res": None, "chat": ctx.chat["id"], "kind": kind, "data": data}
     ev(ctx.chat["id"], kind, req=req, **data)
     t0 = time.time()
     try:
@@ -409,6 +415,8 @@ library (list_models loras), then search Civitai with find_models (type LORA, th
 Illustrious, Pony, SDXL 1.0 …), install the best match with download_model, add it with sd.lora (strength 0.6–0.9) \
 and its trigger words, and tell the user what you added and why. LoRA, LoCon, LoHa and LoKr files all work; if a \
 file still fails to load («unsupported key layout»), pick another LoRA instead of retrying.
+Quality loop (images and workflows): when the user asks to generate, fix or improve something, that request covers re-running as many times as needed. After each result, look at it critically against the request: anatomy, hands, faces, things merging or coming out of the wrong place, style, composition, artifacts, missing details. If YOU can see a flaw, do not stop to report it or ask «fix it or is it fine?» — fix it right away (prompt and weights, negative, LoRA strength, denoise, cfg/steps, edit_image on the region, a LoRA from the library or Civitai) and look again. Keep iterating until nothing visible is wrong, or the remaining flaw can't be fixed with the tools at hand, or ~6 attempts went by without progress. Then answer once: the final result, what you fixed along the way, and only the flaws that really remain (with why). Change one or two things per attempt so you know what helped.
+Questions: when you really need the user's decision (several equally good directions, a taste choice, a big download, switching the checkpoint), call ask_user with 2–4 short options instead of writing the question and a list of options as text — the user answers with one click. Don't ask about things you can decide or check yourself.
 App control (`app`): state (current tab, workflow, selection), open_tab, open_workflow, show_image, notify.
 Internet: web_search and web_fetch (a page → text; an image URL → saved into input/ so you can view or edit it). \
 Use them for documentation, model info, references and ComfyUI examples. browser_open shows a page to the user in the \
@@ -436,6 +444,8 @@ style, naming and comment density. Don't add features nobody asked for.
 project folder). Fix what you broke. Report what changed and how you checked it; if you could not check, say so.
 - Long tasks: keep a task list with todo_write (the user sees it pinned), then do the steps one by one; don't stop \
 halfway to ask unless a decision is really the user's.
+- Don't stop at «remaining issues»: if you see a problem you can fix (a failing test, a warning, a bug in what you just wrote), fix it and check again; report only what truly remains.
+- Need the user's decision (an approach, a trade-off)? Call ask_user with 2–4 short options instead of writing the question and options as text.
 - Paths are relative to the project folder; absolute paths work only inside the folders the user granted.
 - Never print or exfiltrate secrets, never delete user data you were not asked to delete, never force-push, rewrite \
 git history or run installers/uninstallers without an explicit request. Writing files and running commands may \
@@ -635,6 +645,16 @@ TODO_TOOL = {"name": "todo_write", "description":
                  "content": {"type": "string", "description": "short imperative step"},
                  "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}},
                  "required": ["content", "status"]}}}, "required": ["todos"]}}
+ASK_TOOL = {"name": "ask_user", "description":
+            "Ask the user a question with clickable answer options (shown as buttons above the chat input) and wait for "
+            "the answer. Use it instead of writing questions with options as text. 2–4 options; label — a few words, "
+            "description — one short line on what it means. Put the recommended option first. The user can also type "
+            "their own answer. multi=true lets them pick several.",
+            "input_schema": {"type": "object", "properties": {
+                "question": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "object", "properties": {
+                    "label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}},
+                "multi": {"type": "boolean"}}, "required": ["question", "options"]}}
 WEB_TOOLS = [
     {"name": "web_search", "description": "Search the internet. Returns titles, URLs and snippets.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer"}},
@@ -713,8 +733,8 @@ def tools_for(chat):
         return CHAR_TOOLS
     if mode in ("code", "dev"):
         app = Path(chat.get("cwd") or "") == ROOT
-        return DEV_TOOLS + PROC_TOOLS + WEB_TOOLS + [BROWSER_TOOL, CONSOLE_TOOL, TODO_TOOL] + ([RUN_JS, view_tool()] if app else [view_tool()])
-    return TOOLS + IMAGE_TOOLS + WEB_TOOLS + [BROWSER_TOOL, APP_TOOL, CONSOLE_TOOL, TODO_TOOL]
+        return DEV_TOOLS + PROC_TOOLS + WEB_TOOLS + [BROWSER_TOOL, CONSOLE_TOOL, TODO_TOOL, ASK_TOOL] + ([RUN_JS, view_tool()] if app else [view_tool()])
+    return TOOLS + IMAGE_TOOLS + WEB_TOOLS + [BROWSER_TOOL, APP_TOOL, CONSOLE_TOOL, TODO_TOOL, ASK_TOOL]
 
 
 def view_tool():
@@ -1056,6 +1076,15 @@ def run_more(ctx, name, inp):
         res = client(ctx, inp["action"], timeout=None if inp["action"] == "naizer_generate" else 90, **args)
         imgs = [f for f in (res.get("images") or []) if isinstance(f, str)] if isinstance(res, dict) else []
         return json.dumps(res, ensure_ascii=False, default=str)[:30000], imgs[:4]
+    if name == "ask_user":
+        opts = [{"label": str(o.get("label") or "")[:80], "description": str(o.get("description") or "")[:200]}
+                if isinstance(o, dict) else {"label": str(o)[:80], "description": ""} for o in (inp.get("options") or [])[:6]]
+        r = _wait(ctx, "ask", question=str(inp.get("question") or "")[:600], options=opts, multi=bool(inp.get("multi"))) or {}
+        if r.get("text"):
+            return f"The user answered in their own words: {r['text']}", []
+        if r.get("picked"):
+            return "The user chose: " + "; ".join(map(str, r["picked"])), []
+        return "The user skipped the question — decide yourself (take the recommended option) and go on.", []
     if name == "todo_write":
         ctx.chat["todos"] = _todos(inp)
         ev(ctx.chat["id"], "todos", todos=ctx.chat["todos"])
