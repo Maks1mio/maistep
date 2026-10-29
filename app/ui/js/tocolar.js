@@ -1025,6 +1025,23 @@ function keys(e) {
 }
 
 // ---------- регистрация ----------
+// ---------- для AI Agent (действия окна tocolar_*) ----------
+export const tocolarApi = {
+  state() {
+    return { pages: st.items.map((it, i) => ({ index: i, file: it.src, status: it.status, result: it.out || null, kind: it.kind || null,
+      colors: it.prompt || null })), selected: st.sel, busy: job ? { page: job.index, phase: job.phase, step: job.step, of: job.max } : null,
+      checkpoint: ckptName() || null, characters: st.cast || '', hint: st.prompt || '' };
+  },
+  add(files = []) { add(files.map(String)); return this.state(); },
+  // раскрасить: index — одну страницу, иначе все новые; не ждёт конца (статус — tocolar_state)
+  async colorize({ index } = {}) {
+    if (job) throw new Error('ToColar уже раскрашивает');
+    await start(index == null ? null : clamp(index | 0, 0, st.items.length - 1));
+    return this.state();
+  },
+  stop() { stop(); return this.state(); },
+};
+
 export function showTocolar() {
   viewEl = document.getElementById('v-tocolar');
   render();

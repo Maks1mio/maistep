@@ -30,8 +30,8 @@ META_CACHE = ROOT / "user" / "library_meta.json"
 MODEL_EXT = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx", ".sft"}
 PREVIEW_EXT = (".preview.jpeg", ".preview.jpg", ".preview.png", ".preview.webp", ".jpeg", ".jpg", ".png", ".webp")
 APP_MODELS = ROOT / "models"
-APP_SUBDIRS = ("checkpoints", "loras", "vae", "embeddings", "upscale_models", "controlnet")
-EXTRA_CATS = ("inpaint",)
+APP_SUBDIRS = ("checkpoints", "loras", "vae", "embeddings", "upscale_models", "controlnet", "ultralytics")
+EXTRA_CATS = ("inpaint", "ultralytics")  # нет в yaml Comfy Desktop: LaMa, детекторы YOLO (Face Detailer)
 
 
 def _auto_roots():

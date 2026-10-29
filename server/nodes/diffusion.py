@@ -150,7 +150,7 @@ def ksampler(model, positive, negative, latent_image, seed, steps, cfg, sampler_
 @node("sd.vae_decode", title="VAE Decode", cat="Latent",
       inputs={"samples": ("LATENT", {}), "vae": ("VAE", {})},
       outputs={"image": "IMAGE", "images": "JSON"},
-      hint="Latent → image (PNG in output/). With batch > 1, image is the first one and images is the whole batch.")
+      hint="Latent → image (a temporary PNG in temp/; Save Image puts it into output/). With batch > 1, image is the first one and images is the whole batch.")
 def vae_decode(samples, vae, ctx):
     files = D.vae_decode(ctx, vae, samples)
     imgs = [{"file": f} for f in files]

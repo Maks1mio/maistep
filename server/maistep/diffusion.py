@@ -231,6 +231,18 @@ def _arch_of(path):
     return L._arch(keys, h.get("__metadata__") or {})
 
 
+def _vpred(path):
+    """(v-prediction, zero terminal SNR) по заголовку: ключи `v_pred`/`ztsnr` (NoobAI-vpred и их слияния, ComfyUI
+    сохраняет так) или modelspec.predict_key = v. Без этого diffusers считает модель epsilon — красный шум и пережог."""
+    try:
+        h = L._safetensors_header(path) or {}
+    except Exception:
+        return False, False
+    meta = h.get("__metadata__") or {}
+    vp = "v_pred" in h or str(meta.get("modelspec.predict_key", "")).lower() in ("v", "v_prediction")
+    return vp, vp and ("ztsnr" in h or str(meta.get("modelspec.zero_terminal_snr", "")).lower() == "true")
+
+
 def _classes(arch, diffusers):
     """Пары (txt2img, img2img) по архитектуре; при неизвестной — список проб (SDXL, затем SD1.5)."""
     a = (arch or "").lower()
@@ -534,6 +546,8 @@ def _pipe(path, opts, torch, diffusers, ctx=None):
     if st["key"] == key and st["pipe"] is not None:
         return st["pipe"]
     arch = _check_ckpt(path)
+    from . import video  # Wan 2.2 держит ~30 ГБ в RAM — SD её вытесняет, как другой чекпоинт
+    video.unload()
     if ctx and (amd := _amd_arch(torch)):
         alloc = os.environ.get("PYTORCH_HIP_ALLOC_CONF") or os.environ.get("PYTORCH_CUDA_ALLOC_CONF") or "default"
         ctx.log(f"AMD {amd}, ROCm {torch.version.hip}, torch {torch.__version__}, allocator {alloc}")
@@ -559,6 +573,12 @@ def _pipe(path, opts, torch, diffusers, ctx=None):
             pipe = None
     if pipe is None:
         raise ValueError(f"checkpoint «{path.name}» did not load as SD:\n" + "\n".join(errors))
+    vpred, ztsnr = _vpred(path)
+    if vpred:
+        extra = {"prediction_type": "v_prediction"}
+        if ztsnr:
+            extra.update(rescale_betas_zero_snr=True, timestep_spacing="trailing")
+        pipe.scheduler = pipe.scheduler.__class__.from_config(pipe.scheduler.config, **extra)
     # VAE декодируем сами (vae_decode) в своём dtype; встроенный перекаст SDXL в fp32 не нужен
     vdt = _vae_dtype(torch, opts, device)
     pipe.vae.to(dtype=vdt)
@@ -585,9 +605,11 @@ def _pipe(path, opts, torch, diffusers, ctx=None):
     except Exception:
         pass
     st.update(key=key, pipe=pipe, i2i=None, i2i_cls=i2i_cls, loras={}, layout=lay, device=device, dtype=dt,
-              vae_dtype=vdt, unet_at=device, ckpt=str(path), sdxl=getattr(pipe, "text_encoder_2", None) is not None)
+              vae_dtype=vdt, unet_at=device, ckpt=str(path), sdxl=getattr(pipe, "text_encoder_2", None) is not None,
+              vpred=vpred, ztsnr=ztsnr)
     if ctx:
-        ctx.log(f"checkpoint loaded: {path.name} ({'SDXL' if st['sdxl'] else 'SD1.5'}, {lay}, {time.time() - t0:.1f} s)")
+        kind = (" v-prediction" + (" + zero SNR" if ztsnr else "")) if vpred else ""
+        ctx.log(f"checkpoint loaded: {path.name} ({'SDXL' if st['sdxl'] else 'SD1.5'}{kind}, {lay}, {time.time() - t0:.1f} s)")
     return pipe
 
 
@@ -1360,6 +1382,8 @@ def sample(ctx, model, positive, negative, latent, seed, steps, cfg, sampler, sc
         call = {"prompt_embeds": pe, "negative_prompt_embeds": npe, "guidance_scale": float(cfg),
                 "num_images_per_prompt": 1, "output_type": "latent",
                 "generator": torch.Generator(device="cpu").manual_seed(int(seed))}
+        if st.get("ztsnr") and not controls:  # zero SNR без rescale пережигает (Lin et al. 2023: φ = 0.7)
+            call["guidance_rescale"] = 0.7
         values = (pe, npe)
         if st["sdxl"]:
             ppe, nppe = rep(positive.pooled), rep(negative.pooled)
@@ -1629,14 +1653,15 @@ def encode_pil(ctx, vae, pil):
 
 
 def vae_decode(ctx, vae, latent, prefix="sd"):
-    """VAE Decode: LATENT → PNG в output/ (IMAGE = {"file": …}). Возвращает список файлов."""
-    return save_pils(ctx, decode_pils(ctx, vae, latent), prefix, latent.seed)
+    """VAE Decode: LATENT → PNG во временной temp/ (IMAGE = {"file": …}), как в ComfyUI: в output/ кладёт только
+    Save Image — раньше каждый кадр лежал в output/ дважды (sd_… и его копия от Save). Возвращает список файлов."""
+    return save_pils(ctx, decode_pils(ctx, vae, latent), prefix, latent.seed, temp=True)
 
 
-def save_pils(ctx, pils, prefix="sd", seed=None):
-    """PIL → PNG в output/, пути относительно проекта."""
+def save_pils(ctx, pils, prefix="sd", seed=None, temp=False):
+    """PIL → PNG в output/ (temp=True — в temp/), пути относительно проекта."""
     root = ctx.root if ctx else ROOT
-    out_dir = ctx.output_dir if ctx else ROOT / "output"
+    out_dir = root / "temp" if temp else ctx.output_dir if ctx else ROOT / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
     tag = f"_{seed}" if seed is not None else ""
@@ -1710,8 +1735,7 @@ def inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, 
     fill — область маски перед сэмплингом размывается (как «fill» в A1111): старый объект не просвечивает.
     patch — сохраняется только область (RGBA, альфа — растушёванная маска) для слоёв редактора.
     Возвращает (файл, {"x", "y", "w", "h", "W", "H"}) — где область лежит на картинке."""
-    torch, _diffusers, Image = _packages()
-    from PIL import ImageFilter
+    _torch, _diffusers, Image = _packages()
     root = ctx.root if ctx else ROOT
     with Image.open(root / image["file"]) as im:
         src = im.convert("RGB")
@@ -1721,6 +1745,30 @@ def inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, 
         msk = Image.composite(m.convert("L"), Image.new("L", m.size, 0), m.getchannel("A"))
     if msk.size != src.size:
         msk = msk.resize(src.size, Image.BILINEAR)
+    gen, paste, crop, box = redraw(ctx, model, positive, negative, vae, src, msk, seed, steps, cfg, sampler, scheduler,
+                                   denoise, only_masked, padding, resolution, feather, fill)
+    if patch:
+        layer = gen.convert("RGBA")
+        layer.putalpha(paste)
+        return save_pils(ctx, [layer], "naizer", int(seed))[0], box
+    return save_pils(ctx, [paste_area(src, gen, paste, crop)], "inpaint", int(seed))[0], box
+
+
+def paste_area(src, gen, paste, crop):
+    """Вклейка перерисованной области (redraw) в копию картинки по растушёванной маске."""
+    from PIL import Image
+    result = src.copy()
+    result.paste(Image.composite(gen, src.crop(crop), paste), crop[:2])
+    return result
+
+
+def redraw(ctx, model, positive, negative, vae, src, msk, seed, steps, cfg, sampler, scheduler, denoise,
+           only_masked=True, padding=48, resolution=0, feather=12, fill=False):
+    """Ядро inpaint на PIL в памяти: src — RGB, msk — L (белое — перерисовать). Возвращает (gen — область того же
+    размера, что вырезана, paste — её маска вклейки L, crop — (x0, y0, x1, y1), box). Detailer и Ultimate SD Upscale
+    зовут его по каждой рамке/тайлу на уже изменённой картинке."""
+    torch, _diffusers, Image = _packages()
+    from PIL import ImageFilter
     box = msk.point(lambda v: 255 if v > 16 else 0).getbbox()
     if not box:
         raise ValueError("the mask is empty — paint the area to change")
@@ -1760,13 +1808,7 @@ def inpaint(ctx, model, positive, negative, vae, image, mask, seed, steps, cfg, 
     paste = pmask.filter(ImageFilter.MaxFilter(3))
     if f:
         paste = paste.filter(ImageFilter.MaxFilter(min(f, 15) // 2 * 2 + 1)).filter(ImageFilter.GaussianBlur(f / 2))
-    if patch:
-        layer = gen.convert("RGBA")
-        layer.putalpha(paste)
-        return save_pils(ctx, [layer], "naizer", int(seed))[0], box
-    result = src.copy()
-    result.paste(Image.composite(gen, src.crop(crop), paste), crop[:2])
-    return save_pils(ctx, [result], "inpaint", int(seed))[0], box
+    return gen, paste, crop, box
 
 
 # ---------- холст (как Canvas InvokeAI) ----------

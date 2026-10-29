@@ -11,3 +11,4 @@ safetensors>=0.4
 peft>=0.11
 torchsde>=0.2.6       # сэмплер dpmpp_sde (DPMSolverSDEScheduler)
 pillow>=10.0
+av>=12               # видео Wan 2.2: запись MP4

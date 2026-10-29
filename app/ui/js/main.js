@@ -19,6 +19,7 @@ import { initCivitai, showCivitai } from './civitai.js';
 import { initAgent, showAgent, showChat } from './agent.js';
 import { initNaizer, showNaizer } from './naizer.js';
 import { initTocolar, showTocolar } from './tocolar.js';
+import { initVideo, showVideo } from './video.js';
 import { initPersist, restore, autosaveOn, setAutosave } from './persist.js';
 import { initTooltips, messageBox } from './kit.js';
 import { initBackend, queuePrompt, interrupt, clearQueue, reloadNodes, api, updateStatus } from './backend.js';
@@ -136,7 +137,7 @@ const MENU = [
     ['Workflow', '1', () => openWorkspace('graph')], ['Results', '2', () => openWorkspace('results')],
     ['Models', '3', () => openWorkspace('library')], ['Civitai', '4', () => openWorkspace('civitai')], ['CodeEditor', '5', () => openWorkspace('code')],
     ['Компоненты и обновления', '6', () => openWorkspace('components')], ['ImageNaizer', '7', () => openWorkspace('naizer')],
-    ['ToColar', '8', () => openWorkspace('tocolar')], ['AI Chat', '0', () => openWorkspace('chat')], ['UI Kit', '9', () => openWorkspace('uikit')], '-',
+    ['ToColar', '8', () => openWorkspace('tocolar')], ['Видео', '', () => openWorkspace('video')], ['AI Chat', '0', () => openWorkspace('chat')], ['UI Kit', '9', () => openWorkspace('uikit')], '-',
     ['Вписать граф', 'F', fit],
     [() => `${statsShown() ? '✓ ' : ''}Статистика системы (CPU, RAM, GPU)`, 'Ctrl+Shift+M', toggleStats],
     ['Сбросить раскладку рабочей области', '', () => resetLayout()],
@@ -284,6 +285,7 @@ async function boot() {
   initAgent();
   initNaizer();
   initTocolar();
+  initVideo();
   initPersist();
   addView('graph', 'Workflow', () => setCtxQuiet('workflow'));
   addView('results', 'Results', () => setCtxQuiet('results'));
@@ -293,6 +295,7 @@ async function boot() {
   addView('components', 'Компоненты', () => { setCtxQuiet('components'); showComponents(); });
   addView('naizer', 'ImageNaizer', () => { setCtxQuiet('naizer'); showNaizer(); });
   addView('tocolar', 'ToColar', showTocolar);
+  addView('video', 'Видео', showVideo);
   addView('chat', 'AI Chat', showChat);
   initUIKit(); // addView('uikit') — последней вкладкой
   addView('agent', 'AI Agent', showAgent, 'ai'); // панель, не рабочая область: ставится в любую область через ⋮

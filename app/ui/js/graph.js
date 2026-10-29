@@ -34,13 +34,14 @@ function readTheme() {
   K.field = K.bg;
 }
 export const TYPE_COLOR = { STRING: '#8bc78b', INT: '#7fb4e0', FLOAT: '#7fb4e0', BOOLEAN: '#e0a35f', COMBO: '#c9a0dc', IMAGE: '#64b5f6', JSON: '#f2c46b', '*': '#b5b8c0',
-  MODEL: '#b39ddb', CLIP: '#ffd500', VAE: '#ff6e6e', CONDITIONING: '#ffa931', LATENT: '#ff9cf9', CONTROL_NET: '#00d78d' };
+  MODEL: '#b39ddb', CLIP: '#ffd500', VAE: '#ff6e6e', CONDITIONING: '#ffa931', LATENT: '#ff9cf9', CONTROL_NET: '#00d78d', WAN: '#9fa8da', VIDEO: '#4dd0e1',
+  UPSCALE_MODEL: '#c6a1ff', BBOX_DETECTOR: '#ff8a65' };
 const CAT_COLOR = { Values: '#3b6e4a', Text: '#3d5f8a', JSON: '#8a6a2e', Logic: '#5c4a8a', AI: '#8a3d6a', Image: '#2e6f86', Files: '#5a5f68', Output: '#7a4a2e',
-  Loaders: '#4b5a8a', Conditioning: '#8a6a2e', Sampling: '#6a3d7a', Latent: '#8a3d5c', 'My Nodes': '#4a6a5a' };
+  Loaders: '#4b5a8a', Conditioning: '#8a6a2e', Sampling: '#6a3d7a', Latent: '#8a3d5c', 'My Nodes': '#4a6a5a', Video: '#2e7a7a', Portal: '#6a5a2e' };
 const catColor = cat => CAT_COLOR[cat] || `hsl(${[...String(cat)].reduce((a, c) => a + c.charCodeAt(0), 0) % 360} 35% 34%)`;
 const tcol = t => TYPE_COLOR[t] || '#b5b8c0';
 
-let cv = null, wrap = null, view = { x: 40, y: 20, z: 1 }, linking = null, hover = null, issues = new Map(), clip = null;
+let cv = null, wrap = null, view = { x: 40, y: 20, z: 1 }, linking = null, waiting = null, hover = null, issues = new Map(), clip = null;
 // пан/зум каждого воркфлоу — помнятся между запусками
 const VIEWS_KEY = 'maistep-graph-views';
 const views = new Map((() => { try { return Object.entries(JSON.parse(localStorage.getItem(VIEWS_KEY)) || {}); } catch { return []; } })());
@@ -50,6 +51,27 @@ const imgs = new Map(); // url → Image
 const imgRetry = new Map(); // url → сколько раз уже пробовали (сервер мог ещё не подняться)
 
 export const defs = () => S.nodes || {};
+// заглушка импорта (core.missing): ноды из чужого графа, которой нет в maistep; пины, значения и заметка — в её
+// props.missing (wfimport.js), описание строится по ним. В каталог нод не попадает.
+export const MISSING = 'core.missing';
+const missingDefs = new WeakMap();
+export function nodeDef(n) {
+  const def = defs()[n?.type];
+  if (n?.type !== MISSING || !def) return def;
+  const m = n.props?.missing || {};
+  let d = missingDefs.get(m);
+  if (!d) {
+    const vals = Object.entries(m.values || {}).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 160));
+    d = { ...def, title: `⚠ ${m.node || 'Missing Node'}`, cat: 'Missing',
+      hint: [`Нет в maistep (${m.source || 'импорт'}): заглушка держит пины и значения. Выключите (mute) — вход пройдёт насквозь; или замените ноду.`,
+        m.note, ...vals].filter(Boolean).join('\n'),
+      inputs: { ...def.inputs, ...Object.fromEntries((m.inputs || []).map(i => [i.name, { type: i.type || '*', optional: true }])) },
+      outputs: (m.outputs || []).map(o => ({ name: o.name, type: o.type || '*' })) };
+    missingDefs.set(m, d);
+  }
+  return d;
+}
+const catalog = () => Object.entries(defs()).filter(([t]) => t !== MISSING);
 const cur = () => doc('workflow', S.current.workflow);
 const selNode = () => (S.sel?.kind === 'node' && S.sel.doc === S.current.workflow ? S.sel.id : null);
 const selLink = () => (S.sel?.kind === 'link' && S.sel.doc === S.current.workflow ? S.sel.index : null);
@@ -59,16 +81,38 @@ export function compatible(outT, inT) {
   return outT === inT || outT === '*' || inT === '*' || (inT === 'STRING' && ['INT', 'FLOAT', 'JSON'].includes(outT));
 }
 
+// ---------- порталы ----------
+// Portal (portal.in) — вход любого типа; Portal Exit (portal.out) — выходы без проводов, props.portal = id портала.
+// Связь между ними невидимая (её дорисовывает сервер), на холсте — пунктир, когда портал или выход выделены.
+const PIN = 'portal.in', POUT = 'portal.out';
+const portalOf = (n, d = cur()) => d?.data.nodes.find(x => x.type === PIN && (x.id === n.props?.portal || x.props?.name === n.props?.portal));
+// тип, который несёт портал: тип выхода, подключённого к его входу (иначе «*»)
+function portalType(n, d = cur(), depth = 0) {
+  const p = n.type === POUT ? portalOf(n, d) : n;
+  const l = p && d.data.links.find(x => x.to === p.id && x.in === 'value');
+  const src = l && d.data.nodes.find(x => x.id === l.from);
+  if (!src || depth > 8) return '*';
+  if (src.type === PIN || src.type === POUT) return portalType(src, d, depth + 1);
+  return nodeDef(src)?.outputs.find(o => o.name === l.out)?.type || '*';
+}
+const portalName = p => p?.props?.name || p?.id || '?';
+function addExit(id, at) {
+  const d = cur(), p = d.data.nodes.find(x => x.id === id);
+  const exits = d.data.nodes.filter(x => x.type === POUT && portalOf(x, d)?.id === id);
+  const order = exits.reduce((m, x) => Math.max(m, Number(x.props?.order) || 0), 0) + 1;
+  return addNode(POUT, at || { x: p.x + (p.w || NW) + 120, y: p.y + exits.length * 140 }, { portal: id, order });
+}
+
 // ---------- раскладка ноды ----------
 function layout(n, d = cur()) {
-  const def = defs()[n.type];
+  const def = nodeDef(n);
   const linked = new Set(d.data.links.filter(l => l.to === n.id).map(l => l.in));
   // вход «needs: vision» (картинка для LLM) прячем, если выбранная модель картинки не принимает
   const noVision = llmModel(n, def)?.vision === false;
-  const ins = Object.entries(def?.inputs || {}).filter(([k, i]) => !(i.needs === 'vision' && noVision && !linked.has(k)));
+  const ins = Object.entries(def?.inputs || {}).filter(([k, i]) => !i.hidden && !(i.needs === 'vision' && noVision && !linked.has(k)));
   const pins = ins.filter(([k, i]) => !i.widget || linked.has(k)).map(([k]) => k);
   const widgets = ins.filter(([k, i]) => i.widget && !linked.has(k)).map(([k]) => k);
-  const outs = def?.outputs || [];
+  const outs = n.type === PIN || n.type === POUT ? (def?.outputs || []).map(o => ({ ...o, type: portalType(n, d) })) : def?.outputs || [];
   const slots = Math.max(pins.length, outs.length);
   const w = n.w || NW;
   const top = n.y + HEAD + 4;
@@ -92,7 +136,7 @@ function layout(n, d = cur()) {
 }
 
 // модель LLM ноды (если у ноды есть виджет выбора модели): метаданные из каталога или null
-export function llmModel(n, def = defs()[n.type]) {
+export function llmModel(n, def = nodeDef(n)) {
   const e = Object.entries(def?.inputs || {}).find(([, i]) => i.picker === 'llm_model');
   if (!e) return null;
   const [k, i] = e;
@@ -100,13 +144,13 @@ export function llmModel(n, def = defs()[n.type]) {
   return modelMeta(pid, n.props?.[k] ?? i.default);
 }
 const providersUsed = d => [...new Set(d.data.nodes.flatMap(n => {
-  const def = defs()[n.type], e = Object.entries(def?.inputs || {}).find(([, i]) => i.picker === 'llm_model');
+  const def = nodeDef(n), e = Object.entries(def?.inputs || {}).find(([, i]) => i.picker === 'llm_model');
   return e ? [n.props?.[e[1].provider_input] ?? def.inputs[e[1].provider_input]?.default] : [];
 }).filter(Boolean))];
 
 // превью: { kind: 'text'|'image'|'error'|'stream', text, urls, h, live, step }
 // картинки: поэтапное превью генерации → результат ноды → файл, выбранный во входе с upload: 'image' (Load Image)
-function previewOf(n, def = defs()[n.type], pw = (n.w || NW) - 20) {
+function previewOf(n, def = nodeDef(n), pw = (n.w || NW) - 20) {
   const run = S.run?.wf === S.current.workflow ? S.run : null;
   const live = run?.preview?.[n.id];
   if (live) return imagePv([live.image], pw, { live: true, step: live.step });
@@ -119,14 +163,15 @@ function previewOf(n, def = defs()[n.type], pw = (n.w || NW) - 20) {
     if (tags.length) return tagsPv(tags, pw);
   }
   if (o) {
-    const images = [...(o._ui?.images || []), ...(def?.output ? Object.values(o).filter(v => v?.image).map(v => v.image) : [])];
+    // видео — кадр-обложка (poster); сам ролик — во вкладке «Видео» и в Results
+    const images = [...(o._ui?.images || []), ...(o._ui?.videos || []).map(v => v.poster).filter(Boolean), ...(def?.output ? Object.values(o).filter(v => v?.image).map(v => v.image) : [])];
     if (images.length) return imagePv([...new Set(images)].map(fileUrl), pw);
     const text = o._ui?.text ?? Object.values(o).find(v => v?.text != null)?.text;
     if (text != null && (def?.output || n.preview !== false)) return { kind: 'text', text: String(text), h: lineCount(text) * 15 + 12 };
   }
   const up = Object.entries(def?.inputs || {}).find(([, i]) => i.upload === 'image');
   const f = up && (n.props?.[up[0]] ?? up[1].default);
-  if (f) return imagePv([fileUrl(/^(input|output)\//.test(f) ? f : `input/${f}`)], pw, { input: true });
+  if (f) return imagePv([fileUrl(/^(input|output|temp)\//.test(f) ? f : `input/${f}`)], pw, { input: true });
   return null;
 }
 // сетка картинок: высота — по пропорциям первой загруженной (до загрузки — квадрат)
@@ -200,6 +245,11 @@ function liveImage(url) {
 }
 
 // ---------- отрисовка ----------
+// пунктир на холсте всегда бежит: пока он нарисован, draw() просит следующий кадр (один на кадр)
+let antsFrame = 0;
+const antsOffset = (period = 10) => -(performance.now() / 28) % period; // период = сумма штриха и пробела — без рывка
+function antsNext() { if (!antsFrame) antsFrame = requestAnimationFrame(() => { antsFrame = 0; draw(); }); }
+
 export function draw() {
   const d = cur();
   if (!cv || !wrap.isConnected) return;
@@ -232,10 +282,29 @@ export function draw() {
     curve(c, p, q);
     c.globalAlpha = 1;
   });
-  if (linking) {
-    c.strokeStyle = tcol(linking.type); c.lineWidth = 2.4; c.setLineDash([6, 4]);
-    linking.reverse ? curve(c, linking.to, linking.from) : curve(c, linking.from, linking.to);
-    c.setLineDash([]);
+  // портал ↔ выходы: пунктир, когда выделен портал или один из его выходов
+  const sn = byId.get(selNode());
+  const sp = sn?.type === PIN ? sn : sn?.type === POUT ? portalOf(sn, d) : null;
+  if (sp && L.get(sp.id)) {
+    c.save(); c.setLineDash([3, 6]); c.lineDashOffset = antsOffset(9); c.lineWidth = 1.6; c.globalAlpha = 0.7;
+    antsNext();
+    c.strokeStyle = tcol(portalType(sp, d));
+    const a = L.get(sp.id).outPos.value;
+    for (const x of d.data.nodes) {
+      if (x.type !== POUT || portalOf(x, d)?.id !== sp.id) continue;
+      const b = L.get(x.id);
+      if (a && b) curve(c, a, { x: x.x, y: b.inPos.portal?.y ?? x.y + HEAD / 2 });
+    }
+    c.restore();
+  }
+  const ln = linking || waiting; // waiting — связь брошена в пустоту и ждёт ноду из поиска
+  if (ln) {
+    // чёрточки бегут по направлению данных (выход → вход), пока связь тянется
+    c.strokeStyle = tcol(ln.type); c.lineWidth = 2.4; c.setLineDash([6, 4]);
+    c.lineDashOffset = antsOffset();
+    antsNext();
+    ln.reverse ? curve(c, ln.to, ln.from) : curve(c, ln.from, ln.to);
+    c.setLineDash([]); c.lineDashOffset = 0;
   }
   // ноды вне экрана не рисуем
   const v0 = toWorld({ x: 0, y: 0 }), v1 = toWorld({ x: W, y: H });
@@ -259,6 +328,7 @@ export function draw() {
 
 // значение виджета для показа: модель библиотеки — имя файла без папок и расширения
 function widgetText(n, def, k, inp, v) {
+  if (inp.portal) { const p = portalOf(n); return p ? `◉ ${portalName(p)}` : v ? `нет «${v}»` : 'выберите портал'; }
   if (inp.type === 'BOOLEAN') return v ? 'да' : 'нет';
   if (v === '' || v == null) return inp.picker || inp.upload ? 'не выбрано' : '—';
   if (inp.picker === 'library_model' || inp.upload) return String(v).split(/[\\/]/).pop().replace(/\.(safetensors|ckpt|pt|pth|bin|gguf)$/i, '');
@@ -273,7 +343,8 @@ function drawNode(c, n, L) {
   const running = S.run?.wf === S.current.workflow && S.run.node === n.id;
   const done = !running && outputsOf(n.id) && !bad;
   const muted = n.mode === 'mute';
-  const cat = def ? catColor(def.cat) : K.err;
+  const missing = n.type === MISSING;
+  const cat = missing ? K.warn : def ? catColor(def.cat) : K.err;
   c.globalAlpha = muted ? 0.45 : 1;
   // корпус
   c.shadowColor = '#0009'; c.shadowBlur = sel ? 18 : 10; c.shadowOffsetY = 2;
@@ -288,10 +359,10 @@ function drawNode(c, n, L) {
     c.fillStyle = K.ok; c.fillRect(n.x, n.y + HEAD - 2, w * clamp(S.run.progress.value / S.run.progress.max, 0, 1), 2);
   }
   c.restore();
-  c.strokeStyle = running ? K.ok : bad ? K.err : sel ? K.sel : K.edge;
-  c.lineWidth = running || bad || sel ? 2 : 1; rr(c, n.x, n.y, w, L.h, R); c.stroke();
+  c.strokeStyle = running ? K.ok : sel ? K.sel : missing ? K.warn : bad ? K.err : K.edge;
+  c.lineWidth = running || bad || sel || missing ? 2 : 1; rr(c, n.x, n.y, w, L.h, R); c.stroke();
   // заголовок + статус справа
-  const title = n.title || def?.title || n.type;
+  const title = n.title || (n.type === PIN ? `Portal · ${portalName(n)}` : n.type === POUT ? `Exit ${n.props?.order ?? ''} · ${portalName(portalOf(n)) || '—'}` : def?.title || n.type);
   let right = muted ? 'выкл' : n.id, rc = K.dim;
   const o = outputsOf(n.id);
   if (running) { const p = S.run.progress; right = p?.max ? `${p.value}/${p.max}` : '…'; rc = K.ok; }
@@ -319,15 +390,22 @@ function drawNode(c, n, L) {
   const lod = view.z < 0.3;
   // слоты
   c.font = `11.5px ${FONT}`;
+  // тянется связь: неподходящие пины гаснут — видно, куда её можно бросить
+  const fitIn = t => !linking || linking.reverse || (n.id !== linking.node && compatible(linking.type, t));
+  const fitOut = t => !linking || !linking.reverse || (n.id !== linking.node && compatible(t, linking.type));
   pins.forEach((k, i) => {
     const inp = def.inputs[k], y = top + i * ROW + ROW / 2;
+    c.globalAlpha = fitIn(inp.type) ? 1 : 0.25;
     dot(c, L.inPos[k], tcol(inp.type), isLinkedIn(n.id, k), hover?.node === n.id && hover.in === k);
+    c.globalAlpha = muted ? 0.45 : 1;
     if (lod) return;
     c.fillStyle = inp.optional ? K.dim : K.fg2; c.fillText(clipText(c, k, w / 2 - 20), n.x + 14, y + 4);
   });
   outs.forEach((oo, i) => {
     const y = top + i * ROW + ROW / 2;
+    c.globalAlpha = fitOut(oo.type) ? 1 : 0.25;
     dot(c, L.outPos[oo.name], tcol(oo.type), true, hover?.node === n.id && hover.out === oo.name);
+    c.globalAlpha = muted ? 0.45 : 1;
     if (lod) return;
     c.fillStyle = K.fg2; c.textAlign = 'right'; c.fillText(clipText(c, oo.name, w / 2 - 20), n.x + w - 14, y + 4); c.textAlign = 'left';
   });
@@ -634,6 +712,7 @@ function onDown(e) {
     if (inp.type === 'BOOLEAN') return setProp(t.node, t.widget, !v, false);
     if (['INT', 'FLOAT'].includes(inp.type) && t.side) return setProp(t.node, t.widget, stepNum(inp, v, t.side), true);
     if (inp.type === 'COMBO') return comboMenu(e, t.node, t.widget, inp, v);
+    if (inp.portal) return portalMenu(e, t.node, v);
     if (inp.upload) return imagePicker(e, { value: v, onPick: f => setProp(t.node, t.widget, f, false) });
     if (inp.picker === 'library_model') {
       const cat = inp.cat || (t.n.props?.[inp.cat_input] ?? t.L.def.inputs[inp.cat_input]?.default);
@@ -720,7 +799,7 @@ function startLink(l) {
         const it = t.L.def.inputs[target].type;
         if (compatible(l2.type, it)) connect(l2.node, l2.pin, t.node, target);
         else emit('log', { src: 'editor', level: 'warn', text: `нельзя соединить ${l2.type} → ${it}` });
-      } else if (!t) searchBox(ev, p, { from: l2 });
+      } else if (!t) { searchBox(ev, p, { from: l2 }); waiting = { ...l2, to: p, src: l2 }; }
     } else {
       let target = t?.out;
       if (t && !target && t.node !== l2.node) target = t.L.outs.find(o => compatible(o.type, l2.type))?.name;
@@ -728,7 +807,7 @@ function startLink(l) {
         const ot = t.L.outs.find(o => o.name === target).type;
         if (compatible(ot, l2.type)) connect(t.node, target, l2.node, l2.pin);
         else emit('log', { src: 'editor', level: 'warn', text: `нельзя соединить ${ot} → ${l2.type}` });
-      } else if (!t) searchBox(ev, p, { to: l2 });
+      } else if (!t) { searchBox(ev, p, { to: l2 }); waiting = { ...l2, to: p, src: l2 }; }
     }
     draw();
   });
@@ -766,7 +845,10 @@ function onWheel(e) {
 
 // ---------- всплывающие: поиск нод, правка виджета, меню ----------
 let float = null;
-function closeFloat() { float?.remove(); float = null; }
+function closeFloat() {
+  float?.remove(); float = null;
+  if (waiting) { waiting = null; draw(); }
+}
 function place(el, e) {
   document.body.append(el);
   const r = el.getBoundingClientRect();
@@ -776,35 +858,81 @@ function place(el, e) {
   float = el;
 }
 
+// ---------- умный подбор ноды для связи ----------
+// что обычно ставят после выхода / перед входом этого типа (первые — выше)
+const NEXT = {
+  IMAGE: ['image.preview', 'image.save', 'sd.vae_encode', 'image.fit', 'sd.controlnet_apply'],
+  LATENT: ['sd.vae_decode', 'sd.ksampler', 'sd.magic_ksampler', 'sd.latent_upscale'],
+  MODEL: ['sd.ksampler', 'sd.magic_ksampler', 'sd.lora'],
+  CLIP: ['sd.text_encode', 'sd.lora', 'sd.clip_skip'],
+  VAE: ['sd.vae_decode', 'sd.vae_encode'],
+  CONDITIONING: ['sd.ksampler', 'sd.magic_ksampler', 'sd.controlnet_apply'],
+  CONTROL_NET: ['sd.controlnet_apply'],
+  STRING: ['output.show', 'sd.text_encode', 'llm.chat', 'text.template'],
+};
+const PREV = {
+  IMAGE: ['image.load', 'sd.vae_decode'], LATENT: ['sd.empty_latent', 'sd.vae_encode', 'sd.ksampler'],
+  MODEL: ['sd.checkpoint', 'sd.lora'], CLIP: ['sd.checkpoint', 'sd.lora', 'sd.clip_skip'], VAE: ['sd.checkpoint', 'sd.vae'],
+  CONDITIONING: ['sd.text_encode', 'sd.controlnet_apply'], CONTROL_NET: ['sd.controlnet_load'], STRING: ['text.template', 'llm.chat'],
+};
+const PICKS = 'maistep-link-picks'; // что пользователь выбирал для типа — поднимается выше
+const picks = () => { try { return JSON.parse(localStorage.getItem(PICKS)) || {}; } catch { return {}; } };
+// насколько пины подходят: свой тип — 3, STRING из числа/JSON — 2, «любой» (*) — 1
+const fitness = (outT, inT) => (outT === inT ? 3 : !compatible(outT, inT) ? 0 : inT === '*' || outT === '*' ? 1 : 2);
+function linkMatches(want, dir) {
+  const learned = picks();
+  const family = want.toLowerCase();
+  return catalog().map(([type, d]) => {
+    const pins = dir === 'from' ? Object.entries(d.inputs).map(([k, i], n) => ({ k, f: fitness(want, i.type), n, opt: i.optional }))
+      : (d.outputs || []).map((o, n) => ({ k: o.name, f: fitness(o.type, want), n }));
+    const pin = pins.filter(x => x.f).sort((a, b) => b.f - a.f || (a.opt ? 1 : 0) - (b.opt ? 1 : 0) || a.n - b.n)[0];
+    if (!pin) return null;
+    const fav = (dir === 'from' ? NEXT : PREV)[want]?.indexOf(type) ?? -1;
+    const score = pin.f * 1000 + (fav >= 0 ? 400 - fav * 40 : 0) + Math.min(5, learned[`${dir}:${want}>${type}`] || 0) * 60
+      + (String(d.cat).toLowerCase().includes(family) ? 100 : 0) + (pin.n === 0 ? 20 : 0);
+    return { type, d, pin: pin.k, loose: pin.f === 1, score };
+  }).filter(Boolean).sort((a, b) => b.score - a.score || a.d.title.localeCompare(b.d.title));
+}
+
 // поиск ноды; ctx.from — связь от выхода (показать ноды с подходящим входом), ctx.to — к входу
 export function searchBox(e, at, ctx = {}) {
   closeFloat();
   const want = ctx.from ? ctx.from.type : ctx.to ? ctx.to.type : null;
-  const fits = def => !want ? true : ctx.from ? Object.values(def.inputs).some(i => compatible(want, i.type)) : def.outputs.some(o => compatible(o.type, want));
-  const all = Object.entries(defs()).filter(([, d]) => fits(d));
+  const dir = ctx.from ? 'from' : 'to';
+  // без связи — весь каталог; со связью — по уместности: свой тип, частые после этого выхода, выбранное раньше;
+  // ноды, которые примут что угодно (*), — в конце, отдельно
+  const all = want ? linkMatches(want, dir) : catalog().map(([type, d]) => ({ type, d }));
   let list = all, idx = 0;
   const input = h('input', { placeholder: want ? `Нода для ${want}…` : 'Найти ноду…', spellcheck: false });
   const box = h('div.gsearch');
-  const pick = ([type, def]) => {
+  const pick = m => {
     closeFloat();
-    const id = addNode(type, at);
+    const id = addNode(m.type, at);
     if (!id) return;
-    if (ctx.from) {
-      const k = Object.entries(def.inputs).find(([, i]) => compatible(want, i.type))?.[0];
-      if (k) connect(ctx.from.node, ctx.from.pin, id, k);
-    } else if (ctx.to) {
-      const o = def.outputs.find(x => compatible(x.type, want));
-      if (o) connect(id, o.name, ctx.to.node, ctx.to.pin);
+    if (want) {
+      const p = picks(), key = `${dir}:${want}>${m.type}`;
+      p[key] = (p[key] || 0) + 1;
+      try { localStorage.setItem(PICKS, JSON.stringify(p)); } catch {}
     }
+    if (ctx.from) connect(ctx.from.node, ctx.from.pin, id, m.pin);
+    else if (ctx.to) connect(id, m.pin, ctx.to.node, ctx.to.pin);
   };
+  const row = (m, i) => h(`div.it${i === idx ? '.on' : ''}`, { onmousedown: ev => { ev.preventDefault(); pick(m); } },
+    h('i', { style: { background: catColor(m.d.cat) } }), h('span', {}, m.d.title),
+    m.pin ? h('span.pin', {}, dir === 'from' ? `→ ${m.pin}` : `${m.pin} →`) : null,
+    h('span.dim', {}, `${m.d.cat} · ${m.type}`));
   const render = () => {
-    box.replaceChildren(...list.slice(0, 60).map(([t, d], i) => h(`div.it${i === idx ? '.on' : ''}`, { onmousedown: ev => { ev.preventDefault(); pick([t, d]); } },
-      h('i', { style: { background: catColor(d.cat) } }), h('span', {}, d.title), h('span.dim', {}, `${d.cat} · ${t}`))));
-    box.children[idx]?.scrollIntoView({ block: 'nearest' });
+    const rows = [];
+    list.slice(0, 60).forEach((m, i) => {
+      if (m.loose && (!i || !list[i - 1].loose)) rows.push(h('div.sep', {}, 'принимают любой тип'));
+      rows.push(row(m, i));
+    });
+    box.replaceChildren(...rows);
+    box.querySelector('.it.on')?.scrollIntoView({ block: 'nearest' });
   };
   input.addEventListener('input', () => {
     const q = input.value.toLowerCase().split(/\s+/).filter(Boolean);
-    list = all.filter(([t, d]) => q.every(w => `${t} ${d.title} ${d.cat} ${d.hint || ''}`.toLowerCase().includes(w)));
+    list = all.filter(({ type: t, d }) => q.every(w => `${t} ${d.title} ${d.cat} ${d.hint || ''}`.toLowerCase().includes(w)));
     idx = 0; render();
   });
   input.addEventListener('keydown', ev => {
@@ -867,11 +995,24 @@ function comboMenu(e, id, k, inp, v) {
   place(el, e);
 }
 
+function portalMenu(e, id, v) {
+  closeFloat();
+  const ps = cur().data.nodes.filter(x => x.type === PIN);
+  const el = h('div.ui-menu.gfloat-menu', { onpointerdown: ev => ev.stopPropagation() },
+    ...(ps.length ? ps.map(p => h(`div.item${p.id === v ? '.on' : ''}`, { onclick: () => { setProp(id, 'portal', p.id, false); closeFloat(); } },
+      h('span.ic', {}, p.id === v ? icon('check', { size: 14 }) : null), h('span', {}, portalName(p)), h('span.sc', {}, p.id)))
+      : [h('div.item', {}, h('span.ic'), h('span', {}, 'в графе нет Portal — добавьте его'))]));
+  place(el, e);
+}
+
 function nodeMenu(e, t) {
   closeFloat();
   const it = (ic, label, fn, sc) => h('div.item', { onclick: () => { closeFloat(); fn(); } }, h('span.ic', {}, ic ? icon(ic, { size: 16 }) : null), h('span', {}, label), sc ? h('span.sc', {}, sc) : null);
   const el = h('div.ui-menu.gfloat-menu', { onpointerdown: ev => ev.stopPropagation() },
     it('play', 'Выполнить до этой ноды', () => queuePrompt(S.current.workflow, 1, [t.node])),
+    t.n.type === PIN ? it('add', 'Создать выход (Portal Exit)', () => addExit(t.node)) : null,
+    t.n.type === POUT && portalOf(t.n) ? it('add', 'Ещё выход этого портала', () => addExit(portalOf(t.n).id)) : null,
+    t.n.type === POUT && portalOf(t.n) ? it('right', 'К порталу', () => select({ kind: 'node', doc: S.current.workflow, id: portalOf(t.n).id })) : null,
     h('div.sep'),
     it('copy', 'Дублировать', () => duplicate(t.node), 'Ctrl+D'),
     it(t.n.mode === 'mute' ? 'show' : 'hide', t.n.mode === 'mute' ? 'Включить' : 'Выключить', () => toggleMute(t.node), 'M'),
@@ -891,7 +1032,8 @@ function onContext(e) {
 }
 
 // ---------- перетаскивание файлов ----------
-// Картинка с графом внутри (PNG maistep или ComfyUI) или .json воркфлоу на пустое место — открыть граф новым воркфлоу
+// Картинка с графом или параметрами внутри (PNG/JPEG/WebP: maistep, ComfyUI, A1111/Forge/Civitai, NovelAI, InvokeAI,
+// SwarmUI) или .json воркфлоу на пустое место — открыть граф новым воркфлоу
 // (wfimport.js); Shift — как обычно, нодой Load Image. На ноду Load Image — всегда заменить её файл.
 async function onDrop(e) {
   e.preventDefault();
@@ -918,7 +1060,7 @@ async function onDrop(e) {
       if (g) { await importGraph(g); other = other.filter(x => x !== f); }
     }
     const url = (data['text/uri-list'] || '').split('\n').find(l => l && !l.startsWith('#'))?.replace(/&amp;/g, '&');
-    const img = files.find(f => f.type === 'image/png' || /\.png$/i.test(f.name)) || (IMGX.test(mai || '') ? mai : url && ownFile(url));
+    const img = files.find(f => /^image\/(png|jpeg|webp)$/.test(f.type) || /\.(png|jpe?g|webp)$/i.test(f.name)) || (IMGX.test(mai || '') ? mai : url && ownFile(url));
     const g = img && await graphFromImage(img);
     if (g) return importGraph(g);
   }
@@ -951,7 +1093,7 @@ async function onPaste(e) {
   if (clipboardHasImage(e) || /\/view\?file=/.test(e.clipboardData?.getData('text/plain') || '')) {
     e.preventDefault();
     const sel = cur()?.data.nodes.find(n => n.id === selNode());
-    const upKey = sel && Object.entries(defs()[sel.type]?.inputs || {}).find(([, i]) => i.upload === 'image')?.[0];
+    const upKey = sel && Object.entries(nodeDef(sel)?.inputs || {}).find(([, i]) => i.upload === 'image')?.[0];
     const files = await imagesFromClipboard(e);
     if (files.length && upKey) setProp(sel.id, upKey, files[0], false);
     else placeImages(files, at);
@@ -982,7 +1124,7 @@ function palette() {
   const groups = {};
   const ORDER = ['Loaders', 'Conditioning', 'Sampling', 'Latent', 'Image', 'AI', 'Text', 'Values', 'Logic', 'JSON', 'Files', 'Output'];
   const rank = c => (ORDER.includes(c) ? ORDER.indexOf(c) : ORDER.length);
-  for (const [t, def] of Object.entries(defs()).sort((a, b) => rank(a[1].cat) - rank(b[1].cat))) (groups[def.cat] ||= []).push([t, def]);
+  for (const [t, def] of catalog().sort((a, b) => rank(a[1].cat) - rank(b[1].cat))) (groups[def.cat] ||= []).push([t, def]);
   const filter = h('input.pal-q', { placeholder: 'Фильтр нод…', spellcheck: false });
   const list = h('div');
   const fill = () => {

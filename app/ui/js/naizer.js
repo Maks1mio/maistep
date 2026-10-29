@@ -22,6 +22,7 @@ import { popup } from './ctxmenu.js';
 import { libraryPicker } from './library.js';
 import { cnNames, cnPick, loadCn, cnMissing } from './cnmodels.js';
 import { fetchRec } from './magic.js';
+import { graphFromImage, graphData } from './wfimport.js';
 import { K } from './graph.js';
 import { imagePicker, imagesFromTransfer, imagesFromClipboard, clipboardHasImage } from './images.js';
 
@@ -29,6 +30,7 @@ const LS = 'maistep-canvas', OLD_LS = 'maistep-naizer';
 const DEF = {
   docs: {}, cur: '', prompt: '', denoise: 0.75, fill: 0.85, ckpt: '', batch: 1, tool: 'brush', size: 40, color: '#D9B38C', side: 300, stage: true,
   paint: 'raster', adv: false,
+  wf: null, // параметры, взятые из воркфлоу: { id, title, negative, loras: [{ name, strength, clip }], clip_skip }
 };
 const st = (() => { try { return { ...DEF, ...JSON.parse(localStorage.getItem(LS)) }; } catch { return { ...DEF }; } })();
 const keep = debounce(() => { try { localStorage.setItem(LS, JSON.stringify(st)); } catch {} }, 200);
@@ -369,9 +371,9 @@ function fitToBbox(L) {
 
 // картинка → новый растровый слой (на пустом холсте — рамка по картинке)
 async function addImage(file) {
-  if (!file) return;
+  if (!file) return false;
   const im = await loadPic(file);
-  if (!im) return log('error', `не открылась картинка ${file} (сервер запущен?)`);
+  if (!im) { log('error', `не открылась картинка ${file} (сервер запущен?)`); return false; }
   const d = doc(), first = !rasters().some(hasPix);
   pushHist();
   const r = d.bbox, w = im.naturalWidth, hh = im.naturalHeight;
@@ -382,7 +384,92 @@ async function addImage(file) {
   c.getContext('2d').drawImage(im, 0, 0);
   bm.set(L.id, c); bump(L.id, false);
   keep(); refresh();
-  if (first) fit();
+  if (first) { fit(); await paramsFromImage(file); }
+  return true;
+}
+
+// первая картинка холста несёт граф своего запуска (PNG maistep или ComfyUI) — берём из него чекпоинт, LoRA, промпты,
+// clip skip и сэмплер, как «из воркфлоу»; seed не берём — варианты должны отличаться
+async function paramsFromImage(file) {
+  try {
+    const found = await graphFromImage(file);
+    const g = found && await graphData(found);
+    if (!g) return;
+    applyParams(g.data, { id: '', title: `картинки ${file.split('/').pop()}` }, { seed: false });
+  } catch {} // без KSampler / Canvas Generate в графе — параметров нет, холст как был
+}
+
+// ---------- параметры из воркфлоу ----------
+// от первого KSampler назад: модель → цепочка LoRA → чекпоинт, clip → Clip Skip, positive/negative → CLIP Text Encode
+const SAMPLERS = ['sd.ksampler', 'sd.magic_ksampler', 'sd.canvas', 'sd.inpaint'];
+function wfParams(wf) {
+  const nodes = new Map((wf.nodes || []).map(n => [n.id, n])), on = n => n && n.mode !== 'mute';
+  const src = (id, inn) => { const l = (wf.links || []).find(l => l.to === id && l.in === inn); return l ? nodes.get(l.from) : null; };
+  const smps = (wf.nodes || []).filter(n => SAMPLERS.includes(n.type) && on(n));
+  // первый проход: латент не из другого сэмплера (второй проход hires fix — после Upscale Latent)
+  const fromSampler = n => {
+    for (let x = src(n.id, 'latent_image'), k = 0; x && k < 20; x = src(x.id, 'samples') || src(x.id, 'latent'), k++) if (SAMPLERS.includes(x.type)) return true;
+    return false;
+  };
+  const smp = smps.find(n => !fromSampler(n)) || smps[0];
+  if (!smp) throw new Error(`в «${wf.title || wf.id}» нет KSampler`);
+  const loras = [];
+  let ckpt = '', clipSkip = null;
+  for (let x = src(smp.id, 'model'), k = 0; x && k < 40; k++) {
+    if (x.type === 'sd.checkpoint') { ckpt = x.props?.ckpt_name || ''; break; }
+    if (x.type === 'sd.lora' && on(x) && x.props?.lora_name) loras.unshift({ name: x.props.lora_name, strength: +(x.props.strength_model ?? 1), clip: +(x.props.strength_clip ?? x.props.strength_model ?? 1) });
+    x = src(x.id, 'model');
+  }
+  const text = inn => {
+    for (let x = src(smp.id, inn), k = 0; x && k < 10; k++) {
+      if (x.type === 'sd.text_encode') {
+        for (let c = src(x.id, 'clip'), j = 0; c && j < 40; c = src(c.id, 'clip'), j++) if (c.type === 'sd.clip_skip' && on(c)) { clipSkip ??= +c.props?.stop_at_clip_layer; break; }
+        return x.props?.text || '';
+      }
+      x = src(x.id, 'conditioning') || src(x.id, inn);
+    }
+    return '';
+  };
+  const positive = text('positive'), negative = text('negative'), P = smp.props || {};
+  return { ckpt, loras, clip_skip: clipSkip, positive, negative,
+    ks: { steps: P.steps, cfg: P.cfg, sampler_name: P.sampler_name, scheduler: P.scheduler, ...(P.seed >= 0 ? { seed: P.seed } : {}) },
+    denoise: (smp.type === 'sd.canvas' || smp.type === 'sd.inpaint' || src(smp.id, 'latent_image')?.type === 'sd.vae_encode') && P.denoise < 1 ? +P.denoise : null };
+}
+// взять параметры воркфлоу на холст: чекпоинт, LoRA, промпты, clip skip, сэмплер (и силу img2img)
+function applyWorkflow(id) {
+  const d = S.docs.workflow?.get(id);
+  if (!d) throw new Error(`нет воркфлоу «${id}»`);
+  return { ...applyParams(d.data, { id, title: d.data.title || id }), workflow: id };
+}
+function applyParams(data, { id, title }, { seed = true } = {}) {
+  const p = wfParams(data);
+  if (p.ckpt) { st.ckpt = p.ckpt; rec = null; loadRec(); }
+  st.ks = Object.fromEntries(Object.entries(p.ks).filter(([k, v]) => v != null && v !== '' && (seed || k !== 'seed')));
+  if (p.positive) st.prompt = p.positive;
+  if (p.denoise != null) st.denoise = clamp(p.denoise, 0.05, 1);
+  st.wf = { id, title, negative: p.negative, loras: p.loras, clip_skip: p.clip_skip };
+  if (promptEl) promptEl.value = st.prompt;
+  keep(); refresh();
+  log('info', `параметры из «${st.wf.title}»: ${p.ckpt || 'чекпоинт прежний'}, LoRA ${p.loras.length}, ${p.ks.steps} шагов, cfg ${p.ks.cfg}`);
+  return p;
+}
+function wfRow(row) {
+  const wfs = [...(S.docs.workflow || new Map())].filter(([, d]) => (d.data.nodes || []).some(n => SAMPLERS.includes(n.type)));
+  const pick = id => { try { applyWorkflow(id); } catch (e) { log('error', e.message); } };
+  const dd = dropdown(st.wf?.id || '', [['', 'нет (Magic)'], ...wfs.map(([id, d]) => [id, d.data.title || id])], id => {
+    if (id) pick(id); else { st.wf = null; keep(); refresh(); }
+  });
+  const W = st.wf;
+  return [row('из воркфлоу', dd),
+    W ? h('div.nz-wf', {},
+      ...(W.loras.length ? W.loras.map((l, i) => h('span.nz-lora', { 'data-tip': l.name },
+        h('span.t', {}, l.name.replace(/\.\w+$/, '')), h('span.dim', {}, ` ${+l.strength.toFixed(2)}`),
+        h('button.ui-ib', { 'data-tip': 'Убрать LoRA', onclick: () => { W.loras.splice(i, 1); keep(); refresh(); } }, icon('closeSmall', { size: 14 }))))
+        : [h('span.dim', {}, 'без LoRA')]),
+      W.negative ? h('div.hint', { 'data-tip': W.negative }, `негатив: ${W.negative.slice(0, 90)}${W.negative.length > 90 ? '…' : ''}`) : null,
+      h('div.row', {},
+        W.id ? h('button.ui-btn.secondary.slim', { onclick: () => pick(W.id), 'data-tip': 'Взять заново (после правок воркфлоу)' }, 'Обновить') : null,
+        h('button.ui-btn.secondary.slim', { onclick: () => { st.wf = null; keep(); refresh(); } }, 'Отвязать'))) : null];
 }
 // холсты в Hierarchy: новый (рамка 1024 — сервер всё равно масштабирует её к родному размеру модели), открыть,
 // переименовать, удалить; у каждого своя отмена не хранится — история сбрасывается при переключении
@@ -829,7 +916,8 @@ async function next() {
   if (!b || b.left <= 0) { busy = null; refresh(); return; }
   b.left -= 1;
   const q = rec?.prompt || { positive: 'masterpiece, best quality', negative: 'lowres, worst quality, bad anatomy' };
-  const positive = [q.positive, (st.prompt || '').trim()].filter(Boolean).join(', ');
+  const W = st.wf; // параметры из воркфлоу: промпт уже полный — без качества Magic, свой негатив и LoRA
+  const positive = W ? (st.prompt || '').trim() || q.positive : [q.positive, (st.prompt || '').trim()].filter(Boolean).join(', ');
   // свои значения из блока «Сэмплер» перекрывают рекомендацию Magic; пустые — авто
   const ks = st.ks || {}, p = { ...(rec?.params || {}), ...Object.fromEntries(Object.entries(ks).filter(([k, v]) => k !== 'seed' && v != null && v !== '')) };
   b.k += 1;
@@ -838,9 +926,9 @@ async function next() {
     id: 'naizer', title: 'ImageNaizer: холст',
     nodes: [
       { id: 'ckpt', type: 'sd.checkpoint', props: { ckpt_name: b.ck } },
-      { id: 'skip', type: 'sd.clip_skip', props: { stop_at_clip_layer: rec?.clip_skip || -2 } },
+      { id: 'skip', type: 'sd.clip_skip', props: { stop_at_clip_layer: W ? W.clip_skip || -1 : rec?.clip_skip || -2 } },
       { id: 'pos', type: 'sd.text_encode', props: { text: positive } },
-      { id: 'neg', type: 'sd.text_encode', props: { text: q.negative } },
+      { id: 'neg', type: 'sd.text_encode', props: { text: W?.negative || q.negative } },
       { id: 'img', type: 'image.load', props: { file: b.image } },
       { id: 'gen', type: 'sd.canvas', props: { seed: ks.seed >= 0 ? ks.seed + b.k - 1 : -1, steps: p.steps ?? 25, cfg: p.cfg ?? 6, sampler_name: p.sampler_name || 'euler_ancestral',
         scheduler: p.scheduler || 'normal', denoise: st.denoise, fill: st.fill, resolution: 0, edge: 16, blur: 16 } },
@@ -850,6 +938,15 @@ async function next() {
       L('img', 'image', 'gen', 'image')],
     targets: ['gen'],
   };
+  // LoRA цепочкой между чекпоинтом и сэмплером/клипом
+  let prev = 'ckpt';
+  (W?.loras || []).forEach((l, i) => {
+    const id = `lora${i + 1}`;
+    wf.nodes.push({ id, type: 'sd.lora', props: { lora_name: l.name, strength_model: l.strength, strength_clip: l.clip ?? l.strength } });
+    wf.links.push(L(prev, 'model', id, 'model'), L(prev, 'clip', id, 'clip'));
+    prev = id;
+  });
+  if (prev !== 'ckpt') for (const l of wf.links) if (l.from === 'ckpt' && ((l.to === 'gen' && l.in === 'model') || l.to === 'skip')) l.from = prev;
   if (b.mask) { wf.nodes.push({ id: 'mask', type: 'image.load', props: { file: b.mask } }); wf.links.push(L('mask', 'image', 'gen', 'mask')); }
   b.pid = crypto.randomUUID().replace(/-/g, '');
   b.step = 0; b.max = 0; b.preview = null;
@@ -1147,7 +1244,8 @@ function genPanel() {
       h('span.nz-cnt', { 'data-tip': 'Сколько вариантов за раз — листаются на холсте' }, '×',
         num(st.batch, x => { st.batch = clamp(x | 0, 1, 16); keep(); }, { int: true, min: 1, max: 16 })));
   const adv = h('details.nz-adv', { open: !!st.adv },
-    h('summary', {}, 'Модель и сэмплер', h('span.dim', {}, ck ? ` · ${ck.split(/[\\/]/).pop().replace(/\.\w+$/, '')}` : ' · не выбран')),
+    h('summary', {}, 'Модель и сэмплер', h('span.dim', {}, st.wf ? ` · из «${st.wf.title}»` : ck ? ` · ${ck.split(/[\\/]/).pop().replace(/\.\w+$/, '')}` : ' · не выбран')),
+    ...wfRow(row),
     row('чекпоинт', ckBtn),
     rec?.error ? h('div.hint', { style: { color: 'var(--err)' } }, `Magic: ${rec.error}`) : null,
     ...samplerCard(row));
@@ -1446,18 +1544,43 @@ export const naizerApi = {
   state() {
     const d = doc();
     return { canvas: d.name, canvases: byRecent().map(([, x]) => x.name), mode, busy: !!busy, ckpt: ckptName(),
-      prompt: st.prompt, denoise: st.denoise, frame: d.bbox, staging: d.staging.map(s => s.file),
+      prompt: st.prompt, denoise: st.denoise, sampler: st.ks || {}, from_workflow: st.wf, frame: d.bbox, staging: d.staging.map(s => s.file),
       layers: d.layers.map(L => ({ name: L.name, type: L.type, file: L.file || null, x: L.x, y: L.y, w: L.w, h: L.h, visible: L.visible !== false })) };
   },
   async open(files = [], name = '') {
     newCanvas();
     if (name) doc().name = String(name);
-    for (const f of files) await addImage(f);
+    const bad = [];
+    for (const f of files) if (!await addImage(f)) bad.push(f);
+    keep(); refresh();
+    await settle();
+    if (bad.length) throw new Error(`не открылись: ${bad.join(', ')} — нужен путь файла из input/ или output/`);
+    return this.state();
+  },
+  async add(files = []) {
+    const bad = [];
+    for (const f of files) if (!await addImage(f)) bad.push(f);
+    await settle();
+    if (bad.length) throw new Error(`не открылись: ${bad.join(', ')} — нужен путь файла из input/ или output/`);
+    return this.state();
+  },
+  // параметры воркфлоу на холст (чекпоинт, LoRA, промпты, clip skip, сэмплер) и/или свои значения
+  async settings({ workflow, prompt, negative, denoise, ckpt, steps, cfg, sampler_name, scheduler, seed, loras } = {}) {
+    if (workflow) applyWorkflow(workflow);
+    if (prompt != null) st.prompt = String(prompt);
+    if (denoise != null) st.denoise = clamp(+denoise, 0.05, 1);
+    if (ckpt) { st.ckpt = String(ckpt); rec = null; await loadRec(); }
+    for (const [k, v] of Object.entries({ steps, cfg, sampler_name, scheduler, seed })) if (v != null && v !== '') (st.ks ||= {})[k] = v;
+    if (negative != null || loras != null) {
+      st.wf ||= { id: '', title: 'свои', negative: '', loras: [], clip_skip: null };
+      if (negative != null) st.wf.negative = String(negative);
+      if (loras != null) st.wf.loras = loras.map(l => ({ name: l.name, strength: +(l.strength ?? 1), clip: +(l.clip ?? l.strength ?? 1) }));
+    }
+    if (promptEl) promptEl.value = st.prompt;
     keep(); refresh();
     await settle();
     return this.state();
   },
-  async add(files = []) { for (const f of files) await addImage(f); await settle(); return this.state(); },
   // прямоугольники маски — доли рамки 0..1
   async mask(rects = [], strength = 1) {
     const r = doc().bbox;

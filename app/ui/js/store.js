@@ -34,7 +34,27 @@ export async function loadProject() {
   for (const e of p.errors || []) emit('log', { src: 'editor', level: 'error', text: e });
 }
 
-export const normalize = wf => ({ title: '', nodes: [], links: [], ...wf, nodes: wf?.nodes || [], links: wf?.links || [] });
+export const normalize = wf => place({ title: '', nodes: [], links: [], ...wf, nodes: wf?.nodes || [], links: wf?.links || [] });
+
+// ноды без координат (скрытые графы агента, ImageNaizer, ToColar — в PNG они без позиций): колонки по глубине графа
+// ниже уже размещённых; иначе холст считал рамку по NaN и граф не было видно
+function place(wf) {
+  const ok = n => Number.isFinite(n.x) && Number.isFinite(n.y);
+  const loose = wf.nodes.filter(n => !ok(n));
+  if (!loose.length) return wf;
+  const placed = wf.nodes.filter(ok), y0 = placed.length ? Math.max(...placed.map(n => n.y)) + 260 : 40;
+  const depth = new Map(loose.map(n => [n.id, 0]));
+  for (let i = 0; i < loose.length; i++) {
+    for (const l of wf.links) if (depth.has(l.to) && depth.has(l.from)) depth.set(l.to, Math.max(depth.get(l.to), depth.get(l.from) + 1));
+  }
+  const rows = new Map();
+  for (const n of loose) {
+    const d = depth.get(n.id), r = rows.get(d) || 0;
+    rows.set(d, r + 1);
+    n.x = 40 + d * 340; n.y = y0 + r * 220;
+  }
+  return wf;
+}
 
 export const doc = (kind, id) => S.docs[kind]?.get(id) || null;
 export const dirtyDocs = () => Object.values(S.docs).flatMap(m => [...m.values()]).filter(d => d.dirty);

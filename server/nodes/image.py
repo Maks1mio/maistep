@@ -22,7 +22,7 @@ def image_bytes(img, root):
       outputs={"image": "IMAGE"})
 def image_load(file, ctx):
     from maistep import outputs
-    rel = outputs.resolve(ctx.root, file if file.startswith(("input/", "output/")) else f"input/{file}")  # перенесённый результат
+    rel = outputs.resolve(ctx.root, file if file.startswith(("input/", "output/", "temp/")) else f"input/{file}")  # перенесённый результат
     if not file or not (ctx.root / rel).is_file():
         raise FileNotFoundError(f"no file {rel}")
     return {"file": rel}

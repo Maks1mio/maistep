@@ -15,7 +15,7 @@ export function ownFile(url) {
   try {
     const u = new URL(url);
     const f = u.pathname === '/view' && u.searchParams.get('file');
-    return f && /^(input|output)\//.test(f) ? f : null;
+    return f && /^(input|output|temp)\//.test(f) ? f : null;
   } catch { return null; }
 }
 

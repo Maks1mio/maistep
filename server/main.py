@@ -50,6 +50,7 @@ HTTP API (CORS — только для окна maistep и страниц на l
   GET  /api/llamacpp | llamacpp/models · POST /api/llamacpp { …настройки } | llamacpp/start | llamacpp/stop
   GET  /view?file=output/a.png файл из input/ или output/
   GET  /thumb?file=…&h=384    миниатюра WebP для галереи (кеш user/thumbs)
+  GET  /api/video/info          вкладка «Видео»: модели Wan 2.2 из библиотеки (auto), есть ли PyAV
   GET  /agentfs/<диалог>/<№ папки>/<путь>  файл проекта для браузера AI Chat (только папки, выданные диалогу)
   GET  /events                 SSE: status, start, executing, progress, preview, stream, executed, run-error, done, log, nodes,
                                components, comp-log, agent, update
@@ -77,7 +78,7 @@ from maistep import registry, executor, providers, library, components, civitai,
 from maistep import workspace, mcp, llamacpp, lifetime, outputs  # noqa: E402
 from maistep.registry import Cancelled  # noqa: E402
 
-for d in ("input", "output", "user", "workflows", "custom_nodes"):
+for d in ("input", "output", "temp", "user", "workflows", "custom_nodes"):
     (ROOT / d).mkdir(exist_ok=True)
 SETTINGS = ROOT / "user" / "settings.json"
 HISTORY = ROOT / "user" / "history.json"  # история запусков переживает перезапуск сервера
@@ -272,7 +273,7 @@ Q = None
 # ---------- HTTP ----------
 def safe_file(rel):
     rel = unquote(rel or "").replace("\\", "/").lstrip("/")
-    if not re.match(r"^(input|output)/", rel) or ".." in rel.split("/"):
+    if not re.match(r"^(input|output|temp)/", rel) or ".." in rel.split("/"):
         return None
     p = ROOT / rel
     if not p.is_file():  # файл перенесён в подпапку output/ (outputs.organize) — ссылка из старого localStorage, чата
@@ -447,6 +448,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"error": "dir: input | output"}, 400)
             files = sorted((p for p in (ROOT / d).rglob("*") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
             return self.json([{"file": p.relative_to(ROOT).as_posix(), "size": p.stat().st_size, "mtime": p.stat().st_mtime} for p in files[:500]])
+        if u.path == "/api/video/info":
+            from maistep import video
+            try:
+                return self.json(video.info())
+            except Exception as e:
+                return self.json({"error": f"{type(e).__name__}: {e}"}, 500)
         if u.path == "/api/library":
             return self.json(library.summary(qs.get("refresh") == "1"))
         if u.path == "/api/stats":
@@ -679,6 +686,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/free":
             from maistep import diffusion
             diffusion.unload()
+            from maistep import video
+            video.unload()
             executor.CACHE.clear()
             return self.json({"ok": True})
         if u.path == "/api/components/install":
@@ -781,6 +790,7 @@ def main():
     updater.configure(lambda event, data: HUB.emit(event, data), log)
     updater.start()
     outputs.organize(ROOT, lambda t: log("info", t))  # до загрузки истории: она уже с новыми путями
+    outputs.clean_temp(ROOT)
     Q = Queue()
     agent.configure(lambda event, data: HUB.emit(event, data), lambda wf, pid: Q.put(wf, pid),
                     lambda: list(Q.history), Q.interrupt)

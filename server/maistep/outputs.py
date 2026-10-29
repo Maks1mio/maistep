@@ -4,6 +4,7 @@
     output/naizer/                    ImageNaizer (скрытый граф id «naizer», сохранение холста)
     output/tocolar/                   ToColar (скрытые графы «tocolar», «tocolar_ctx»)
     output/agent/                     картинки AI Agent (граф «agent_image»)
+    output/video/                     вкладка «Видео» (граф «video»)
     output/other/                     старые файлы, чей запуск уже не найти в истории
 
 Новые файлы сразу пишутся в свою папку (registry.Ctx.output_dir → folder()). Файлы, лежащие прямо в output/,
@@ -15,9 +16,10 @@
 import json
 import os
 import re
+import time
 from pathlib import Path
 
-GROUPS = {"naizer": "naizer", "tocolar": "tocolar", "tocolar_ctx": "tocolar", "agent_image": "agent"}
+GROUPS = {"naizer": "naizer", "tocolar": "tocolar", "tocolar_ctx": "tocolar", "agent_image": "agent", "video": "video"}
 PREFIX = [(re.compile(r"^(naizer|canvas)_"), "naizer"), (re.compile(r"^(tocolar|colored)_"), "tocolar")]
 _moved = None  # кеш user/output_moved.json
 
@@ -130,3 +132,23 @@ def organize(root, log=print):
             if p.is_file():
                 _rewrite_file(p, m)
     return len(top)
+
+
+TEMP_DAYS = 7
+
+
+def clean_temp(root, days=TEMP_DAYS):
+    """temp/ — кадры VAE Decode (в output/ их кладёт только Save Image): при старте сервера убираем старше `days` дней.
+    Неделю они живы — превью в истории, подсказки ToColar на прежней генерации. → число удалённых файлов."""
+    d = Path(root) / "temp"
+    if not d.is_dir():
+        return 0
+    old, n = time.time() - days * 86400, 0
+    for p in d.rglob("*"):
+        try:
+            if p.is_file() and p.stat().st_mtime < old:
+                p.unlink()
+                n += 1
+        except OSError:
+            pass
+    return n

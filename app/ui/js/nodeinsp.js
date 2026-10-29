@@ -3,7 +3,7 @@ import { h, field, text, num, check, select as sel } from './util.js';
 import { S, doc, edit, select, emit } from './store.js';
 import { registerInspector } from './inspector.js';
 import { icon } from './icons.js';
-import { defs, deleteSel, issuesOf, TYPE_COLOR, llmModel } from './graph.js';
+import { defs, nodeDef, deleteSel, issuesOf, TYPE_COLOR, llmModel } from './graph.js';
 import { fileUrl, queuePrompt, upload } from './backend.js';
 import { modelPicker, badges } from './modelpick.js';
 import { libraryPicker } from './library.js';
@@ -19,15 +19,19 @@ function widget(d, n, k, inp) {
     edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); nn.props ||= {}; nn.props[k] = val; }, { label: `${n.id}.${k}`, merge: `${n.id}.${k}` });
   };
   if (inp.type === 'COMBO') return sel(v, inp.options || [], set);
+  if (inp.portal) { // Portal Exit: из какого портала — список порталов графа
+    const ps = d.data.nodes.filter(x => x.type === 'portal.in');
+    return sel(v, [['', '— выберите портал —'], ...ps.map(p => [p.id, `${p.props?.name || p.id} (${p.id})`])], set);
+  }
   if (inp.picker === 'library_model') {
     const i = text(v, set, { placeholder: 'имя модели' });
-    const cat = () => inp.cat || (n.props?.[inp.cat_input] ?? defs()[n.type].inputs[inp.cat_input]?.default);
+    const cat = () => inp.cat || (n.props?.[inp.cat_input] ?? nodeDef(n).inputs[inp.cat_input]?.default);
     const btn = h('button.ui-ib', { 'data-tip': 'Галерея моделей', onclick: () => libraryPicker(btn, { cat: cat(), value: i.value, onPick: name => { i.value = name; set(name); } }) }, icon('image', { size: 16 }));
     return h('div.row', { style: { flex: 1 } }, i, btn);
   }
   if (inp.picker === 'llm_model') {
     const i = text(v, set, { placeholder: 'id модели' });
-    const pid = () => n.props?.[inp.provider_input] ?? defs()[n.type].inputs[inp.provider_input]?.default;
+    const pid = () => n.props?.[inp.provider_input] ?? nodeDef(n).inputs[inp.provider_input]?.default;
     const btn = h('button.ui-ib', { 'data-tip': 'Выбрать из каталога', onclick: () => modelPicker(btn, { provider: pid(), value: i.value, onPick: id => { i.value = id; set(id); } }) }, icon('search', { size: 16 }));
     i.addEventListener('focus', () => modelPicker(i, { provider: pid(), value: i.value, onPick: id => { i.value = id; set(id); } }));
     return h('div.row', { style: { flex: 1 } }, i, btn);
@@ -132,7 +136,7 @@ function triggersCard(n, def) {
 function nodeInspector(s) {
   const d = doc('workflow', s.doc), n = d?.data.nodes.find(x => x.id === s.id);
   if (!n) return [h('div.dim', {}, 'нода не найдена')];
-  const def = defs()[n.type];
+  const def = nodeDef(n);
   if (!def) return [h('h3', {}, n.type), h('div', { style: { color: 'var(--err)' } }, 'Неизвестный тип ноды — нет на сервере (запущен? загружен модуль?)'), h('button.ui-btn.secondary.slim', { onclick: deleteSel }, 'Удалить ноду')];
   const linked = new Set(d.data.links.filter(l => l.to === n.id).map(l => l.in));
   const setTitle = v => edit('workflow', d.id, wf => { const nn = wf.nodes.find(z => z.id === n.id); if (v) nn.title = v; else delete nn.title; }, { label: 'имя ноды', merge: `${n.id}.title` });
@@ -145,7 +149,7 @@ function nodeInspector(s) {
     ...modelCard(n, def),
     ...magicCard(d, n),
     h('h4', {}, 'Входы'),
-    ...Object.entries(def.inputs).map(([k, inp]) => {
+    ...Object.entries(def.inputs).filter(([, inp]) => !inp.hidden).map(([k, inp]) => {
       if (!inp.widget || linked.has(k)) {
         const l = d.data.links.find(x => x.to === n.id && x.in === k);
         return field(k, h('div.row', { style: { flex: 1 } }, chip(inp.type), h('span.dim', {}, l ? `← ${l.from}.${l.out}` : inp.optional ? 'не подключён (необязательный)' : 'не подключён')), inp.hint);
@@ -177,7 +181,7 @@ function workflowInspector(s) {
   if (!d) return [];
   const set = (k, v) => edit('workflow', d.id, wf => { if (v === undefined || v === '') delete wf[k]; else wf[k] = v; }, { label: k, merge: `wf.${k}` });
   const counts = {};
-  for (const n of d.data.nodes) counts[defs()[n.type]?.cat || '?'] = (counts[defs()[n.type]?.cat || '?'] || 0) + 1;
+  for (const n of d.data.nodes) counts[nodeDef(n)?.cat || '?'] = (counts[nodeDef(n)?.cat || '?'] || 0) + 1;
   const about = h('textarea', { rows: 4, spellcheck: false, placeholder: 'Что делает этот пайплайн' });
   about.value = d.data.about || '';
   about.oninput = () => set('about', about.value);

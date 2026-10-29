@@ -23,6 +23,8 @@
 .gsearch .it .dim { margin-left: auto; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 .gsearch .it i { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 .gsearch .it.on, .gsearch .it:hover { background: var(--p-blue-4, #2e436e); }
+.gsearch .it .pin { color: var(--ui-fg-dim); font-size: 11px; flex-shrink: 0; }
+.gsearch .sep { padding: 6px 8px 2px; color: var(--ui-fg-dim); font-size: 11px; border-top: 1px solid var(--ui-sep); margin-top: 4px; }
 .gedit { padding: 6px 8px 8px; display: flex; flex-direction: column; gap: 4px; }
 .gedit textarea, .gedit input { width: 100%; box-sizing: border-box; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 12px; }
 .gfloat-menu { position: fixed; z-index: 600; min-width: 220px; }
@@ -945,3 +947,51 @@ pre.agb-diff .a { color: var(--p-green-7); } pre.agb-diff .d { color: var(--p-re
 .st-env > div > span { color: var(--ui-fg-dim); }
 .tc-cmp.m-after:not(.zoomed):not(.paint), .tc-cmp.m-before:not(.zoomed):not(.paint) { cursor: default; }
 .nz-gen .f .v > .row { min-width: 0; width: 100%; }
+/* ImageNaizer: параметры из воркфлоу */
+.nz-wf { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.nz-wf .hint, .nz-wf .row { flex-basis: 100%; }
+.nz-wf .row { display: flex; gap: var(--sp-ctrl); }
+.nz-lora { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; height: 22px; padding: 0 0 0 8px; border: 1px solid var(--ui-border); border-radius: 11px; font-size: 12px; }
+.nz-lora .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nz-lora .dim { color: var(--ui-fg-dim); flex-shrink: 0; }
+.nz-lora .ui-ib { width: 20px; height: 20px; flex-shrink: 0; }
+/* Видео (video.js): плеер и лента слева, параметры справа */
+#v-video { height: 100%; }
+#v-video.drop { outline: 2px dashed var(--ui-accent); outline-offset: -6px; }
+.vd { display: grid; grid-template-columns: minmax(0, 1fr) 320px; height: 100%; min-height: 0; background: var(--ui-bg0, var(--ui-bg)); }
+.vd-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: var(--sp-ctrl); gap: var(--sp-ctrl); }
+.vd-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #111216; border-radius: var(--ui-radius); overflow: hidden; }
+.vd-video { max-width: 100%; max-height: 100%; display: block; }
+.vd-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--ui-fg-dim); text-align: center; padding: 24px; }
+.vd-tools { display: flex; align-items: center; gap: var(--sp-ctrl); flex-wrap: wrap; }
+.vd-tools .dim { color: var(--ui-fg-dim); font-size: 12px; }
+.vd-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; flex-shrink: 0; }
+.vd-th { position: relative; height: 72px; flex-shrink: 0; border: 2px solid transparent; border-radius: var(--ui-radius); overflow: hidden; cursor: pointer; background: #111216; }
+.vd-th.on { border-color: var(--ui-accent); }
+.vd-th img { height: 100%; display: block; }
+.vd-th .ui-ib { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; background: rgba(0, 0, 0, .55); color: #fff; opacity: 0; }
+.vd-th:hover .ui-ib { opacity: 1; }
+.vd-side { border-left: 1px solid var(--ui-sep); background: var(--ui-bg1); padding: var(--sp-ctrl) 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 0; }
+.vd-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.vd-h .dim, .vd-side .dim { color: var(--ui-fg-dim); font-size: 12px; }
+.vd-start { position: relative; border-radius: var(--ui-radius); overflow: hidden; background: #111216; display: flex; justify-content: center; }
+.vd-start img { max-width: 100%; max-height: 220px; display: block; }
+.vd-start .ui-ib { position: absolute; top: 4px; right: 4px; background: rgba(0, 0, 0, .55); color: #fff; }
+.vd-start.empty { flex-direction: column; align-items: center; gap: 4px; padding: 22px 8px; border: 1px dashed var(--ui-border); background: transparent; color: var(--ui-fg-dim); cursor: pointer; }
+.vd-start.empty:hover { background: var(--ui-hover); }
+.vd-prompt, .vd-neg { width: 100%; resize: vertical; box-sizing: border-box; }
+.vd-side .f { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 26px; }
+.vd-side .f .l { color: var(--ui-fg-dim); font-size: 12px; }
+.vd-side .f .v { min-width: 0; display: flex; }
+.vd-side .f .v > * { min-width: 0; }
+.vd-side .f .ui-dd { width: 100%; }
+.vd-side .f .mono { width: 40px; text-align: right; font-size: 12px; }
+.vd-go { width: 100%; justify-content: center; height: 32px; }
+.vd-busy { display: flex; flex-direction: column; gap: 6px; }
+.vd-busy .row { display: flex; align-items: center; gap: 8px; }
+.vd-prog { font-size: 12px; color: var(--ui-fg-dim); }
+.vd-bar { height: 4px; border-radius: 2px; background: var(--ui-sep); overflow: hidden; }
+.vd-bar i { display: block; height: 100%; width: 0; background: var(--ui-accent); transition: width .3s; }
+.vd-adv { border-top: 1px solid var(--ui-sep); padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.vd-adv > summary { cursor: pointer; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vd-adv > summary .dim { font-weight: 400; }

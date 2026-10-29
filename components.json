@@ -17,7 +17,8 @@
         "tabs": [
           "graph",
           "naizer",
-          "tocolar"
+          "tocolar",
+          "video"
         ],
         "recommended": "2.14.1",
         "required": true,
@@ -58,7 +59,8 @@
         "tabs": [
           "graph",
           "naizer",
-          "tocolar"
+          "tocolar",
+          "video"
         ],
         "recommended": "0.41.0",
         "required": true,
@@ -73,7 +75,8 @@
         "tabs": [
           "graph",
           "naizer",
-          "tocolar"
+          "tocolar",
+          "video"
         ],
         "recommended": "5.20.2",
         "required": true,
@@ -88,12 +91,27 @@
         "tabs": [
           "graph",
           "naizer",
-          "tocolar"
+          "tocolar",
+          "video"
         ],
         "recommended": "1.15.0",
         "required": true,
         "size": "~300 КБ",
         "note": "Раскладка модели по GPU/CPU, offload"
+      },
+      {
+        "id": "av",
+        "title": "PyAV",
+        "package": "av",
+        "group": "Генерация",
+        "tabs": [
+          "graph",
+          "video"
+        ],
+        "recommended": "19.0.2",
+        "required": false,
+        "size": "~40 МБ",
+        "note": "Запись видео MP4 (ноды Wan Image to Video, Save Video)"
       },
       {
         "id": "peft",
@@ -184,6 +202,71 @@
         "required": true,
         "size": "~3 МБ",
         "note": "Запись PNG и img2img"
+      },
+      {
+        "id": "torchvision",
+        "title": "TorchVision",
+        "package": "torchvision",
+        "group": "Генерация",
+        "tabs": [
+          "graph"
+        ],
+        "recommended": "0.29.1",
+        "required": false,
+        "pypi": false,
+        "note": "Нужен апскейлу моделью (spandrel) и детектору YOLO (ultralytics); сборка — как у PyTorch",
+        "variants": {
+          "cuda": {
+            "title": "CUDA (NVIDIA)",
+            "recommended": "0.29.1",
+            "local": "cu130",
+            "index_url": "https://download.pytorch.org/whl/cu130",
+            "size": "~7 МБ"
+          },
+          "rocm": {
+            "title": "ROCm (AMD)",
+            "recommended": "0.29.0",
+            "local": "rocm10.1.0",
+            "extra": "device-{gfx}",
+            "index_url": "https://stable.repo.amd.com/rocm/whl-next/",
+            "python_lt": "<3.15",
+            "size": "~7 МБ",
+            "note": "пара к torch 2.14.0+rocm10.1.0 (не проверено на AMD)"
+          },
+          "cpu": {
+            "title": "CPU",
+            "recommended": "0.29.1",
+            "local": "cpu",
+            "index_url": "https://download.pytorch.org/whl/cpu",
+            "size": "~2 МБ"
+          }
+        }
+      },
+      {
+        "id": "spandrel",
+        "title": "Spandrel",
+        "package": "spandrel",
+        "group": "Генерация",
+        "tabs": [
+          "graph"
+        ],
+        "recommended": "0.4.2",
+        "required": false,
+        "size": "~1 МБ",
+        "note": "Модели апскейла (ESRGAN, 4x-UltraSharp, DAT, SwinIR…): Upscale Image (using Model), Ultimate SD Upscale, hires из A1111"
+      },
+      {
+        "id": "ultralytics",
+        "title": "Ultralytics YOLO",
+        "package": "ultralytics",
+        "group": "Генерация",
+        "tabs": [
+          "graph"
+        ],
+        "recommended": "8.4.192",
+        "required": false,
+        "size": "~40 МБ (с opencv, matplotlib)",
+        "note": "Детектор лиц/рук/людей для Face Detailer (ADetailer, FaceDetailer из ComfyUI); считает на CPU"
       },
       {
         "id": "anthropic",
@@ -407,6 +490,99 @@
       "page": "https://github.com/ali-vilab/MangaNinjia",
       "license": "CC BY-NC 4.0 (некоммерческая)",
       "note": "ToColar: переносит цвета с референса на линии страницы точнее SDXL; ~5 ГБ VRAM (fp16). При первой загрузке веса сохраняются в fp16 (.fp16.safetensors), исходные .pth можно удалить"
+    },
+    {
+      "id": "upscale-ultrasharp",
+      "title": "4x-UltraSharp (апскейл)",
+      "group": "Модели",
+      "tabs": [
+        "graph"
+      ],
+      "cat": "upscale_models",
+      "civitai_type": "Upscaler",
+      "file": "4x-UltraSharp.pth",
+      "url": "https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.pth",
+      "sha256": "a5812231fc936b42af08a5edba784195495d303d5b3248c24489ef0c4021fe01",
+      "bytes": 66961958,
+      "size": "64 МБ",
+      "page": "https://huggingface.co/Kim2091/UltraSharp",
+      "license": "CC BY-NC-SA 4.0 (некоммерческая)",
+      "note": "Load Upscale Model → Upscale Image (using Model) / Ultimate SD Upscale; самый частый апскейлер в картинках с Civitai"
+    },
+    {
+      "id": "upscale-anime6b",
+      "title": "RealESRGAN x4plus anime 6B (апскейл аниме)",
+      "group": "Модели",
+      "tabs": [
+        "graph"
+      ],
+      "cat": "upscale_models",
+      "civitai_type": "Upscaler",
+      "file": "RealESRGAN_x4plus_anime_6B.pth",
+      "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+      "sha256": "f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da",
+      "bytes": 17938799,
+      "size": "17 МБ",
+      "page": "https://github.com/xinntao/Real-ESRGAN",
+      "license": "BSD-3-Clause",
+      "note": "Быстрый апскейл аниме-картинок"
+    },
+    {
+      "id": "detector-face",
+      "title": "Детектор лиц (ADetailer face_yolov8m)",
+      "group": "Модели",
+      "tabs": [
+        "graph"
+      ],
+      "cat": "ultralytics",
+      "civitai_type": "Detection",
+      "subdir": "bbox",
+      "file": "face_yolov8m.pt",
+      "url": "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8m.pt",
+      "sha256": "717923c19b3f4bbf5250b728f1fa6b2cb72a33aed1d236ea9caf0e21ad943e5f",
+      "bytes": 52026019,
+      "size": "50 МБ",
+      "page": "https://huggingface.co/Bingsu/adetailer",
+      "license": "AGPL-3.0",
+      "note": "Load Detector (YOLO) → Face Detailer: лица (аниме и фото)"
+    },
+    {
+      "id": "detector-hand",
+      "title": "Детектор рук (ADetailer hand_yolov8n)",
+      "group": "Модели",
+      "tabs": [
+        "graph"
+      ],
+      "cat": "ultralytics",
+      "civitai_type": "Detection",
+      "subdir": "bbox",
+      "file": "hand_yolov8n.pt",
+      "url": "https://huggingface.co/Bingsu/adetailer/resolve/main/hand_yolov8n.pt",
+      "sha256": "3991202eb69e9ddcb3b9ba80cdeb41e734ffaf844403d6c9f47d515cd88c6f29",
+      "bytes": 6237883,
+      "size": "6 МБ",
+      "page": "https://huggingface.co/Bingsu/adetailer",
+      "license": "AGPL-3.0",
+      "note": "Face Detailer по рукам"
+    },
+    {
+      "id": "detector-person",
+      "title": "Детектор людей с силуэтом (person_yolov8m-seg)",
+      "group": "Модели",
+      "tabs": [
+        "graph"
+      ],
+      "cat": "ultralytics",
+      "civitai_type": "Detection",
+      "subdir": "segm",
+      "file": "person_yolov8m-seg.pt",
+      "url": "https://huggingface.co/Bingsu/adetailer/resolve/main/person_yolov8m-seg.pt",
+      "sha256": "c8ab26f517173b1fe8342d336a09f443eb61cb08dcbfc78d53fff4c2547ae81e",
+      "bytes": 54827683,
+      "size": "52 МБ",
+      "page": "https://huggingface.co/Bingsu/adetailer",
+      "license": "AGPL-3.0",
+      "note": "Face Detailer по фигурам: перерисовывает силуэт, а не рамку"
     }
   ]
 }

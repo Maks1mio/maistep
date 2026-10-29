@@ -98,7 +98,7 @@ const placeOf = () => { const exact = `${st.mode}:${st.dir}`; return PLACES.some
 // ---------- путь файла → что это ----------
 // картинка input/ или output/ — её можно бросить на граф (нода «Загрузить картинку»)
 function gfxPath(item) {
-  return IMG.test(item.path) && /^(input|output)\//.test(item.path) ? item.path : null;
+  return IMG.test(item.path) && /^(input|output|temp)\//.test(item.path) ? item.path : null;
 }
 const url = item => assetUrl(item.path, 'p');
 const fullPath = p => `${S.project?.root || ''}${S.project?.root ? '/' : ''}${p}`.replace(/\//g, S.project?.root?.includes('\\') ? '\\' : '/');

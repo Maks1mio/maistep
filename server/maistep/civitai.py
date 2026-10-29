@@ -34,7 +34,8 @@ TYPES = ["Checkpoint", "LORA", "LoCon", "DoRA", "TextualInversion", "VAE", "Upsc
 FOLDER = {"Checkpoint": "checkpoints", "LORA": "loras", "LoCon": "loras", "DoRA": "loras",
           "TextualInversion": "embeddings", "VAE": "vae", "Upscaler": "upscale_models", "Controlnet": "controlnet",
           "Hypernetwork": "hypernetworks", "MotionModule": "animatediff_models", "Poses": "poses",
-          "Wildcards": "wildcards", "Other": "other", "Inpaint": "inpaint"}  # Inpaint — не тип Civitai: LaMa из components.json
+          "Wildcards": "wildcards", "Other": "other", "Inpaint": "inpaint",
+          "Detection": "ultralytics"}  # Inpaint, Detection — не типы Civitai: LaMa и детекторы YOLO из components.json
 BASES = ["Illustrious", "NoobAI", "Pony", "SDXL 1.0", "SDXL Lightning", "SDXL Hyper", "SD 1.5", "SD 1.5 LCM",
          "Flux.1 D", "Flux.1 S", "Flux.1 Krea", "Flux.1 Kontext", "SD 3.5", "SD 3.5 Large", "SD 3.5 Medium",
          "Qwen", "Wan Video", "Hunyuan Video", "HiDream", "Chroma", "Other"]

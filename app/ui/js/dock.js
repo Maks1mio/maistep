@@ -10,7 +10,7 @@ import { icon } from './icons.js';
 const KEY = 'maistep-layouts-1';
 const panels = new Map(); // id → { id, title, icon, el, view, onShow }
 const WS = [
-  ['graph', 'Workflow', 'blueprint'], ['results', 'Results', 'image'], ['library', 'Models', 'diagram'], ['civitai', 'Civitai', 'search'], ['code', 'CodeEditor', 'code'], ['components', 'Компоненты', 'download'], ['naizer', 'ImageNaizer', 'spark'], ['tocolar', 'ToColar', 'gutter/colors'], ['chat', 'AI Chat', 'ai'], ['uikit', 'UI Kit', 'layout'],
+  ['graph', 'Workflow', 'blueprint'], ['results', 'Results', 'image'], ['library', 'Models', 'diagram'], ['civitai', 'Civitai', 'search'], ['code', 'CodeEditor', 'code'], ['components', 'Компоненты', 'download'], ['naizer', 'ImageNaizer', 'spark'], ['tocolar', 'ToColar', 'gutter/colors'], ['video', 'Видео', 'run/run'], ['chat', 'AI Chat', 'ai'], ['uikit', 'UI Kit', 'layout'],
 ];
 const area = (...tabs) => ({ tabs, active: tabs[0] });
 const split = (dir, sizes, ...kids) => ({ dir, sizes, kids });
@@ -32,6 +32,7 @@ const DEFAULTS = {
   naizer: () => split('v', [0.86, 0.14], area('naizer'), area('console')),
   // список страниц, сравнение до/после, настройки — всё в самой странице
   tocolar: () => split('v', [0.85, 0.15], area('tocolar'), area('console')),
+  video: () => split('v', [0.85, 0.15], area('video'), area('console')),
   // большой чат агента (как Claude): диалоги и персонажи слева — внутри вида, консоль снизу для проверок
   chat: () => split('v', [0.84, 0.16], area('chat'), area('console')),
   uikit: () => split('h', [0.75, 0.25], area('uikit'), area('inspector')),

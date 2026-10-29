@@ -168,6 +168,46 @@ def logic_python(code, a=None, b=None, c=None, ctx=None):
     exec(code, env)
     return env["result"]
 
+# ---------- portals ----------
+# Portal — вход: значение любого типа; Portal Exit — выходы, где угодно на холсте, без проводов. Связь портал → выход
+# невидимая: её дорисовывает executor.portals() перед проверкой и запуском (вход `_link` у выхода скрыт в UI).
+
+
+@node("portal.in", title="Portal", cat="Portal",
+      inputs={"value": ("*", {}), "name": ("STRING", {"default": "portal", "hint": "label shown on its exits"})},
+      outputs={"value": "*"},
+      hint="Entry point: send any value (model, image, text…) to Portal Exit nodes anywhere on the canvas — no wires. "
+           "Right-click → «Создать выход».")
+def portal_in(value, name):
+    return value
+
+
+@node("portal.out", title="Portal Exit", cat="Portal",
+      inputs={"portal": ("STRING", {"default": "", "portal": True, "hint": "which Portal this exit receives from"}),
+              "order": ("INT", {"default": 1, "min": 0, "max": 99, "hint": "run order: branches after exit 1 run first, then 2…"}),
+              "_link": ("*", {"optional": True, "hidden": True})},
+      outputs={"value": "*"},
+      hint="Receives the value of its Portal. Several exits run their branches in the order of their numbers.")
+def portal_out(portal, order, _link=None):
+    return _link
+
+
+# ---------- missing (import placeholder) ----------
+# Нода из импортированного графа (ComfyUI, A1111 …), которой в maistep нет: props.missing = {node, source, inputs,
+# outputs, values, note}. Пины берутся оттуда (UI graph.js nodeDef, executor.pins), связи сохраняются; проверка графа
+# сообщает о ней, выключенная (mute) пропускает вход того же имени/типа насквозь.
+
+
+@node("core.missing", title="Missing Node", cat="Other",
+      inputs={"missing": ("JSON", {"optional": True, "hidden": True})}, outputs={},
+      hint="Placeholder from an imported workflow: maistep has no such node. Its pins and values are kept — "
+           "bypass it (mute) to pass the input through, replace it with a maistep node, or implement it.")
+def missing(missing=None):
+    m = missing or {}
+    raise RuntimeError(f"нода «{m.get('node', '?')}» ({m.get('source', 'импорт')}) не реализована в maistep — "
+                       "замените её, выключите (mute) или реализуйте")
+
+
 # ---------- files and network ----------
 
 

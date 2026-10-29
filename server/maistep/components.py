@@ -574,6 +574,7 @@ def _download_model(job, c):
         job.log(f"{c['file']}: уже есть в библиотеке")
         return
     folder, _cat = civitai._folder_for(c.get("civitai_type") or "Controlnet")
+    folder = folder / c.get("subdir", "")  # детекторы YOLO — ultralytics/bbox, ultralytics/segm (как у Impact Pack)
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / c["file"]
     part = dest.with_name(dest.name + ".part")

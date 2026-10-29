@@ -308,6 +308,16 @@ def _approve(ctx, name, inp, summary):
         raise PermissionError("the user declined this action" + (f": {r['reason']}" if r.get("reason") else ""))
 
 
+def _jsonish(v):
+    """Модели иногда шлют список строкой «["a"]» — разбираем, иначе как есть."""
+    if isinstance(v, str) and v.strip()[:1] in "[{":
+        try:
+            return json.loads(v)
+        except ValueError:
+            pass
+    return v
+
+
 def client(ctx, action, timeout=90, **args):
     r = _wait(ctx, "client", timeout=timeout, action=action, args=args) or {}
     if not r.get("ok"):
@@ -318,8 +328,8 @@ def client(ctx, action, timeout=90, **args):
 # ---------- картинки ----------
 def _safe(rel):
     rel = str(rel or "").replace("\\", "/").lstrip("/")
-    if not re.match(r"^(input|output)/", rel) or ".." in rel.split("/"):
-        raise ValueError(f"{rel}: only files from input/ or output/")
+    if not re.match(r"^(input|output|temp)/", rel) or ".." in rel.split("/"):
+        raise ValueError(f"{rel}: only files from input/, output/ or temp/")
     p = ROOT / rel
     if not p.is_file():
         raise FileNotFoundError(f"no file {rel}")
@@ -395,8 +405,9 @@ recommendation for the checkpoint — pass `ckpt` only when the user wants a spe
 ImageNaizer is the canvas tab (like InvokeAI Canvas: layers, inpaint masks, a generation frame). Drive it with the \
 `app` tool: naizer_open (new canvas from images), naizer_state, naizer_mask (inpaint mask rectangles in fractions of the \
 frame), naizer_generate (prompt + strength; results land in the staging strip, the user accepts them), \
-naizer_snapshot (the frame as an image file you can see). Use it when the user wants to keep working on the picture \
+naizer_snapshot (the frame as an image file you can see), naizer_settings {workflow: id} (apply a workflow's checkpoint, LoRAs, prompts and sampler to the canvas — «примени параметры воркфлоу X к полотну»). Use it when the user wants to keep working on the picture \
 by hand; use edit_image for quick one-shot edits right in the chat.
+Video tab («Видео», Wan 2.2 image-to-video, local): a start frame + a prompt about MOTION (what moves, how, camera) → an MP4 clip. Drive it with `app`: video_state first, video_set to change settings, video_generate to make a clip (minutes; you get its first and last frames to look at). Lightx2v models: 4 steps, cfg 1; longer = more seconds; 480p is the safe size on 8 GB. To make a clip longer, video_generate {continue: true} — the next clip starts from the last frame. ToColar tab (colorizing b/w pages): tocolar_state, tocolar_add {files}, tocolar_colorize.
 Prompting (SD prompts, sd.text_encode, generate_image):
 - Art style first. When the user names or shows a style to imitate (an artist, anime/game, a design, an attached \
 reference), lead the positive prompt with it and make it concrete: medium and rendering (cel shading, flat colors, \
@@ -416,6 +427,7 @@ Illustrious, Pony, SDXL 1.0 …), install the best match with download_model, ad
 and its trigger words, and tell the user what you added and why. LoRA, LoCon, LoHa and LoKr files all work; if a \
 file still fails to load («unsupported key layout»), pick another LoRA instead of retrying.
 Quality loop (images and workflows): when the user asks to generate, fix or improve something, that request covers re-running as many times as needed. After each result, look at it critically against the request: anatomy, hands, faces, things merging or coming out of the wrong place, style, composition, artifacts, missing details. If YOU can see a flaw, do not stop to report it or ask «fix it or is it fine?» — fix it right away (prompt and weights, negative, LoRA strength, denoise, cfg/steps, edit_image on the region, a LoRA from the library or Civitai) and look again. Keep iterating until nothing visible is wrong, or the remaining flaw can't be fixed with the tools at hand, or ~6 attempts went by without progress. Then answer once: the final result, what you fixed along the way, and only the flaws that really remain (with why). Change one or two things per attempt so you know what helped.
+Never end a reply with a promise («Добавляю…», «Сейчас сделаю») — do it with tools in the same turn; if a tool fails or returns something unexpected (e.g. an empty canvas), say so plainly and try another way.
 Questions: when you really need the user's decision (several equally good directions, a taste choice, a big download, switching the checkpoint), call ask_user with 2–4 short options instead of writing the question and a list of options as text — the user answers with one click. Don't ask about things you can decide or check yourself.
 App control (`app`): state (current tab, workflow, selection), open_tab, open_workflow, show_image, notify.
 Internet: web_search and web_fetch (a page → text; an image URL → saved into input/ so you can view or edit it). \
@@ -518,7 +530,12 @@ def _system(chat, wfs):
     vis = {k: v for k, v in wfs.items() if k not in chat.get("hidden", [])}
     dyn = ["Workflows visible to you: " + (", ".join(f"{k} «{v.get('title') or k}»" for k, v in vis.items()) or "none")]
     bound = chat.get("wf")
-    if bound and bound in vis:
+    tab = bound[4:] if bound and bound.startswith("tab:") else None
+    if tab:
+        names = {"naizer": "ImageNaizer (canvas)", "tocolar": "ToColar (colorizing pages)", "video": "Видео (Wan 2.2 image-to-video)"}
+        dyn.append(f"This chat is bound to the {names.get(tab, tab)} tab: the user talks about what is there. Start with "
+                   f"`app` {{action: {tab}_state}} and act through the {tab}_* actions; open the tab with open_tab if needed.")
+    elif bound and bound in vis:
         dyn.append(f"This chat is bound to workflow «{bound}». Its current state:\n```json\n"
                    f"{json.dumps(vis[bound], ensure_ascii=False, separators=(',', ':'))}\n```")
     elif bound:
@@ -666,9 +683,16 @@ WEB_TOOLS = [
 ]
 APP_TOOL = {"name": "app", "description":
             "Act in the maistep window. Actions: state · open_tab {tab: graph|results|library|civitai|code|components|"
-            "naizer|tocolar|chat} · open_workflow {id} · show_image {file} · notify {text} · naizer_state · "
+            "naizer|tocolar|video|chat} · open_workflow {id} · show_image {file} · notify {text} · naizer_state · "
             "naizer_open {files: [..], name?} · naizer_add {files} · naizer_mask {rects: [{x,y,w,h}] fractions of the "
-            "frame, strength?} · naizer_clear_masks · naizer_generate {prompt, denoise?, count?} · naizer_snapshot.",
+            "frame, strength?} · naizer_clear_masks · naizer_settings {workflow?: id — take checkpoint, LoRAs, prompts, clip skip "
+            "and sampler from that workflow; or own values: prompt, negative, denoise, ckpt, steps, cfg, sampler_name, "
+            "scheduler, seed, loras: [{name, strength}]} · naizer_generate {prompt, denoise?, count?} · naizer_snapshot · "
+            "video_state · video_set {image (start frame file), prompt, negative, seconds, size: 480|576|720, fps, steps, "
+            "cfg, shift, sampler: euler|unipc, seed, models: {high, low, text_encoder, vae}} · video_generate {same fields, "
+            "continue?: true — start from the last frame of the current clip; waits minutes, returns the clip} · video_stop · "
+            "tocolar_state · tocolar_add {files} · tocolar_colorize {index?} (does not wait — check tocolar_state) · "
+            "tocolar_stop. Lists (files, rects, loras) are JSON arrays, not strings.",
             "input_schema": {"type": "object", "properties": {"action": {"type": "string"}}, "required": ["action"],
                              "additionalProperties": True}}
 DEV_TOOLS = [
@@ -1072,8 +1096,13 @@ def run_more(ctx, name, inp):
         r = procs.output(inp["id"], inp.get("tail")) if name == "process_output" else procs.stop(inp["id"])
         return json.dumps(r, ensure_ascii=False)[:30000], []
     if name == "app":
-        args = {k: v for k, v in inp.items() if k != "action"}
-        res = client(ctx, inp["action"], timeout=None if inp["action"] == "naizer_generate" else 90, **args)
+        args = {k: _jsonish(v) for k, v in inp.items() if k != "action"}
+        act = inp["action"]
+        heavy = {"naizer_generate": "Сгенерировать на холсте ImageNaizer", "video_generate": "Сгенерировать видео (Wan 2.2, минуты)",
+                 "tocolar_colorize": "Раскрасить страницы в ToColar"}
+        if act in heavy:  # как run_workflow/generate_image: тяжёлый запуск — с разрешения (режим «Спрашивать»)
+            _approve(ctx, f"app.{act}", args, heavy[act] + (f": {str(args.get('prompt'))[:120]}" if args.get("prompt") else ""))
+        res = client(ctx, act, timeout=None if act in heavy else 90, **args)
         imgs = [f for f in (res.get("images") or []) if isinstance(f, str)] if isinstance(res, dict) else []
         return json.dumps(res, ensure_ascii=False, default=str)[:30000], imgs[:4]
     if name == "ask_user":

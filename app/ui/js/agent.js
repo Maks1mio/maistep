@@ -18,6 +18,8 @@ import { lightbox } from './graph.js';
 import { dropdown, onOff, search } from './kit.js';
 import { openWorkspace, workspace, activeView } from './dock.js';
 import { naizerApi } from './naizer.js';
+import { videoApi } from './video.js';
+import { tocolarApi } from './tocolar.js';
 import { imagePicker } from './images.js';
 import { libraryPicker } from './library.js';
 import { pickFolder } from './folders.js';
@@ -136,7 +138,14 @@ function applyWorkflow(d) {
 }
 
 // действия агента в окне (инструмент app и run_js)
-const list = v => (Array.isArray(v) ? v : v ? [v] : []);
+// список из аргумента модели: массив, JSON-строка «["a","b"]» (так иногда присылают) или одно значение
+const list = v => {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string' && /^\s*\[/.test(v)) { try { const x = JSON.parse(v); if (Array.isArray(x)) return x; } catch {} }
+  return v ? [v] : [];
+};
+const TABS = [['naizer', 'ImageNaizer', 'spark'], ['tocolar', 'ToColar', 'gutter/colors'], ['video', 'Видео', 'run/run']];
+const bindLabel = wf => wf.startsWith('tab:') ? `вкладка ${TABS.find(([id]) => `tab:${id}` === wf)?.[1] || wf.slice(4)}` : doc('workflow', wf)?.data.title || wf;
 const ACTIONS = {
   state: () => ({ tab: workspace(), view: activeView(), workflow: S.current.workflow, workflows: [...S.docs.workflow.keys()],
     selection: S.sel ? { kind: S.sel.kind, id: S.sel.id } : null, server: S.server.running }),
@@ -160,8 +169,17 @@ const ACTIONS = {
   naizer_add: ({ files }) => { openWorkspace('naizer'); return naizerApi.add(list(files)); },
   naizer_mask: ({ rects, strength }) => { openWorkspace('naizer'); return naizerApi.mask(list(rects), strength); },
   naizer_clear_masks: () => naizerApi.clearMasks(),
+  naizer_settings: a => { openWorkspace('naizer'); return naizerApi.settings({ ...a, loras: a.loras == null ? null : list(a.loras) }); },
   naizer_generate: a => { openWorkspace('naizer'); return naizerApi.generate(a); },
   naizer_snapshot: () => naizerApi.snapshot(),
+  video_state: () => videoApi.state(),
+  video_set: a => { openWorkspace('video'); return videoApi.set(a); },
+  video_generate: a => { openWorkspace('video'); return videoApi.generate(a); },
+  video_stop: () => videoApi.stop(),
+  tocolar_state: () => tocolarApi.state(),
+  tocolar_add: ({ files }) => { openWorkspace('tocolar'); return tocolarApi.add(list(files)); },
+  tocolar_colorize: a => { openWorkspace('tocolar'); return tocolarApi.colorize(a); },
+  tocolar_stop: () => tocolarApi.stop(),
   eval: async ({ code }) => {
     const fn = new (Object.getPrototypeOf(async () => {}).constructor)(code);
     const r = await fn();
@@ -397,7 +415,8 @@ class ChatView {
     const b = this.chat || {};
     const mode = fields.character ? undefined : fields.mode || (b.mode === 'code' ? 'code' : 'agent');
     const env = mode === 'code' ? { cwd: fields.cwd !== undefined ? fields.cwd : b.cwd || null } : {};
-    const c = await api('/api/agent/chat', { provider: b.provider || provs?.default_provider, model: b.model, wf: S.current.workflow, mode, ...env, ...fields });
+    const ws = workspace(), wf = TABS.some(([id]) => id === ws) ? `tab:${ws}` : S.current.workflow; // создан во вкладке — привязан к ней
+    const c = await api('/api/agent/chat', { provider: b.provider || provs?.default_provider, model: b.model, wf, mode, ...env, ...fields });
     if (b.effort && b.effort !== 'medium') await api('/api/agent/chat', { id: c.id, effort: b.effort });
     upsertMeta(c);
     await this.open(c.id);
@@ -926,12 +945,15 @@ class ChatView {
       'Запуск воркфлоу и генерация, скачивание моделей, запись файлов, команды, JS и MCP: спрашивать разрешение или выполнять сразу');
   }
 
+  // привязка диалога: воркфлоу (граф агент видит сразу) или вкладка (агент управляет ею: ImageNaizer, ToColar, Видео)
   wfDropdown(c) {
-    const opts = [['', 'без воркфлоу'], ...[...S.docs.workflow].map(([id, d]) => [id, `${d.data.title || id}${c.hidden?.includes(id) ? ' (скрыт)' : ''}`])];
-    if (c.wf && !doc('workflow', c.wf)) opts.push([c.wf, c.wf]);
-    const el = dropdown(c.wf || '', opts, v => this.patch({ wf: v || null }), { link: true, icon: 'blueprint' });
+    const opts = [['', 'без привязки'], { value: '-', label: '', sep: true },
+      ...TABS.map(([id, label, ic]) => ({ value: `tab:${id}`, label, icon: ic, sec: 'вкладка' })), '-',
+      ...[...S.docs.workflow].map(([id, d]) => ({ value: id, label: `${d.data.title || id}${c.hidden?.includes(id) ? ' (скрыт)' : ''}`, icon: 'blueprint' }))];
+    if (c.wf && !doc('workflow', c.wf) && !c.wf.startsWith('tab:')) opts.push([c.wf, c.wf]);
+    const el = dropdown(c.wf || '', opts, v => this.patch({ wf: v || null }), { link: true, icon: c.wf?.startsWith('tab:') ? null : 'blueprint' });
     el.classList.add('ag-wf');
-    return tipped(el, 'Воркфлоу, к которому привязан диалог: его граф агент видит сразу');
+    return tipped(el, 'К чему привязан диалог: воркфлоу — агент видит его граф; вкладка — агент управляет ею (ImageNaizer, ToColar, Видео)');
   }
 
   // левая колонка вкладки (как у Claude): Новый чат, Поиск, Персонажи, Настройки; ниже — диалоги по проектам:
@@ -1297,7 +1319,7 @@ class ChatView {
       h('div.sep'),
       ...(lst.length ? lst.map(c => h(`div.item.ag-ci${c.id === this.chat?.id ? '.on' : ''}`, { onclick: () => { closePop(); this.open(c.id); } },
         h('span.ic', {}, busy.has(c.id) ? h('span.ag-tdot.run') : c.mode === 'character' && charOf(c.character) ? avatar(charOf(c.character), 16) : icon(MODES[c.mode || 'agent'][1], { size: 16 })),
-        h('span.ag-ct', {}, h('span', {}, c.title || 'Новый диалог'), h('span.dim', {}, `${c.wf ? `${doc('workflow', c.wf)?.data.title || c.wf} · ` : ''}${c.count} сообщ. · ${new Date((c.updated || 0) * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}`)),
+        h('span.ag-ct', {}, h('span', {}, c.title || 'Новый диалог'), h('span.dim', {}, `${c.wf ? `${bindLabel(c.wf)} · ` : ''}${c.count} сообщ. · ${new Date((c.updated || 0) * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}`)),
         h('span.ui-tb.ag-x', {}, tbBtn('edit', 'Переименовать', () => this.rename(c)), tbBtn('delete', 'Удалить', () => this.remove(c.id)))))
         : [h('div.ag-hint', {}, 'диалогов нет')]));
     place(box, anchor);
